@@ -1,0 +1,92 @@
+#!/bin/bash
+# pre-launch — Launch PRE (Personal Reasoning Engine) from any directory
+#
+# Automatically starts the inference server if not running,
+# launches PRE with the current directory as context,
+# and shuts down the server on exit if we started it.
+
+set -e
+
+PRE_DIR="$(cd "$(dirname "$0")" && pwd)"
+PRE_BIN="$PRE_DIR/pre"
+INFER_BIN="$PRE_DIR/infer"
+PORT="${PRE_PORT:-8000}"
+SERVER_PID=""
+WE_STARTED_SERVER=0
+
+cleanup() {
+    if [ "$WE_STARTED_SERVER" -eq 1 ] && [ -n "$SERVER_PID" ]; then
+        echo ""
+        echo "  Shutting down inference server (pid $SERVER_PID)..."
+        kill "$SERVER_PID" 2>/dev/null
+        # Wait up to 5 seconds for graceful shutdown
+        for i in $(seq 1 50); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                break
+            fi
+            sleep 0.1
+        done
+        # Force kill if still alive
+        if kill -0 "$SERVER_PID" 2>/dev/null; then
+            kill -9 "$SERVER_PID" 2>/dev/null
+        fi
+        echo "  Server stopped."
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
+# Check if server is already running
+server_alive() {
+    exec 3<>/dev/tcp/127.0.0.1/"$PORT" 2>/dev/null
+    local rc=$?
+    exec 3<&- 2>/dev/null
+    return $rc
+}
+
+if ! server_alive; then
+    if [ ! -x "$INFER_BIN" ]; then
+        echo "Error: inference engine not found at $INFER_BIN"
+        echo "Run: cd $PRE_DIR && make infer"
+        exit 1
+    fi
+
+    echo "  Starting inference server on port $PORT..."
+    "$INFER_BIN" --serve "$PORT" &
+    SERVER_PID=$!
+    WE_STARTED_SERVER=1
+
+    # Wait for server to be ready (up to 120s for model load)
+    echo -n "  Loading model"
+    for i in $(seq 1 240); do
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo ""
+            echo "Error: server exited unexpectedly"
+            WE_STARTED_SERVER=0
+            exit 1
+        fi
+        if server_alive; then
+            echo " ready."
+            break
+        fi
+        echo -n "."
+        sleep 0.5
+    done
+
+    if ! server_alive; then
+        echo ""
+        echo "Error: server did not start within 120 seconds"
+        exit 1
+    fi
+else
+    echo "  Server already running on port $PORT."
+fi
+
+if [ ! -x "$PRE_BIN" ]; then
+    echo "Error: PRE binary not found at $PRE_BIN"
+    echo "Run: cd $PRE_DIR && make pre"
+    exit 1
+fi
+
+# Launch PRE with current directory as working dir, forward all args
+exec "$PRE_BIN" --port "$PORT" --dir "$(pwd)" "$@"

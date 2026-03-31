@@ -1,0 +1,34 @@
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.30	2464	5.5	keep	C/METAL E2E: "the best way to make a cup of tea?" 300ms/tok. GPU attn scores REVERTED (too slow for short ctx)
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	5.29	0	5.5	discard	C/METAL peak: 189ms/tok — DISCARDED: measured with warm Metal LRU cache (9.8GB) that was later deleted. Not reproducible with trust-OS approach.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.79	0	5.5	keep	C/METAL: BLAS delta-net (0.28ms vs 0.78ms cpu_attn), GCD dispatch, gated timing. 352ms/tok avg.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	0.56	0	5.5	discard	mmap expert files: CATASTROPHIC 5x regression. Per-page faults 100x slower than pread for uncached 7MB experts.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.10	0	5.5	discard	Malloc zero-copy cache 2581 entries (18GB): 52% hit but GPU memory pressure + page cache loss = slower
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.77	0	5.5	discard	Malloc zero-copy cache 500 entries (3.5GB): 37% hit, still slower than Metal LRU (2.93 vs 3.14)
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	1.70	0	5.5	discard	Speculative early routing: 53% prediction accuracy but cache pollution + overhead = 38% slower
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.67	0	5.5	discard	F_RDADVISE kernel hints: no improvement, added syscall overhead
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.75	0	5.5	keep	GPU combine+norm in CMD3: deferred_wait eliminated (0.83->0ms) but absorbed into cmd1_wait (0.49->1.78ms). Cleaner pipeline.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.50	0	5.5	keep	GPU RoPE + fused CMD1+attention for full-attn layers. 4.76ms/layer (was 5.53). Quality verified.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	2.83	0	5.5	keep	STABLE: GPU combine+norm + BLAS delta-net + fused full-attn CMD + 500 LRU cache. Cold cache 2.75-2.85 tok/s.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	4.20	0	5.5	discard	4-bit warm cache: 4.20 tok/s — DISCARDED: measured with Metal LRU cache. Not reproducible with trust-OS.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	4.80	0	5.5	discard	4-bit WARM: 4.80 avg, 5.31 peak — DISCARDED: measured with Metal LRU cache (later deleted). Not reproducible.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	5.55	0	5.5	keep	2-BIT EXPERTS: 5.55 tok/s sustained 80 tokens! Quality: 'Classic Coin Analogy...light switch...Heads or'. EXCELLENT.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	5.61	0	5.5	keep	2-BIT 200tok: 5.61 tok/s sustained. Quality: math(255=15*17 CORRECT), code(sorted+key=len), science(plant analogy)
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	5.68	0	5.5	keep	F_NOCACHE + 2-bit: 5.68 avg, 5.91 peak. Bypass page cache avoids thrashing 120GB data.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	4.15	0	5.5	keep	Default fused GPU delta-net: 3.90ms/layer vs 4.15ms with --cpu-linear fallback on the same tea prompt. Output identical ("to use a teapot.").
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	3.99	0	5.5	discard	Removing the CMD2->CPU->CMD3 bounce regressed: 4.07ms/layer vs 3.70 baseline and 3.99 tok/s vs 4.40. Output still matched the tea prompt.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	4.13	0	5.5	discard	GPU routing softmax+topK removed routing_cpu but increased cmd2_wait: 3.96ms/layer vs 3.84 baseline and 4.13 tok/s vs 4.24.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	4.28	0	5.5	keep	Persistent expert pread pool beats dispatch_apply: tea A/B averaged 3.81ms/layer vs 3.97 baseline and 4.28 tok/s vs 4.09. Output identical ("to use a teapot.").
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	4.04	0	5.5	discard	Fused GPU final-norm + lm_head tail was mixed and slightly slower overall: 4.01ms/layer vs 3.93 baseline and 4.04 tok/s vs 4.13.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	4.35	0	9.8	keep	Indexed expert cache makes a larger hotset viable: 2500-entry Metal cache averaged 3.75ms/layer and 4.35 tok/s vs 4.09ms/layer and 3.98 tok/s at 1500 entries on the fixed ocean prompt. 3500+ entries regressed despite higher hit rate, so 2500 is the new sweet spot.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	5.74	0	5.5	keep	2-bit + trust OS (no cache): 5.74 tok/s. Deleted Metal LRU cache entirely. OS page cache manages better.
+HEAD	Qwen3.5-397B-A17B-2bit	397.0	17.0	7.05	0	5.5	keep	Peak single-token 2-bit: 7.05 tok/s (warm cache). Quality excellent for math/code/reasoning.
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.50	0	5.5	keep	Back to 4-bit for tool calling quality. 2-bit broke JSON output (quotes → backslashes).
+HEAD	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.90	0	5.5	keep	4-bit trust OS baseline: 3.90 tok/s cold steady-state. K=4, no cache, page cache only.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	4.36	0	5.5	keep	FMA dequant kernel: rearrange to fma(nibble, scale*x, bias*x). GPU compute -5 to -11%.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.55	0	5.5	discard	LZ4 compressed experts (209→175GB): -13% from decompress overhead on warm cache reads.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.91	0	5.5	discard	F_RDADVISE prefetch during GPU compute: expert_io -31% but cmd2_wait +73% from unified memory DMA contention. Net 0%.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.25	0	5.5	discard	Spin-poll GPU wait: CPU thermal competes with GPU on unified architecture. -23%.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	4.10	0	5.5	discard	GPU LUT dequant kernel (v5): indirect register access serializes on Apple GPU. -2%.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.33	0	5.5	discard	GPU private buffer compression: blit shared→private before matvec. Isolated -13.5% but 4×7MB blit cost exceeds savings in pipeline.
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.91	0	5.5	discard	dispatch_io: -70% slower than pread (dispatch_data overhead kills it).
+c222a4f	Qwen3.5-397B-A17B-4bit	397.0	17.0	3.91	0	5.5	discard	Expert file clustering: NVMe doesn't care about scatter distance at 7MB read granularity. 0%.
