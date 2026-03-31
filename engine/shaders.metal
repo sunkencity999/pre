@@ -1522,8 +1522,6 @@ kernel void dequant_matvec_3bit(
     uint num_groups  = in_dim / group_size;
     // Number of 32-value chunks per group: group_size / 32
     uint chunks_per_group = group_size / 32;
-    // Words per group = chunks_per_group * 3
-    uint words_per_group = chunks_per_group * 3;
 
     // Cache input vector in shared memory
     threadgroup float x_shared[4096];
@@ -1671,50 +1669,11 @@ kernel void kv_rotate_quantize(
     if (tid == 0) scale_out[0] = sigma;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Step 3: Normalize and quantize
+    // Step 3: Normalize and quantize, write directly to device output
     float inv_sigma = 1.0f / sigma;
 
-    // First 256 channels: 4-bit quantization -> 128 bytes (2 nibbles per byte)
-    for (uint i = tid; i < 256; i += threads) {
-        float val = shared[i] * inv_sigma;
-        // Find nearest codebook entry via boundary search
-        uint level = 0;
-        // Simple linear search (only 16 levels)
-        for (uint l = 0; l < 8; l++) {
-            if (val > codebook_3bit[l]) level = l;
-        }
-        // More precise: find the interval
-        level = 0;
-        if (val >= boundaries_4bit[0]) level = 1;
-        if (val >= boundaries_4bit[1]) level = 2;
-        if (val >= boundaries_4bit[2]) level = 3;
-        if (val >= boundaries_4bit[3]) level = 4;
-        if (val >= boundaries_4bit[4]) level = 5;
-        if (val >= boundaries_4bit[5]) level = 6;
-        if (val >= boundaries_4bit[6]) level = 7;
-        if (val >= boundaries_4bit[7]) level = 8;
-        if (val >= boundaries_4bit[8]) level = 9;
-        if (val >= boundaries_4bit[9]) level = 10;
-        if (val >= boundaries_4bit[10]) level = 11;
-        if (val >= boundaries_4bit[11]) level = 12;
-
-        // Pack: 2 nibbles per byte. Even channels -> low nibble, odd -> high nibble.
-        uint byte_idx = i / 2;
-        uint nibble_pos = i % 2;
-        // Atomic-free: each thread writes a unique byte since threads stride by >= 2
-        // Actually we need to combine two nibbles. Use threadgroup sync approach:
-        // Write to shared temp, then pack.
-        // Simpler: assign each thread to pack a full byte (2 channels)
-        // We'll handle this below.
-    }
-
-    // Simpler approach: each thread handles a range of output bytes
-    // 4-bit section: 256 channels -> 128 bytes (i/2 = byte index, 2 nibbles each)
-    threadgroup uint8_t packed_shared[224];
-    for (uint i = tid; i < 224; i += threads) packed_shared[i] = 0;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // 4-bit channels [0..255]: each thread packs one byte (2 channels)
+    // 4-bit channels [0..255]: each thread packs one byte (2 channels -> 2 nibbles)
+    // 256 channels / 2 = 128 bytes at offset 0
     for (uint byte_i = tid; byte_i < 128; byte_i += threads) {
         uint ch0 = byte_i * 2;
         uint ch1 = byte_i * 2 + 1;
@@ -1722,7 +1681,7 @@ kernel void kv_rotate_quantize(
         float v0 = shared[ch0] * inv_sigma;
         float v1 = shared[ch1] * inv_sigma;
 
-        // Quantize v0 to 4-bit [0..15]
+        // Quantize to 4-bit [0..15] via boundary search
         uint l0 = 0;
         for (uint b = 0; b < 15; b++) {
             if (v0 >= boundaries_4bit[b]) l0 = b + 1;
@@ -1735,13 +1694,11 @@ kernel void kv_rotate_quantize(
         }
         if (l1 > 15) l1 = 15;
 
-        packed_shared[byte_i] = uint8_t(l0 | (l1 << 4));
+        packed_out[byte_i] = uint8_t(l0 | (l1 << 4));
     }
 
-    // 3-bit channels [256..511]: 256 values -> 96 bytes
-    // Pack 8 x 3-bit values into 3 bytes: byte0=[v0:3][v1:3][v2:2lo], etc.
-    // Simpler: 32 values -> 12 bytes (3 uint32 bit-planes, written as bytes)
-    // Total: 256/32 = 8 groups of 32 -> 8 * 12 = 96 bytes
+    // 3-bit channels [256..511]: 256 values -> 96 bytes (8 groups of 32 -> 12 bytes each)
+    // Written at offset 128 in packed_out
     for (uint grp = tid; grp < 8; grp += threads) {
         uint ch_base = 256 + grp * 32;
         uint32_t plane0 = 0, plane1 = 0, plane2 = 0;
@@ -1759,20 +1716,11 @@ kernel void kv_rotate_quantize(
             plane2 |= ((level >> 2) & 1u) << i;
         }
 
-        // Write 12 bytes (3 x uint32) at byte offset 128 + grp*12
+        // Write 12 bytes (3 x uint32 as bytes) to device output
         uint byte_off = 128 + grp * 12;
-        device uint8_t* dst = (device uint8_t*)(packed_shared + byte_off);
-        // Write as bytes to avoid alignment issues
-        for (uint b = 0; b < 4; b++) dst[b]     = uint8_t((plane0 >> (b*8)) & 0xFF);
-        for (uint b = 0; b < 4; b++) dst[4+b]   = uint8_t((plane1 >> (b*8)) & 0xFF);
-        for (uint b = 0; b < 4; b++) dst[8+b]   = uint8_t((plane2 >> (b*8)) & 0xFF);
-    }
-
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-
-    // Write packed output
-    for (uint i = tid; i < 224; i += threads) {
-        packed_out[i] = packed_shared[i];
+        for (uint b = 0; b < 4; b++) packed_out[byte_off + b]     = uint8_t((plane0 >> (b*8)) & 0xFF);
+        for (uint b = 0; b < 4; b++) packed_out[byte_off + 4 + b] = uint8_t((plane1 >> (b*8)) & 0xFF);
+        for (uint b = 0; b < 4; b++) packed_out[byte_off + 8 + b] = uint8_t((plane2 >> (b*8)) & 0xFF);
     }
 }
 
