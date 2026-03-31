@@ -2,7 +2,7 @@
 
 > A 397-billion-parameter language model, running on a MacBook Pro. No cloud. No API keys. No data leaves your machine.
 
-PRE is a fit-for-purpose deployment of **Qwen3.5-397B-A17B** — one of the most capable open-weight language models in existence — on a single Apple Silicon laptop. Powered by the [Flash-MoE](https://github.com/sunkencity999/flash-moe) inference engine, PRE streams a 209 GB model from your SSD through hand-tuned Metal compute shaders, delivering near-state-of-the-art reasoning at conversational speed with complete privacy.
+PRE is a fit-for-purpose deployment of **Qwen3.5-397B-A17B** — one of the most capable open-weight language models in existence — on a single Apple Silicon laptop. Powered by the [Flash-MoE](https://github.com/danveloper/flash-moe) inference engine, PRE streams a 209 GB model from your SSD through hand-tuned Metal compute shaders, delivering near-state-of-the-art reasoning at conversational speed with complete privacy.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**, where it achieves **9+ tokens/second**. It also runs on machines with as little as 48 GB of RAM — slower, but with the same full-quality output from all 397 billion parameters.
 
@@ -325,7 +325,7 @@ PRE puts a near-state-of-the-art reasoning model at your fingertips with zero co
 
 ## How the Engine Works
 
-PRE inherits all of its inference performance from the [Flash-MoE](https://github.com/sunkencity999/flash-moe) engine — a pure C/Metal implementation built specifically for running large Mixture-of-Experts models on Apple Silicon. Here's what makes it fast:
+PRE inherits all of its inference performance from the [Flash-MoE](https://github.com/danveloper/flash-moe) engine — a pure C/Metal implementation built specifically for running large Mixture-of-Experts models on Apple Silicon. Here's what makes it fast:
 
 ### The Problem
 
@@ -489,7 +489,7 @@ If this project is useful to you, a star helps others find it.
 - **Qwen Team** (Alibaba) for the remarkable Qwen3.5-397B-A17B model
 - **MLX Community** for the 4-bit quantized weight distribution
 - **Apple** for unified memory architecture and the Metal compute framework
-- Inference engine built on [Flash-MoE](https://github.com/sunkencity999/flash-moe) — the research project behind the 90+ experiments that made this possible
+- **[Flash-MoE](https://github.com/danveloper/flash-moe)** by [@danveloper](https://github.com/danveloper) — the inference engine and research project behind the 90+ experiments that made running a 397B model on a laptop possible. PRE's entire inference pipeline is built on this work
 
 ## License
 
