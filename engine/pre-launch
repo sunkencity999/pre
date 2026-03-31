@@ -7,7 +7,15 @@
 
 set -e
 
-PRE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks so we find binaries even when called via ~/.local/bin symlink
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    # Handle relative symlinks
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+PRE_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 PRE_BIN="$PRE_DIR/pre"
 INFER_BIN="$PRE_DIR/infer"
 PORT="${PRE_PORT:-8000}"
