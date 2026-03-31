@@ -141,16 +141,6 @@ static char *json_escape_alloc(const char *src) {
     return buf;
 }
 
-static void get_terminal_size(int *cols, int *rows) {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
-        *cols = ws.ws_col;
-        *rows = ws.ws_row;
-    } else {
-        *cols = 80;
-        *rows = 24;
-    }
-}
 
 // Format file size for display
 static const char *fmt_size(off_t bytes) {
@@ -191,55 +181,8 @@ static void resolve_path(const char *input, char *out, size_t outsize) {
 // TUI — status bar, banner, spinner
 // ============================================================================
 
-static void tui_status_bar(void) {
-    int cols, rows;
-    get_terminal_size(&cols, &rows);
-
-    // Session display name: title > truncated ID
-    const char *name = g.session_title[0] ? g.session_title : g.session_id;
-    char name_short[32];
-    strncpy(name_short, name, 28); name_short[28] = 0;
-
-    // Context usage estimate
-    int ctx_used = g.total_tokens_in + g.total_tokens_out;
-    int ctx_pct = MAX_CONTEXT > 0 ? (ctx_used * 100 / MAX_CONTEXT) : 0;
-    if (ctx_pct > 100) ctx_pct = 100;
-
-    // Elapsed
-    double elapsed = g.session_start_ms > 0 ? now_ms() - g.session_start_ms : 0;
-
-    char bar[512];
-    int off = 0;
-    off += snprintf(bar + off, sizeof(bar) - off, " PRE | %s", name_short);
-    if (g.total_tokens_out > 0)
-        off += snprintf(bar + off, sizeof(bar) - off, " | %d tok", g.total_tokens_out);
-    if (ctx_pct > 0)
-        off += snprintf(bar + off, sizeof(bar) - off, " | ctx %d%%", ctx_pct);
-    if (g.last_tok_s > 0)
-        off += snprintf(bar + off, sizeof(bar) - off, " | %.1f t/s", g.last_tok_s);
-    if (elapsed > 0)
-        off += snprintf(bar + off, sizeof(bar) - off, " | %s", fmt_elapsed(elapsed));
-    off += snprintf(bar + off, sizeof(bar) - off, " | %s ", g.cwd);
-
-    // Truncate to terminal width
-    int blen = (int)strlen(bar);
-    if (blen > cols) { bar[cols] = 0; blen = cols; }
-
-    printf("\0337");                        // save cursor
-    printf("\033[%d;1H", rows);             // move to last row
-    printf(ANSI_REV "%s", bar);             // reverse video
-    for (int i = blen; i < cols; i++) putchar(' ');
-    printf(ANSI_RESET);
-    printf("\0338");                        // restore cursor
-    fflush(stdout);
-}
-
-static void tui_clear_status(void) {
-    int cols, rows;
-    get_terminal_size(&cols, &rows);
-    printf("\0337\033[%d;1H\033[K\0338", rows);
-    fflush(stdout);
-}
+// Status bar removed — was using cursor positioning that conflicted with linenoise.
+// Status info is now printed inline after each response.
 
 static void tui_banner(void) {
     printf(ANSI_BOLD ANSI_CYAN
@@ -1825,10 +1768,7 @@ int main(int argc, char **argv) {
 
         // Main loop
         for (;;) {
-            tui_status_bar();
-
             char *line = linenoise(ANSI_BOLD "pre> " ANSI_RESET);
-            tui_clear_status();
 
             if (!line) { printf("\n"); break; }
             if (strlen(line) == 0) { free(line); continue; }
@@ -1889,6 +1829,19 @@ int main(int argc, char **argv) {
 
             free(response);
             g.turn_count++;
+
+            // Show brief status after response
+            {
+                double elapsed = g.session_start_ms > 0 ? now_ms() - g.session_start_ms : 0;
+                printf(ANSI_DIM);
+                if (g.total_tokens_out > 0)
+                    printf("  %d tok", g.total_tokens_out);
+                if (g.last_tok_s > 0)
+                    printf(" | %.1f t/s", g.last_tok_s);
+                if (elapsed > 0)
+                    printf(" | %s", fmt_elapsed(elapsed));
+                printf(ANSI_RESET "\n");
+            }
         }
 
         // Cleanup
