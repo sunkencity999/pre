@@ -1433,3 +1433,426 @@ kernel void moe_combine_residual(
 
     hidden_out[tid] = h_mid[tid] + moe + shared_gate * shared_out[tid];
 }
+
+
+// ============================================================================
+// Kernel: Fast Walsh-Hadamard Transform (in-place, normalized)
+// ============================================================================
+// Applies the normalized Hadamard transform H/sqrt(N) to a vector in-place.
+// H is self-inverse: applying it twice returns the original vector.
+// Used for TurboQuant rotation before quantized expert matvecs.
+//
+// Dispatch: 1 threadgroup, N/2 threads (e.g., 2048 for N=4096).
+// N must be a power of 2 and <= 8192.
+
+kernel void hadamard_transform(
+    device float* x            [[buffer(0)]],   // [N] in-place
+    constant uint& N           [[buffer(1)]],   // vector dimension (power of 2)
+    uint tid  [[thread_position_in_threadgroup]],
+    uint threads [[threads_per_threadgroup]]
+) {
+    // Load into threadgroup shared memory
+    threadgroup float shared[8192];
+    for (uint i = tid; i < N; i += threads) {
+        shared[i] = x[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Butterfly passes: log2(N) stages
+    for (uint len = 1; len < N; len <<= 1) {
+        for (uint i = tid; i < N / 2; i += threads) {
+            uint block = i / len;
+            uint offset = i % len;
+            uint idx = block * 2 * len + offset;
+            float a = shared[idx];
+            float b = shared[idx + len];
+            shared[idx]       = a + b;
+            shared[idx + len] = a - b;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Normalize by 1/sqrt(N) and write back
+    float inv_sqrt_n = rsqrt(float(N));
+    for (uint i = tid; i < N; i += threads) {
+        x[i] = shared[i] * inv_sqrt_n;
+    }
+}
+
+
+// ============================================================================
+// Kernel: 3-bit dequantized matrix-vector multiply (TurboQuant)
+// ============================================================================
+// 3-bit planar packing: 32 values stored in 3 uint32 words (bit-plane layout).
+// For 32 values at positions [0..31]:
+//   word0: bit 0 of each value  (value[i] bit0 at position i)
+//   word1: bit 1 of each value
+//   word2: bit 2 of each value
+//   val[i] = ((word0>>i)&1) | (((word1>>i)&1)<<1) | (((word2>>i)&1)<<2)  -> [0,7]
+//
+// Layout per row: groups of 32 values -> 3 uint32 each
+//   packed_cols = (in_dim / 32) * 3   (e.g., 4096/32*3 = 384 for gate/up)
+//   For group g (64 values = 2 x 32-value chunks):
+//     chunk 0: words at col offsets [g*6, g*6+1, g*6+2]
+//     chunk 1: words at col offsets [g*6+3, g*6+4, g*6+5]
+//
+// Uses same FMA optimization as 4-bit v3: fma(nibble, scale*x, bias*x)
+// Same shared input cache + SIMD reduction pattern.
+
+#define ROWS_PER_TG_3BIT 8
+
+kernel void dequant_matvec_3bit(
+    device const uint32_t* W_packed   [[buffer(0)]],  // [out_dim, packed_cols]
+    device const uint16_t* scales     [[buffer(1)]],  // [out_dim, num_groups] bf16
+    device const uint16_t* biases     [[buffer(2)]],  // [out_dim, num_groups] bf16
+    device const float*    x          [[buffer(3)]],  // [in_dim]
+    device float*          out        [[buffer(4)]],  // [out_dim]
+    constant uint&         out_dim    [[buffer(5)]],
+    constant uint&         in_dim     [[buffer(6)]],
+    constant uint&         group_size [[buffer(7)]],
+    uint tgid       [[threadgroup_position_in_grid]],
+    uint lid        [[thread_position_in_threadgroup]],
+    uint simd_lane  [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]
+) {
+    uint row = tgid * ROWS_PER_TG_3BIT + simd_group;
+
+    // 3 uint32 per 32 values, so packed_cols = (in_dim / 32) * 3
+    uint packed_cols = (in_dim / 32) * 3;
+    uint num_groups  = in_dim / group_size;
+    // Number of 32-value chunks per group: group_size / 32
+    uint chunks_per_group = group_size / 32;
+    // Words per group = chunks_per_group * 3
+    uint words_per_group = chunks_per_group * 3;
+
+    // Cache input vector in shared memory
+    threadgroup float x_shared[4096];
+    for (uint i = lid; i < in_dim; i += 256) {
+        x_shared[i] = x[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (row >= out_dim) return;
+
+    device const uint32_t* w_row = W_packed + row * packed_cols;
+    device const uint16_t* s_row = scales + row * num_groups;
+    device const uint16_t* b_row = biases + row * num_groups;
+
+    float acc = 0.0f;
+
+    // Iterate over 32-value chunks. Each chunk = 3 consecutive uint32.
+    // Total chunks = in_dim / 32
+    uint total_chunks = in_dim / 32;
+
+    for (uint chunk = simd_lane; chunk < total_chunks; chunk += 32) {
+        // Determine which group this chunk belongs to
+        uint g = chunk / chunks_per_group;
+        float scale = bf16_to_f32(s_row[g]);
+        float bias  = bf16_to_f32(b_row[g]);
+
+        // Load 3 bit-plane words for this chunk
+        uint word_base = chunk * 3;
+        uint32_t w0 = w_row[word_base + 0];  // bit 0 of 32 values
+        uint32_t w1 = w_row[word_base + 1];  // bit 1 of 32 values
+        uint32_t w2 = w_row[word_base + 2];  // bit 2 of 32 values
+
+        uint x_base = chunk * 32;
+
+        // Extract and accumulate 32 values using FMA
+        // val[i] = ((w0>>i)&1) | (((w1>>i)&1)<<1) | (((w2>>i)&1)<<2)
+        for (uint i = 0; i < 32; i++) {
+            uint val = ((w0 >> i) & 1u) | (((w1 >> i) & 1u) << 1) | (((w2 >> i) & 1u) << 2);
+            float xi = x_shared[x_base + i];
+            acc += fma(float(val), scale * xi, bias * xi);
+        }
+    }
+
+    // SIMD reduction
+    float sum = simd_sum(acc);
+    if (simd_lane == 0) {
+        out[row] = sum;
+    }
+}
+
+
+// ============================================================================
+// Kernel: KV cache rotate + quantize (TurboQuant write path)
+// ============================================================================
+// Applies Hadamard rotation to a KV vector, then quantizes to mixed 3.5-bit:
+//   - First 256 channels: 4-bit (16 levels) -> 128 bytes
+//   - Last  256 channels: 3-bit (8 levels)  -> 96 bytes
+//   - Total: 224 bytes per position per K/V
+//   - Plus 1 float scale per position
+//
+// The rotation is done via inline FWHT since the vector is small (512 dim).
+// Codebook values are for standard normal distribution (Lloyd-Max optimal).
+//
+// Dispatch: 1 threadgroup, 256 threads per KV vector to quantize.
+
+// Lloyd-Max codebook for standard normal, 4-bit (16 levels)
+constant float codebook_4bit[16] = {
+    -1.5104f, -1.0500f, -0.7560f, -0.5006f,
+    -0.2582f, -0.0000f,  0.2582f,  0.5006f,
+     0.7560f,  1.0500f,  1.5104f,  1.8940f,
+    -1.8940f, -0.1284f,  0.1284f,  2.4015f
+};
+// Sorted boundaries for quantization (15 midpoints)
+constant float boundaries_4bit[15] = {
+    -2.1478f, -1.2802f, -0.9030f, -0.6283f,
+    -0.3794f, -0.1291f,  0.1291f,  0.3794f,
+     0.6283f,  0.9030f,  1.2802f,  2.1478f,
+    -1.6937f, -0.0642f,  0.0642f
+};
+
+// Lloyd-Max codebook for standard normal, 3-bit (8 levels)
+constant float codebook_3bit[8] = {
+    -1.7479f, -1.0500f, -0.5006f, -0.0690f,
+     0.0690f,  0.5006f,  1.0500f,  1.7479f
+};
+constant float boundaries_3bit[7] = {
+    -1.3990f, -0.7753f, -0.2848f,  0.0000f,
+     0.2848f,  0.7753f,  1.3990f
+};
+
+kernel void kv_rotate_quantize(
+    device const float* kv_in        [[buffer(0)]],   // [512] raw KV vector
+    device uint8_t*     packed_out   [[buffer(1)]],   // [224] packed quantized output
+    device float*       scale_out    [[buffer(2)]],   // [1] scale for this position
+    constant uint&      kv_dim       [[buffer(3)]],   // 512
+    uint tid  [[thread_position_in_threadgroup]],
+    uint threads [[threads_per_threadgroup]]
+) {
+    // Step 1: Load and apply in-place FWHT (kv_dim must be power of 2)
+    threadgroup float shared[512];
+    for (uint i = tid; i < kv_dim; i += threads) {
+        shared[i] = kv_in[i];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // FWHT butterfly
+    for (uint len = 1; len < kv_dim; len <<= 1) {
+        for (uint i = tid; i < kv_dim / 2; i += threads) {
+            uint block = i / len;
+            uint offset = i % len;
+            uint idx = block * 2 * len + offset;
+            float a = shared[idx];
+            float b = shared[idx + len];
+            shared[idx]       = a + b;
+            shared[idx + len] = a - b;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Normalize
+    float inv_sqrt = rsqrt(float(kv_dim));
+    for (uint i = tid; i < kv_dim; i += threads) {
+        shared[i] *= inv_sqrt;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 2: Compute scale (RMS of rotated vector)
+    threadgroup float partial_sq[256];
+    float my_sq = 0.0f;
+    for (uint i = tid; i < kv_dim; i += threads) {
+        my_sq += shared[i] * shared[i];
+    }
+    partial_sq[tid] = my_sq;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Parallel reduction
+    for (uint s = threads / 2; s > 0; s >>= 1) {
+        if (tid < s) partial_sq[tid] += partial_sq[tid + s];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    float sigma = sqrt(partial_sq[0] / float(kv_dim));
+    if (sigma < 1e-8f) sigma = 1e-8f;
+
+    // Write scale
+    if (tid == 0) scale_out[0] = sigma;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Step 3: Normalize and quantize
+    float inv_sigma = 1.0f / sigma;
+
+    // First 256 channels: 4-bit quantization -> 128 bytes (2 nibbles per byte)
+    for (uint i = tid; i < 256; i += threads) {
+        float val = shared[i] * inv_sigma;
+        // Find nearest codebook entry via boundary search
+        uint level = 0;
+        // Simple linear search (only 16 levels)
+        for (uint l = 0; l < 8; l++) {
+            if (val > codebook_3bit[l]) level = l;
+        }
+        // More precise: find the interval
+        level = 0;
+        if (val >= boundaries_4bit[0]) level = 1;
+        if (val >= boundaries_4bit[1]) level = 2;
+        if (val >= boundaries_4bit[2]) level = 3;
+        if (val >= boundaries_4bit[3]) level = 4;
+        if (val >= boundaries_4bit[4]) level = 5;
+        if (val >= boundaries_4bit[5]) level = 6;
+        if (val >= boundaries_4bit[6]) level = 7;
+        if (val >= boundaries_4bit[7]) level = 8;
+        if (val >= boundaries_4bit[8]) level = 9;
+        if (val >= boundaries_4bit[9]) level = 10;
+        if (val >= boundaries_4bit[10]) level = 11;
+        if (val >= boundaries_4bit[11]) level = 12;
+
+        // Pack: 2 nibbles per byte. Even channels -> low nibble, odd -> high nibble.
+        uint byte_idx = i / 2;
+        uint nibble_pos = i % 2;
+        // Atomic-free: each thread writes a unique byte since threads stride by >= 2
+        // Actually we need to combine two nibbles. Use threadgroup sync approach:
+        // Write to shared temp, then pack.
+        // Simpler: assign each thread to pack a full byte (2 channels)
+        // We'll handle this below.
+    }
+
+    // Simpler approach: each thread handles a range of output bytes
+    // 4-bit section: 256 channels -> 128 bytes (i/2 = byte index, 2 nibbles each)
+    threadgroup uint8_t packed_shared[224];
+    for (uint i = tid; i < 224; i += threads) packed_shared[i] = 0;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // 4-bit channels [0..255]: each thread packs one byte (2 channels)
+    for (uint byte_i = tid; byte_i < 128; byte_i += threads) {
+        uint ch0 = byte_i * 2;
+        uint ch1 = byte_i * 2 + 1;
+
+        float v0 = shared[ch0] * inv_sigma;
+        float v1 = shared[ch1] * inv_sigma;
+
+        // Quantize v0 to 4-bit [0..15]
+        uint l0 = 0;
+        for (uint b = 0; b < 15; b++) {
+            if (v0 >= boundaries_4bit[b]) l0 = b + 1;
+        }
+        if (l0 > 15) l0 = 15;
+
+        uint l1 = 0;
+        for (uint b = 0; b < 15; b++) {
+            if (v1 >= boundaries_4bit[b]) l1 = b + 1;
+        }
+        if (l1 > 15) l1 = 15;
+
+        packed_shared[byte_i] = uint8_t(l0 | (l1 << 4));
+    }
+
+    // 3-bit channels [256..511]: 256 values -> 96 bytes
+    // Pack 8 x 3-bit values into 3 bytes: byte0=[v0:3][v1:3][v2:2lo], etc.
+    // Simpler: 32 values -> 12 bytes (3 uint32 bit-planes, written as bytes)
+    // Total: 256/32 = 8 groups of 32 -> 8 * 12 = 96 bytes
+    for (uint grp = tid; grp < 8; grp += threads) {
+        uint ch_base = 256 + grp * 32;
+        uint32_t plane0 = 0, plane1 = 0, plane2 = 0;
+
+        for (uint i = 0; i < 32; i++) {
+            float val = shared[ch_base + i] * inv_sigma;
+            uint level = 0;
+            for (uint b = 0; b < 7; b++) {
+                if (val >= boundaries_3bit[b]) level = b + 1;
+            }
+            if (level > 7) level = 7;
+
+            plane0 |= ((level >> 0) & 1u) << i;
+            plane1 |= ((level >> 1) & 1u) << i;
+            plane2 |= ((level >> 2) & 1u) << i;
+        }
+
+        // Write 12 bytes (3 x uint32) at byte offset 128 + grp*12
+        uint byte_off = 128 + grp * 12;
+        device uint8_t* dst = (device uint8_t*)(packed_shared + byte_off);
+        // Write as bytes to avoid alignment issues
+        for (uint b = 0; b < 4; b++) dst[b]     = uint8_t((plane0 >> (b*8)) & 0xFF);
+        for (uint b = 0; b < 4; b++) dst[4+b]   = uint8_t((plane1 >> (b*8)) & 0xFF);
+        for (uint b = 0; b < 4; b++) dst[8+b]   = uint8_t((plane2 >> (b*8)) & 0xFF);
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Write packed output
+    for (uint i = tid; i < 224; i += threads) {
+        packed_out[i] = packed_shared[i];
+    }
+}
+
+
+// ============================================================================
+// Kernel: KV cache dequantize (TurboQuant read path)
+// ============================================================================
+// Bulk-dequantizes the quantized KV cache into fp32 buffers for attention.
+// Each threadgroup handles one position's 512-dim vector.
+//
+// Dispatch: seq_len threadgroups, 256 threads each.
+
+kernel void kv_dequant(
+    device const uint8_t* packed_data  [[buffer(0)]],   // [max_seq * 224]
+    device const float*   scales       [[buffer(1)]],   // [max_seq]
+    device float*         out          [[buffer(2)]],   // [max_seq * kv_dim]
+    constant uint&        kv_dim       [[buffer(3)]],   // 512
+    constant uint&        seq_len      [[buffer(4)]],   // positions to dequant
+    uint tgid  [[threadgroup_position_in_grid]],        // position index
+    uint tid   [[thread_position_in_threadgroup]],
+    uint threads [[threads_per_threadgroup]]
+) {
+    if (tgid >= seq_len) return;
+
+    // Load packed data for this position
+    device const uint8_t* pos_data = packed_data + tgid * 224;
+    float sigma = scales[tgid];
+    device float* pos_out = out + tgid * kv_dim;
+
+    // Dequant into shared memory, then apply inverse Hadamard
+    threadgroup float shared[512];
+
+    // 4-bit section: 128 bytes -> 256 channels
+    for (uint byte_i = tid; byte_i < 128; byte_i += threads) {
+        uint8_t packed = pos_data[byte_i];
+        uint l0 = packed & 0xF;
+        uint l1 = (packed >> 4) & 0xF;
+        uint ch0 = byte_i * 2;
+        uint ch1 = byte_i * 2 + 1;
+        shared[ch0] = codebook_4bit[l0] * sigma;
+        shared[ch1] = codebook_4bit[l1] * sigma;
+    }
+
+    // 3-bit section: 96 bytes -> 256 channels (8 groups of 32 values)
+    for (uint grp = tid; grp < 8; grp += threads) {
+        uint byte_off = 128 + grp * 12;
+        // Read 3 uint32 bit-planes
+        uint32_t plane0 = 0, plane1 = 0, plane2 = 0;
+        for (uint b = 0; b < 4; b++) {
+            plane0 |= uint32_t(pos_data[byte_off + b])     << (b*8);
+            plane1 |= uint32_t(pos_data[byte_off + 4 + b]) << (b*8);
+            plane2 |= uint32_t(pos_data[byte_off + 8 + b]) << (b*8);
+        }
+
+        uint ch_base = 256 + grp * 32;
+        for (uint i = 0; i < 32; i++) {
+            uint val = ((plane0 >> i) & 1u) | (((plane1 >> i) & 1u) << 1) | (((plane2 >> i) & 1u) << 2);
+            shared[ch_base + i] = codebook_3bit[val] * sigma;
+        }
+    }
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Apply inverse Hadamard (self-inverse)
+    for (uint len = 1; len < kv_dim; len <<= 1) {
+        for (uint i = tid; i < kv_dim / 2; i += threads) {
+            uint block = i / len;
+            uint offset = i % len;
+            uint idx = block * 2 * len + offset;
+            float a = shared[idx];
+            float b = shared[idx + len];
+            shared[idx]       = a + b;
+            shared[idx + len] = a - b;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Normalize and write
+    float inv_sqrt = rsqrt(float(kv_dim));
+    for (uint i = tid; i < kv_dim; i += threads) {
+        pos_out[i] = shared[i] * inv_sqrt;
+    }
+}
