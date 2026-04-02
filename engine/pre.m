@@ -10,6 +10,7 @@
  */
 
 #import <Foundation/Foundation.h>
+#import <AppKit/AppKit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,7 +48,9 @@
 #define MAX_TOOL_LOOP_TURNS 25
 #define CHECKPOINTS_DIR ".pre/checkpoints"
 #define PROJECTS_DIR    ".pre/projects"
+#define CONNECTIONS_FILE ".pre/connections.json"
 #define MAX_CHANNELS    64
+#define MAX_CONNECTIONS 8
 
 // ANSI escape codes
 #define ANSI_RESET      "\033[0m"
@@ -172,12 +175,18 @@ static PermLevel tool_permission(const char *name) {
     if (strcmp(name, "file_write") == 0 || strcmp(name, "file_edit") == 0 ||
         strcmp(name, "clipboard_write") == 0 || strcmp(name, "web_fetch") == 0 ||
         strcmp(name, "notify") == 0 || strcmp(name, "memory_delete") == 0 ||
-        strcmp(name, "screenshot") == 0 || strcmp(name, "window_focus") == 0) return PERM_CONFIRM_ONCE;
+        strcmp(name, "screenshot") == 0 || strcmp(name, "window_focus") == 0 ||
+        strcmp(name, "web_search") == 0 || strcmp(name, "github") == 0 ||
+        strcmp(name, "wolfram") == 0 || strcmp(name, "gmail") == 0 ||
+        strcmp(name, "gdrive") == 0 || strcmp(name, "gdocs") == 0) return PERM_CONFIRM_ONCE;
     return PERM_CONFIRM_ALWAYS; // bash, process_kill, open_app (first time)
 }
 
 // Pending file attachment(s) — prepended to next message
 static char *g_pending_attach = NULL;
+
+// Pending image attachment — base64 PNG, sent as multimodal content
+static char *g_pending_image = NULL;
 
 // ============================================================================
 // Utilities
@@ -524,6 +533,368 @@ typedef struct {
 static MemoryEntry g_memories[MAX_MEMORIES];
 static int g_memory_count = 0;
 
+// ============================================================================
+// Connections — external service credentials
+// ============================================================================
+
+typedef struct {
+    char name[32];       // e.g. "brave_search", "github", "wolfram", "google"
+    char label[64];      // human-friendly label
+    char key[512];       // API key / token (simple auth)
+    int  active;         // 1 if configured
+    int  is_oauth;       // 1 if this uses OAuth2
+    char client_id[256];
+    char client_secret[128];
+    char access_token[2048];
+    char refresh_token[512];
+    long token_expiry;   // unix timestamp when access_token expires
+} Connection;
+
+static Connection g_connections[MAX_CONNECTIONS];
+static int g_connections_count = 0;
+static int g_connections_loaded = 0;
+
+static const char *connections_path(void) {
+    static char path[PATH_MAX];
+    const char *home = getenv("HOME") ?: "/tmp";
+    snprintf(path, sizeof(path), "%s/%s", home, CONNECTIONS_FILE);
+    return path;
+}
+
+// Find a JSON key in text, tolerating whitespace: matches "key" followed by optional spaces and ":"
+// Returns pointer to the "key" or NULL. Use for scanning pretty-printed API JSON.
+static const char *json_find_key(const char *json, const char *key) {
+    char needle[128];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = json;
+    while ((p = strstr(p, needle)) != NULL) {
+        const char *after = p + strlen(needle);
+        while (*after == ' ' || *after == '\t' || *after == '\n' || *after == '\r') after++;
+        if (*after == ':') return p;
+        p++;
+    }
+    return NULL;
+}
+
+// Simple JSON key extractor — finds "key": "value" (with optional whitespace) and copies value into dst
+static int json_extract_str(const char *json, const char *key, char *dst, size_t dsz) {
+    // Search for "key" then find the colon and opening quote, tolerating whitespace
+    char needle[128];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    const char *p = strstr(json, needle);
+    if (!p) return 0;
+    p += strlen(needle);
+    // Skip whitespace and colon
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p != ':') return 0;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    // Handle both string values ("...") and bare numbers
+    if (*p == '"') {
+        p++; // skip opening quote
+    } else {
+        // Bare value (number, bool) — read until comma/whitespace/}
+        size_t i = 0;
+        while (*p && *p != ',' && *p != '}' && *p != ' ' && *p != '\n' && i < dsz - 1)
+            dst[i++] = *p++;
+        dst[i] = 0;
+        return i > 0;
+    }
+    size_t i = 0;
+    while (*p && *p != '"' && i < dsz - 1) {
+        if (*p == '\\' && p[1]) { dst[i++] = p[1]; p += 2; }
+        else dst[i++] = *p++;
+    }
+    dst[i] = 0;
+    return 1;
+}
+
+static void load_connections(void) {
+    g_connections_count = 0;
+    g_connections_loaded = 1;
+
+    // Pre-populate known service slots
+    struct { const char *name; const char *label; int oauth; } services[] = {
+        {"brave_search", "Brave Search API", 0},
+        {"github",       "GitHub",           0},
+        {"google",       "Google (Gmail/Drive/Docs)", 1},
+        {"wolfram",      "Wolfram Alpha",    0},
+        {NULL, NULL, 0}
+    };
+    for (int i = 0; services[i].name; i++) {
+        strlcpy(g_connections[i].name, services[i].name, sizeof(g_connections[i].name));
+        strlcpy(g_connections[i].label, services[i].label, sizeof(g_connections[i].label));
+        g_connections[i].key[0] = 0;
+        g_connections[i].active = 0;
+        g_connections[i].is_oauth = services[i].oauth;
+        g_connections_count++;
+    }
+
+    FILE *f = fopen(connections_path(), "r");
+    if (!f) return;
+
+    char buf[8192];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+
+    // Parse each known service key from JSON
+    for (int i = 0; i < g_connections_count; i++) {
+        Connection *c = &g_connections[i];
+        if (c->is_oauth) {
+            // OAuth services store multiple fields
+            char field[64];
+            snprintf(field, sizeof(field), "%s_client_id", c->name);
+            json_extract_str(buf, field, c->client_id, sizeof(c->client_id));
+            snprintf(field, sizeof(field), "%s_client_secret", c->name);
+            json_extract_str(buf, field, c->client_secret, sizeof(c->client_secret));
+            snprintf(field, sizeof(field), "%s_access_token", c->name);
+            json_extract_str(buf, field, c->access_token, sizeof(c->access_token));
+            snprintf(field, sizeof(field), "%s_refresh_token", c->name);
+            json_extract_str(buf, field, c->refresh_token, sizeof(c->refresh_token));
+            snprintf(field, sizeof(field), "%s_token_expiry", c->name);
+            char expiry_s[32];
+            if (json_extract_str(buf, field, expiry_s, sizeof(expiry_s)))
+                c->token_expiry = atol(expiry_s);
+            if (c->refresh_token[0]) c->active = 1;
+        } else {
+            char key_field[64];
+            snprintf(key_field, sizeof(key_field), "%s_key", c->name);
+            if (json_extract_str(buf, key_field, c->key, sizeof(c->key))) {
+                if (c->key[0]) c->active = 1;
+            }
+        }
+    }
+}
+
+static void save_connections(void) {
+    FILE *f = fopen(connections_path(), "w");
+    if (!f) return;
+    chmod(connections_path(), 0600);
+
+    fprintf(f, "{\n");
+    int first = 1;
+    for (int i = 0; i < g_connections_count; i++) {
+        Connection *c = &g_connections[i];
+        if (!c->active) continue;
+        if (c->is_oauth) {
+            // Save OAuth fields
+            char *esc_cid = json_escape_alloc(c->client_id);
+            char *esc_cs  = json_escape_alloc(c->client_secret);
+            char *esc_at  = json_escape_alloc(c->access_token);
+            char *esc_rt  = json_escape_alloc(c->refresh_token);
+            if (!first) fprintf(f, ",\n");
+            fprintf(f, "  \"%s_client_id\": \"%s\",\n", c->name, esc_cid ?: "");
+            fprintf(f, "  \"%s_client_secret\": \"%s\",\n", c->name, esc_cs ?: "");
+            fprintf(f, "  \"%s_access_token\": \"%s\",\n", c->name, esc_at ?: "");
+            fprintf(f, "  \"%s_refresh_token\": \"%s\",\n", c->name, esc_rt ?: "");
+            fprintf(f, "  \"%s_token_expiry\": \"%ld\"", c->name, c->token_expiry);
+            free(esc_cid); free(esc_cs); free(esc_at); free(esc_rt);
+        } else {
+            if (!first) fprintf(f, ",\n");
+            char *escaped = json_escape_alloc(c->key);
+            fprintf(f, "  \"%s_key\": \"%s\"", c->name, escaped ?: "");
+            free(escaped);
+        }
+        first = 0;
+    }
+    fprintf(f, "\n}\n");
+    fclose(f);
+}
+
+static Connection *get_connection(const char *name) {
+    for (int i = 0; i < g_connections_count; i++) {
+        if (strcmp(g_connections[i].name, name) == 0) return &g_connections[i];
+    }
+    return NULL;
+}
+
+// ============================================================================
+// OAuth2 helpers
+// ============================================================================
+
+#define GOOGLE_AUTH_URL "https://accounts.google.com/o/oauth2/v2/auth"
+#define GOOGLE_TOKEN_URL "https://oauth2.googleapis.com/token"
+#define GOOGLE_SCOPES "https://www.googleapis.com/auth/gmail.modify" \
+    "%20https://www.googleapis.com/auth/gmail.compose" \
+    "%20https://www.googleapis.com/auth/gmail.send" \
+    "%20https://www.googleapis.com/auth/drive" \
+    "%20https://www.googleapis.com/auth/documents"
+
+// Tiny local HTTP server to catch OAuth callback — returns auth code
+static int oauth_listen_for_code(int port, char *code_out, size_t code_sz) {
+    int srv = socket(AF_INET, SOCK_STREAM, 0);
+    if (srv < 0) return 0;
+
+    int yes = 1;
+    setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) < 0) { close(srv); return 0; }
+    if (listen(srv, 1) < 0) { close(srv); return 0; }
+
+    // Set a 120-second timeout
+    struct timeval tv = { .tv_sec = 120 };
+    setsockopt(srv, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    int client = accept(srv, NULL, NULL);
+    close(srv);
+    if (client < 0) return 0;
+
+    char buf[4096];
+    ssize_t n = read(client, buf, sizeof(buf) - 1);
+    if (n <= 0) { close(client); return 0; }
+    buf[n] = 0;
+
+    // Extract code from "GET /?code=XXXX&..."
+    char *cp = strstr(buf, "code=");
+    if (cp) {
+        cp += 5;
+        size_t i = 0;
+        while (cp[i] && cp[i] != '&' && cp[i] != ' ' && cp[i] != '\r' && i < code_sz - 1) {
+            code_out[i] = cp[i];
+            i++;
+        }
+        code_out[i] = 0;
+    }
+
+    // Check for error
+    char *ep = strstr(buf, "error=");
+    int got_code = (code_out[0] != 0);
+
+    // Send a nice response page
+    const char *body = got_code
+        ? "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
+          "<h2 style='color:#22c55e'>&#10003; Connected to Google</h2>"
+          "<p>You can close this tab and return to PRE.</p></body></html>"
+        : "<html><body style='font-family:system-ui;text-align:center;padding:60px'>"
+          "<h2 style='color:#ef4444'>Authorization failed</h2>"
+          "<p>Please try again in PRE.</p></body></html>";
+
+    char resp[2048];
+    int rlen = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n%s", body);
+    write(client, resp, rlen);
+    close(client);
+
+    (void)ep;
+    return got_code;
+}
+
+// Exchange auth code for access + refresh tokens
+static int oauth_exchange_code(Connection *c, const char *code, int port) {
+    // Write POST body to temp file to avoid shell escaping issues with the code
+    char tmp[128];
+    snprintf(tmp, sizeof(tmp), "/tmp/pre_oauth_%d.txt", getpid());
+    FILE *tf = fopen(tmp, "w");
+    if (!tf) return 0;
+    fprintf(tf, "code=%s&client_id=%s&client_secret=%s&redirect_uri=http://127.0.0.1:%d&grant_type=authorization_code",
+            code, c->client_id, c->client_secret, port);
+    fclose(tf);
+
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST '%s' "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        "-d @%s 2>&1",
+        GOOGLE_TOKEN_URL, tmp);
+
+    FILE *p = popen(cmd, "r");
+    if (!p) { remove(tmp); return 0; }
+
+    char resp[8192];
+    int rlen = 0;
+    while (rlen < (int)sizeof(resp) - 1) {
+        int ch = fgetc(p);
+        if (ch == EOF) break;
+        resp[rlen++] = (char)ch;
+    }
+    resp[rlen] = 0;
+    pclose(p);
+    remove(tmp);
+
+    // Extract tokens from JSON response
+    char expires_s[32] = {0};
+    json_extract_str(resp, "access_token", c->access_token, sizeof(c->access_token));
+    json_extract_str(resp, "refresh_token", c->refresh_token, sizeof(c->refresh_token));
+    json_extract_str(resp, "expires_in", expires_s, sizeof(expires_s));
+
+    if (c->access_token[0] && c->refresh_token[0]) {
+        int expires_in = atoi(expires_s);
+        if (expires_in <= 0) expires_in = 3600;
+        c->token_expiry = (long)time(NULL) + expires_in;
+        c->active = 1;
+        return 1;
+    }
+
+    // Show error for debugging
+    char error[256] = {0}, error_desc[512] = {0};
+    json_extract_str(resp, "error", error, sizeof(error));
+    json_extract_str(resp, "error_description", error_desc, sizeof(error_desc));
+    if (error[0])
+        printf("\n" ANSI_RED "  Google error: %s — %s" ANSI_RESET "\n", error, error_desc);
+    else if (rlen > 0)
+        printf("\n" ANSI_RED "  Exchange response (%d bytes): %.500s" ANSI_RESET "\n", rlen, resp);
+    else
+        printf("\n" ANSI_RED "  Exchange got empty response (curl may have failed)" ANSI_RESET "\n");
+
+    return 0;
+}
+
+// Refresh an expired access token
+static int oauth_refresh_token(Connection *c) {
+    if (!c->refresh_token[0] || !c->client_id[0] || !c->client_secret[0]) return 0;
+
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST '%s' "
+        "-d 'refresh_token=%s' "
+        "-d 'client_id=%s' "
+        "-d 'client_secret=%s' "
+        "-d 'grant_type=refresh_token' 2>/dev/null",
+        GOOGLE_TOKEN_URL, c->refresh_token, c->client_id, c->client_secret);
+
+    FILE *p = popen(cmd, "r");
+    if (!p) return 0;
+
+    char resp[8192];
+    int rlen = 0;
+    while (rlen < (int)sizeof(resp) - 1) {
+        int ch = fgetc(p);
+        if (ch == EOF) break;
+        resp[rlen++] = (char)ch;
+    }
+    resp[rlen] = 0;
+    pclose(p);
+
+    char new_token[2048] = {0}, expires_s[32] = {0};
+    json_extract_str(resp, "access_token", new_token, sizeof(new_token));
+    json_extract_str(resp, "expires_in", expires_s, sizeof(expires_s));
+
+    if (new_token[0]) {
+        strlcpy(c->access_token, new_token, sizeof(c->access_token));
+        int expires_in = atoi(expires_s);
+        if (expires_in <= 0) expires_in = 3600;
+        c->token_expiry = (long)time(NULL) + expires_in;
+        save_connections();
+        return 1;
+    }
+    return 0;
+}
+
+// Ensure we have a valid access token, refreshing if needed
+static int oauth_ensure_token(Connection *c) {
+    if (!c->active || !c->refresh_token[0]) return 0;
+    // Refresh if expired or within 60 seconds of expiring
+    if (c->access_token[0] && c->token_expiry > (long)time(NULL) + 60) return 1;
+    printf(ANSI_DIM "  [refreshing Google token...]" ANSI_RESET "\n");
+    return oauth_refresh_token(c);
+}
+
 static void init_memory_dir(void) {
     char path[PATH_MAX];
     const char *home = getenv("HOME");
@@ -863,23 +1234,46 @@ static char *build_memory_context(void) {
 // Status info is now printed inline after each response.
 
 static void tui_banner(void) {
-    printf(ANSI_BOLD ANSI_CYAN
-           "╔══════════════════════════════════════════════════╗\n"
-           "║" ANSI_RESET ANSI_BOLD "  Personal Reasoning Engine (PRE)                "
-           ANSI_CYAN "║\n"
-           "║" ANSI_RESET "  " ANSI_DIM "%s" ANSI_RESET
-           "                   " ANSI_CYAN "║\n"
-           "╚══════════════════════════════════════════════════╝\n" ANSI_RESET,
-           MODEL_NAME);
-    printf("  Server:  " ANSI_GREEN "http://localhost:%d" ANSI_RESET "\n", g.port);
+    printf("\n");
+    // Banner box — 48 inner columns between ║ walls
+    printf(ANSI_BOLD ANSI_CYAN "  ╔════════════════════════════════════════════════╗\n" ANSI_RESET);
+    printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_BOLD "  P R E  —  Personal Reasoning Engine           " ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET);
+    printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_DIM "  %-46s" ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET, MODEL_NAME);
+    printf(ANSI_BOLD ANSI_CYAN "  ╚════════════════════════════════════════════════╝\n" ANSI_RESET);
+    printf("\n");
+
+    // Info block with dim labels
+    printf(ANSI_DIM "  server  " ANSI_RESET ANSI_GREEN "localhost:%d" ANSI_RESET, g.port);
+    printf(ANSI_DIM "   model  " ANSI_RESET "%s\n", g_model);
+
     if (g.project_name[0])
-        printf("  Project: " ANSI_BOLD "%s" ANSI_RESET "  " ANSI_DIM "%s" ANSI_RESET "\n",
-               g.project_name, g.project_root);
-    printf("  Channel: " ANSI_CYAN "#%s" ANSI_RESET "\n", g.channel[0] ? g.channel : "general");
-    printf("  CWD:     %s\n", g.cwd);
+        printf(ANSI_DIM "  project " ANSI_RESET ANSI_BOLD "%s" ANSI_RESET
+               ANSI_DIM "  (%s)" ANSI_RESET "\n", g.project_name, g.project_root);
+
+    printf(ANSI_DIM "  channel " ANSI_RESET ANSI_CYAN "#%s" ANSI_RESET, g.channel[0] ? g.channel : "general");
+    printf(ANSI_DIM "   cwd  " ANSI_RESET "%s\n", g.cwd);
+
     if (g_memory_count > 0)
-        printf("  Memory:  %d entries loaded\n", g_memory_count);
-    printf("  Type " ANSI_BOLD "/help" ANSI_RESET " for commands\n\n");
+        printf(ANSI_DIM "  memory  " ANSI_RESET "%d entries loaded\n", g_memory_count);
+
+    // Show active connections
+    if (!g_connections_loaded) load_connections();
+    int n_active = 0;
+    char svc_list[256] = "";
+    int svc_off = 0;
+    for (int i = 0; i < g_connections_count; i++) {
+        if (g_connections[i].active) {
+            if (n_active > 0) svc_off += snprintf(svc_list + svc_off, sizeof(svc_list) - svc_off, ", ");
+            svc_off += snprintf(svc_list + svc_off, sizeof(svc_list) - svc_off, "%s", g_connections[i].label);
+            n_active++;
+        }
+    }
+    if (n_active > 0)
+        printf(ANSI_DIM "  online  " ANSI_RESET ANSI_GREEN "%s" ANSI_RESET "\n", svc_list);
+    else
+        printf(ANSI_DIM "  online  " ANSI_RESET ANSI_DIM "none — /connections setup to add" ANSI_RESET "\n");
+
+    printf("\n" ANSI_DIM "  /help for commands  •  /help tips for best practices" ANSI_RESET "\n\n");
 }
 
 // ============================================================================
@@ -1280,6 +1674,21 @@ static char *build_context_preamble(void) {
         "Files:\n%s"
         "</context>\n\n", files_list);
 
+    // Current date/time so the model knows "today"
+    {
+        time_t now = time(NULL);
+        struct tm *tm = localtime(&now);
+        char datebuf[128];
+        const char *wday[] = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+        const char *mon[] = {"January","February","March","April","May","June",
+                             "July","August","September","October","November","December"};
+        snprintf(datebuf, sizeof(datebuf), "%s, %s %d, %d",
+                 wday[tm->tm_wday], mon[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
+        plen += snprintf(preamble + plen, cap - plen,
+            "Today is %s. Use this when interpreting relative dates like \"today\", \"yesterday\", \"this week\".\n\n",
+            datebuf);
+    }
+
     // Tool instructions
     plen += snprintf(preamble + plen, cap - plen,
         "You have tools to interact with the local system. To use a tool, output EXACTLY this format:\n\n"
@@ -1315,7 +1724,34 @@ static char *build_context_preamble(void) {
         "26. service_status - List or search launchd services. Args: service (optional)\n"
         "27. disk_usage - Disk/volume usage. Args: path (optional)\n"
         "28. hardware_info - Detailed hardware/thermal/battery info. No args.\n"
-        "29. applescript - Run AppleScript for deep macOS automation. Args: script\n"
+        "29. applescript - Run AppleScript for deep macOS automation. Args: script\n");
+
+    // Conditionally advertise connected services
+    if (!g_connections_loaded) load_connections();
+    Connection *brave = get_connection("brave_search");
+    Connection *gh = get_connection("github");
+    Connection *goog = get_connection("google");
+    Connection *wolf = get_connection("wolfram");
+    int ext_num = 30;
+    if (brave && brave->active)
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. web_search - Search the web via Brave Search. Args: query, count (optional, default 5)\n", ext_num++);
+    if (gh && gh->active)
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. github - GitHub API. Args: action (search_repos/list_issues/read_issue/list_prs/user), repo (owner/name), query, number, state\n", ext_num++);
+    if (goog && goog->active) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. gmail - Gmail API. Args: action (search/read/send/draft/trash/labels/profile), query (for search), id (for read/trash), to/subject/body (for send/draft), max_results (optional)\n", ext_num++);
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. gdrive - Google Drive. Args: action (list/search/download/upload/mkdir/share/delete), id, path, name, folder_id, query, email, role, count\n", ext_num++);
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. gdocs - Google Docs. Args: action (create/read/append), id (for read/append), title (for create), content\n", ext_num++);
+    }
+    if (wolf && wolf->active)
+        plen += snprintf(preamble + plen, cap - plen,
+            "%d. wolfram - Query Wolfram Alpha for computation, math, science, data. Args: query\n", ext_num++);
+
+    plen += snprintf(preamble + plen, cap - plen,
         "\n"
         "Example — edit a file:\n"
         "<tool_call>\n"
@@ -1333,8 +1769,32 @@ static char *build_context_preamble(void) {
         "- Paths are relative to working directory unless absolute.\n"
         "- Save memories proactively when you learn the user's preferences, project context, or workflow patterns.\n"
         "- Memory types: user (about the person), feedback (how to work), project (current work), reference (where info lives).\n"
-        "- Use scope 'project' for project-specific memories, 'global' for cross-project knowledge.\n"
-        "\n");
+        "- Use scope 'project' for project-specific memories, 'global' for cross-project knowledge.\n");
+
+    // Tell the model about connection-dependent tools (even if not active)
+    int has_any = (brave && brave->active) || (gh && gh->active) || (goog && goog->active) || (wolf && wolf->active);
+    if (!has_any) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "- Additional tools (gmail, gdrive, gdocs, web_search, github, wolfram) are available "
+            "but require the user to run /connections setup first. If the user asks about email, "
+            "web search, GitHub, Google Drive, or Wolfram queries, tell them to run /connections setup.\n");
+    } else {
+        // Note which are NOT connected
+        if (!brave || !brave->active)
+            plen += snprintf(preamble + plen, cap - plen,
+                "- web_search is available if the user runs /connections add brave_search.\n");
+        if (!gh || !gh->active)
+            plen += snprintf(preamble + plen, cap - plen,
+                "- github tool is available if the user runs /connections add github.\n");
+        if (!goog || !goog->active)
+            plen += snprintf(preamble + plen, cap - plen,
+                "- gmail, gdrive, gdocs tools are available if the user runs /connections add google.\n");
+        if (!wolf || !wolf->active)
+            plen += snprintf(preamble + plen, cap - plen,
+                "- wolfram tool is available if the user runs /connections add wolfram.\n");
+    }
+
+    plen += snprintf(preamble + plen, cap - plen, "\n");
 
     return preamble;
 }
@@ -1548,20 +2008,37 @@ static int send_request(const char *user_message, int max_tokens, const char *se
         fclose(sf);
     }
 
-    // Append the new user message
+    // Append the new user message (multimodal if image is pending)
     char *escaped = json_escape_alloc(user_message);
     if (!escaped) { free(body); close(sock); return -1; }
     size_t elen = strlen(escaped);
+    size_t img_len = g_pending_image ? strlen(g_pending_image) : 0;
 
-    // Ensure capacity for the new message
-    if ((int)(body_len + elen + 256) > (int)body_cap - 100) {
-        body_cap = body_len + elen + 4096;
+    // Ensure capacity for the new message (image b64 can be large)
+    size_t need = body_len + elen + img_len + 512;
+    if (need > body_cap) {
+        body_cap = need + 4096;
         body = realloc(body, body_cap);
     }
 
-    body_len += snprintf(body + body_len, body_cap - body_len,
-        "%s{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":%d,\"stream\":true}",
-        (body_len > 50 ? "," : ""), escaped, max_tokens);
+    const char *comma = (body_len > 50 ? "," : "");
+
+    if (g_pending_image) {
+        // Multimodal: content is an array with text + image_url
+        body_len += snprintf(body + body_len, body_cap - body_len,
+            "%s{\"role\":\"user\",\"content\":["
+            "{\"type\":\"text\",\"text\":\"%s\"},"
+            "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,%s\"}}"
+            "]}],\"max_tokens\":%d,\"stream\":true}",
+            comma, escaped, g_pending_image, max_tokens);
+        free(g_pending_image);
+        g_pending_image = NULL;
+    } else {
+        // Plain text message
+        body_len += snprintf(body + body_len, body_cap - body_len,
+            "%s{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":%d,\"stream\":true}",
+            comma, escaped, max_tokens);
+    }
     free(escaped);
 
     size_t req_cap = body_len + 256;
@@ -1802,6 +2279,7 @@ static char *stream_response(int sock) {
     if (!stream) { close(sock); return NULL; }
 
     int header_done = 0, in_think = 0, tokens = 0;
+    int had_thinking = 0;  // track if we showed any thinking output
     double t_start = now_ms(), t_first = 0;
     md_reset();
 
@@ -1888,7 +2366,25 @@ static char *stream_response(int sock) {
                 if (spinning) { printf("\r\033[K"); fflush(stdout); spinning = 0; }
                 tokens++;
                 if (!t_first) t_first = now_ms();
-                if (g.show_thinking) { printf(ANSI_DIM "%s" ANSI_RESET, rdecoded); fflush(stdout); }
+                if (g.show_thinking) {
+                    if (!had_thinking) {
+                        // Thinking header with blank line before
+                        printf("\n" ANSI_DIM "  ┌─ thinking ");
+                        for (int d = 0; d < 36; d++) printf("─");
+                        printf("\n  │ ");
+                    }
+                    // Print thinking text — keep DIM active, re-apply after each newline
+                    for (int ri = 0; ri < rdi; ri++) {
+                        if (rdecoded[ri] == '\n') {
+                            printf("\n  │ ");
+                        } else {
+                            putchar(rdecoded[ri]);
+                        }
+                    }
+                    fflush(stdout);
+                }
+                had_thinking = 1;
+                in_think = 1;
             }
         }
 
@@ -1900,6 +2396,9 @@ static char *stream_response(int sock) {
         char decoded[4096]; int di = DECODE_JSON_STR(ck, decoded, 4096);
         if (!di) continue;
 
+        // If we were in reasoning-field thinking, content means thinking is done
+        if (in_think && had_thinking) in_think = 0;
+
         // Clear spinner on first real token
         if (spinning) {
             printf("\r\033[K");
@@ -1908,20 +2407,39 @@ static char *stream_response(int sock) {
         }
 
         // Handle Qwen-style <think> tags in content (backwards compat)
-        if (strstr(decoded, "<think>")) in_think = 1;
+        if (strstr(decoded, "<think>")) { in_think = 1; had_thinking = 1; }
         if (strstr(decoded, "</think>")) { in_think = 0; tokens++; continue; }
         tokens++;
         if (!t_first) t_first = now_ms();
 
         if (!in_think && resp_len + di < MAX_RESPONSE - 1) {
+            // Transition from thinking to response
+            if (had_thinking && resp_len == 0 && g.show_thinking) {
+                printf("\n  └");
+                for (int d = 0; d < 48; d++) printf("─");
+                printf(ANSI_RESET "\n\n");
+                md_reset();
+            } else if (had_thinking && resp_len == 0 && !g.show_thinking) {
+                // Hidden thinking finished — just add a newline
+                printf("\n");
+            }
             memcpy(response + resp_len, decoded, di);
             resp_len += di;
             response[resp_len] = 0;
         }
 
         if (in_think && !g.show_thinking) continue;
-        if (in_think) printf(ANSI_DIM "%s" ANSI_RESET, decoded);
-        else md_print(decoded);
+        if (in_think) {
+            if (g.show_thinking) {
+                printf(ANSI_DIM);
+                for (int ci = 0; ci < di; ci++) {
+                    if (decoded[ci] == '\n') printf("\n  │ ");
+                    else putchar(decoded[ci]);
+                }
+            }
+        } else {
+            md_print(decoded);
+        }
         fflush(stdout);
     }
     fclose(stream);
@@ -1943,8 +2461,31 @@ static char *stream_response(int sock) {
 
     printf("\n\n");
     if (tokens > 0) {
-        printf(ANSI_DIM "  [%d tokens, %.1f tok/s, TTFT %.1fs]" ANSI_RESET "\n\n",
+        printf(ANSI_DIM "  ");
+        for (int d = 0; d < 50; d++) printf("·");
+        printf("\n  %d tokens  │  %.1f tok/s  │  TTFT %.1fs\n",
                tokens, tok_s, ttft / 1000.0);
+
+        // Context window usage bar
+        int used = g.total_tokens_in + g.total_tokens_out;
+        int pct = used * 100 / MAX_CONTEXT;
+        if (pct > 100) pct = 100;
+        int bar_width = 30;
+        int filled = pct * bar_width / 100;
+
+        printf("  context [");
+        for (int i = 0; i < bar_width; i++) {
+            if (i < filled) {
+                if (pct >= 90)       printf(ANSI_RESET ANSI_RED "█" ANSI_DIM);
+                else if (pct >= 75)  printf(ANSI_RESET ANSI_YELLOW "█" ANSI_DIM);
+                else                 printf("█");
+            } else {
+                printf("░");
+            }
+        }
+        printf("] %d%% of %dK", pct, MAX_CONTEXT / 1024);
+        if (pct >= 75) printf("  ⟳ auto-compact active");
+        printf(ANSI_RESET "\n\n");
     }
 
     return response;
@@ -2527,10 +3068,19 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
             return out_len;
         }
         printf(ANSI_DIM "  [fetching %s]" ANSI_RESET "\n", url);
-        char cmd[2048];
+        // Check if URL is GitHub and we have a token — add auth header
+        char auth_header[600] = "";
+        if (strstr(url, "github.com") || strstr(url, "api.github.com") || strstr(url, "raw.githubusercontent.com")) {
+            if (!g_connections_loaded) load_connections();
+            Connection *gh = get_connection("github");
+            if (gh && gh->active)
+                snprintf(auth_header, sizeof(auth_header),
+                    "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' ", gh->key);
+        }
+        char cmd[4096];
         snprintf(cmd, sizeof(cmd),
-            "curl -sL --max-time 15 '%s' | textutil -stdin -format html -convert txt -stdout 2>/dev/null || curl -sL --max-time 15 '%s'",
-            url, url);
+            "curl -sL --max-time 15 %s'%s' | textutil -stdin -format html -convert txt -stdout 2>/dev/null || curl -sL --max-time 15 %s'%s'",
+            auth_header, url, auth_header, url);
         FILE *proc = popen(cmd, "r");
         if (proc) {
             while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
@@ -2543,6 +3093,767 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
         }
         if (out_len == 0)
             out_len = snprintf(output, output_sz, "Error: no content fetched from %s", url);
+
+    } else if (strcmp(name, "web_search") == 0) {
+        const char *query = tool_call_get(tc, "query");
+        if (!query) { out_len = snprintf(output, output_sz, "Error: no query provided"); return out_len; }
+        Connection *c = get_connection("brave_search");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz,
+                "Error: Brave Search not configured. Run /connections add brave_search");
+            return out_len;
+        }
+        // URL-encode query (simple: spaces to +, escape dangerous chars)
+        char encoded[1024] = {0};
+        int ei = 0;
+        for (int qi = 0; query[qi] && ei < (int)sizeof(encoded) - 4; qi++) {
+            if (query[qi] == ' ') encoded[ei++] = '+';
+            else if (query[qi] == '\'' || query[qi] == '`' || query[qi] == '$' || query[qi] == ';')
+                continue; // skip injection chars
+            else if (query[qi] == '&') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '6'; }
+            else encoded[ei++] = query[qi];
+        }
+        encoded[ei] = 0;
+
+        printf(ANSI_DIM "  [searching: %s]" ANSI_RESET "\n", query);
+        char cmd[2048];
+        const char *count = tool_call_get(tc, "count");
+        int n = count ? atoi(count) : 5;
+        if (n < 1) n = 1; if (n > 20) n = 20;
+        snprintf(cmd, sizeof(cmd),
+            "curl -s --max-time 10 "
+            "-H 'Accept: application/json' "
+            "-H 'X-Subscription-Token: %s' "
+            "'https://api.search.brave.com/res/v1/web/search?q=%s&count=%d' 2>/dev/null",
+            c->key, encoded, n);
+
+        FILE *proc = popen(cmd, "r");
+        if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to execute search"); return out_len; }
+
+        // Read raw JSON response
+        char *raw = malloc(65536);
+        int raw_len = 0;
+        while (raw_len < 65535) {
+            int ch = fgetc(proc);
+            if (ch == EOF) break;
+            raw[raw_len++] = (char)ch;
+        }
+        raw[raw_len] = 0;
+        pclose(proc);
+
+        // Extract results into readable format
+        // Look for "title":"..." and "url":"..." and "description":"..." patterns
+        out_len = snprintf(output, output_sz, "Search results for: %s\n\n", query);
+        int result_num = 0;
+        char *scan = raw;
+        while ((scan = (char *)json_find_key(scan, "title")) != NULL && result_num < n) {
+            char title[256] = {0}, rurl[512] = {0}, desc[512] = {0};
+            json_extract_str(scan, "title", title, sizeof(title));
+            json_extract_str(scan, "url", rurl, sizeof(rurl));
+            json_extract_str(scan, "description", desc, sizeof(desc));
+            if (title[0] && rurl[0]) {
+                result_num++;
+                out_len += snprintf(output + out_len, output_sz - out_len,
+                    "%d. %s\n   %s\n   %s\n\n", result_num, title, rurl, desc);
+            }
+            scan++;
+        }
+        free(raw);
+
+        if (result_num == 0)
+            out_len = snprintf(output, output_sz, "No search results found for: %s", query);
+
+    } else if (strcmp(name, "github") == 0) {
+        const char *action = tool_call_get(tc, "action");
+        if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
+        Connection *c = get_connection("github");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz,
+                "Error: GitHub not configured. Run /connections add github");
+            return out_len;
+        }
+
+        char cmd[2048];
+        const char *repo = tool_call_get(tc, "repo");
+        const char *query = tool_call_get(tc, "query");
+
+        if (strcmp(action, "search_repos") == 0) {
+            if (!query) { out_len = snprintf(output, output_sz, "Error: query required for search_repos"); return out_len; }
+            printf(ANSI_DIM "  [github: searching repos for '%s']" ANSI_RESET "\n", query);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' "
+                "'https://api.github.com/search/repositories?q=%s&per_page=5' 2>/dev/null",
+                c->key, query);
+        } else if (strcmp(action, "list_issues") == 0) {
+            if (!repo) { out_len = snprintf(output, output_sz, "Error: repo required (owner/name)"); return out_len; }
+            printf(ANSI_DIM "  [github: listing issues for %s]" ANSI_RESET "\n", repo);
+            const char *state = tool_call_get(tc, "state");
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' "
+                "'https://api.github.com/repos/%s/issues?state=%s&per_page=10' 2>/dev/null",
+                c->key, repo, (state && state[0]) ? state : "open");
+        } else if (strcmp(action, "read_issue") == 0) {
+            if (!repo) { out_len = snprintf(output, output_sz, "Error: repo required (owner/name)"); return out_len; }
+            const char *number = tool_call_get(tc, "number");
+            if (!number) { out_len = snprintf(output, output_sz, "Error: issue number required"); return out_len; }
+            printf(ANSI_DIM "  [github: reading %s#%s]" ANSI_RESET "\n", repo, number);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' "
+                "'https://api.github.com/repos/%s/issues/%s' 2>/dev/null",
+                c->key, repo, number);
+        } else if (strcmp(action, "list_prs") == 0) {
+            if (!repo) { out_len = snprintf(output, output_sz, "Error: repo required (owner/name)"); return out_len; }
+            printf(ANSI_DIM "  [github: listing PRs for %s]" ANSI_RESET "\n", repo);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' "
+                "'https://api.github.com/repos/%s/pulls?per_page=10' 2>/dev/null",
+                c->key, repo);
+        } else if (strcmp(action, "user") == 0) {
+            printf(ANSI_DIM "  [github: fetching user profile]" ANSI_RESET "\n");
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: token %s' -H 'Accept: application/vnd.github+json' "
+                "'https://api.github.com/user' 2>/dev/null",
+                c->key);
+        } else {
+            out_len = snprintf(output, output_sz,
+                "Error: unknown action '%s'. Available: search_repos, list_issues, read_issue, list_prs, user",
+                action);
+            return out_len;
+        }
+
+        FILE *proc = popen(cmd, "r");
+        if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to execute github request"); return out_len; }
+        while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+            int ch = fgetc(proc);
+            if (ch == EOF) break;
+            output[out_len++] = (char)ch;
+        }
+        output[out_len] = 0;
+        pclose(proc);
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "Error: no response from GitHub API");
+
+    } else if (strcmp(name, "wolfram") == 0) {
+        const char *query = tool_call_get(tc, "query");
+        if (!query) { out_len = snprintf(output, output_sz, "Error: no query provided"); return out_len; }
+        Connection *c = get_connection("wolfram");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz,
+                "Error: Wolfram Alpha not configured. Run /connections add wolfram");
+            return out_len;
+        }
+
+        // URL-encode query
+        char encoded[1024] = {0};
+        int ei = 0;
+        for (int qi = 0; query[qi] && ei < (int)sizeof(encoded) - 4; qi++) {
+            if (query[qi] == ' ') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '0'; }
+            else if (query[qi] == '+') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = 'B'; }
+            else if (query[qi] == '\'' || query[qi] == '`' || query[qi] == '$' || query[qi] == ';')
+                continue;
+            else encoded[ei++] = query[qi];
+        }
+        encoded[ei] = 0;
+
+        printf(ANSI_DIM "  [wolfram: %s]" ANSI_RESET "\n", query);
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd),
+            "curl -s --max-time 15 "
+            "'https://api.wolframalpha.com/v1/result?appid=%s&i=%s' 2>/dev/null",
+            c->key, encoded);
+
+        FILE *proc = popen(cmd, "r");
+        if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to query Wolfram Alpha"); return out_len; }
+        while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+            int ch = fgetc(proc);
+            if (ch == EOF) break;
+            output[out_len++] = (char)ch;
+        }
+        output[out_len] = 0;
+        pclose(proc);
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "Error: no response from Wolfram Alpha");
+
+    } else if (strcmp(name, "gmail") == 0) {
+        const char *action = tool_call_get(tc, "action");
+        if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
+        Connection *c = get_connection("google");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz,
+                "Error: Google not configured. Run /connections add google");
+            return out_len;
+        }
+        if (!oauth_ensure_token(c)) {
+            out_len = snprintf(output, output_sz,
+                "Error: Google token expired and refresh failed. Run /connections add google");
+            return out_len;
+        }
+
+        char cmd[4096];
+        if (strcmp(action, "search") == 0) {
+            const char *query = tool_call_get(tc, "query");
+            if (!query) { out_len = snprintf(output, output_sz, "Error: query required for search"); return out_len; }
+            // URL-encode query
+            char encoded[512] = {0};
+            int ei = 0;
+            for (int qi = 0; query[qi] && ei < (int)sizeof(encoded) - 4; qi++) {
+                if (query[qi] == ' ') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '0'; }
+                else if (query[qi] == '\'') continue;
+                else encoded[ei++] = query[qi];
+            }
+            encoded[ei] = 0;
+
+            const char *max_results = tool_call_get(tc, "max_results");
+            int mr = max_results ? atoi(max_results) : 10;
+            if (mr < 1) mr = 1; if (mr > 50) mr = 50;
+
+            printf(ANSI_DIM "  [gmail: searching '%s']" ANSI_RESET "\n", query);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=%s&maxResults=%d' 2>/dev/null",
+                c->access_token, encoded, mr);
+
+            FILE *proc = popen(cmd, "r");
+            if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to search Gmail"); return out_len; }
+            char *raw = malloc(65536);
+            int raw_len = 0;
+            while (raw_len < 65535) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                raw[raw_len++] = (char)ch;
+            }
+            raw[raw_len] = 0;
+            pclose(proc);
+
+            // Extract message IDs and fetch snippets
+            out_len = snprintf(output, output_sz, "Gmail search: %s\n\n", query);
+            int msg_num = 0;
+            char *scan = raw;
+            while ((scan = (char *)json_find_key(scan, "id")) != NULL && msg_num < mr) {
+                char msg_id[64] = {0};
+                json_extract_str(scan, "id", msg_id, sizeof(msg_id));
+                if (!msg_id[0]) { scan++; continue; }
+
+                // Fetch message metadata
+                char fetch_cmd[2048];
+                snprintf(fetch_cmd, sizeof(fetch_cmd),
+                    "curl -s --max-time 5 "
+                    "-H 'Authorization: Bearer %s' "
+                    "'https://gmail.googleapis.com/gmail/v1/users/me/messages/%s?format=metadata"
+                    "&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date' 2>/dev/null",
+                    c->access_token, msg_id);
+
+                FILE *mp = popen(fetch_cmd, "r");
+                if (mp) {
+                    char meta[8192];
+                    int mlen = 0;
+                    while (mlen < (int)sizeof(meta) - 1) {
+                        int ch = fgetc(mp);
+                        if (ch == EOF) break;
+                        meta[mlen++] = (char)ch;
+                    }
+                    meta[mlen] = 0;
+                    pclose(mp);
+
+                    char snippet[512] = {0};
+                    json_extract_str(meta, "snippet", snippet, sizeof(snippet));
+
+                    // Extract headers (From, Subject, Date)
+                    char from[256] = "?", subject[256] = "(no subject)", date[64] = "";
+                    char *hp = meta;
+                    while ((hp = (char *)json_find_key(hp, "name")) != NULL) {
+                        char hname[32] = {0}, hval[256] = {0};
+                        json_extract_str(hp, "name", hname, sizeof(hname));
+                        json_extract_str(hp, "value", hval, sizeof(hval));
+                        if (strcasecmp(hname, "From") == 0) strlcpy(from, hval, sizeof(from));
+                        else if (strcasecmp(hname, "Subject") == 0) strlcpy(subject, hval, sizeof(subject));
+                        else if (strcasecmp(hname, "Date") == 0) strlcpy(date, hval, sizeof(date));
+                        hp++;
+                    }
+
+                    msg_num++;
+                    out_len += snprintf(output + out_len, output_sz - out_len,
+                        "%d. [%s] %s\n   From: %s\n   Date: %s\n   %s\n\n",
+                        msg_num, msg_id, subject, from, date, snippet);
+                }
+                scan++;
+            }
+            free(raw);
+            if (msg_num == 0)
+                out_len += snprintf(output + out_len, output_sz - out_len, "No messages found.");
+
+        } else if (strcmp(action, "read") == 0) {
+            const char *msg_id = tool_call_get(tc, "id");
+            if (!msg_id) { out_len = snprintf(output, output_sz, "Error: message id required"); return out_len; }
+            printf(ANSI_DIM "  [gmail: reading message %s]" ANSI_RESET "\n", msg_id);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://gmail.googleapis.com/gmail/v1/users/me/messages/%s?format=full' 2>/dev/null",
+                c->access_token, msg_id);
+
+            FILE *proc = popen(cmd, "r");
+            if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to read message"); return out_len; }
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+
+        } else if (strcmp(action, "labels") == 0) {
+            printf(ANSI_DIM "  [gmail: listing labels]" ANSI_RESET "\n");
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://gmail.googleapis.com/gmail/v1/users/me/labels' 2>/dev/null",
+                c->access_token);
+
+            FILE *proc = popen(cmd, "r");
+            if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to list labels"); return out_len; }
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+
+        } else if (strcmp(action, "profile") == 0) {
+            printf(ANSI_DIM "  [gmail: fetching profile]" ANSI_RESET "\n");
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://gmail.googleapis.com/gmail/v1/users/me/profile' 2>/dev/null",
+                c->access_token);
+
+            FILE *proc = popen(cmd, "r");
+            if (!proc) { out_len = snprintf(output, output_sz, "Error: failed to fetch profile"); return out_len; }
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+
+        } else if (strcmp(action, "send") == 0 || strcmp(action, "draft") == 0) {
+            const char *to = tool_call_get(tc, "to");
+            const char *subject = tool_call_get(tc, "subject");
+            const char *body = tool_call_get(tc, "body");
+            if (!to || !subject || !body) {
+                out_len = snprintf(output, output_sz, "Error: to, subject, and body required");
+                return out_len;
+            }
+            const char *cc = tool_call_get(tc, "cc");
+            const char *bcc = tool_call_get(tc, "bcc");
+
+            // Build RFC 2822 message
+            char *raw_msg = malloc(65536);
+            int rlen = 0;
+            rlen += snprintf(raw_msg + rlen, 65536 - rlen, "To: %s\r\n", to);
+            if (cc && cc[0]) rlen += snprintf(raw_msg + rlen, 65536 - rlen, "Cc: %s\r\n", cc);
+            if (bcc && bcc[0]) rlen += snprintf(raw_msg + rlen, 65536 - rlen, "Bcc: %s\r\n", bcc);
+            rlen += snprintf(raw_msg + rlen, 65536 - rlen,
+                "Subject: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s",
+                subject, body);
+
+            // Base64url encode (Gmail API requires URL-safe base64)
+            @autoreleasepool {
+                NSData *data = [NSData dataWithBytes:raw_msg length:rlen];
+                NSString *b64 = [data base64EncodedStringWithOptions:0];
+                // Convert to base64url: + → -, / → _, strip =
+                NSString *b64url = [[b64 stringByReplacingOccurrencesOfString:@"+" withString:@"-"]
+                                         stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+                b64url = [b64url stringByReplacingOccurrencesOfString:@"=" withString:@""];
+
+                int is_draft = (strcmp(action, "draft") == 0);
+                printf(ANSI_DIM "  [gmail: %s to %s]" ANSI_RESET "\n",
+                       is_draft ? "creating draft" : "sending", to);
+
+                // Write JSON body to temp file (too large for command line)
+                char tmp[128];
+                snprintf(tmp, sizeof(tmp), "/tmp/pre_gmail_%d.json", getpid());
+                FILE *tf = fopen(tmp, "w");
+                if (tf) {
+                    if (is_draft)
+                        fprintf(tf, "{\"message\":{\"raw\":\"%s\"}}", [b64url UTF8String]);
+                    else
+                        fprintf(tf, "{\"raw\":\"%s\"}", [b64url UTF8String]);
+                    fclose(tf);
+
+                    const char *endpoint = is_draft
+                        ? "https://gmail.googleapis.com/gmail/v1/users/me/drafts"
+                        : "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+
+                    snprintf(cmd, sizeof(cmd),
+                        "curl -s --max-time 15 -X POST "
+                        "-H 'Authorization: Bearer %s' "
+                        "-H 'Content-Type: application/json' "
+                        "-d @%s '%s' 2>/dev/null",
+                        c->access_token, tmp, endpoint);
+
+                    FILE *proc = popen(cmd, "r");
+                    if (proc) {
+                        while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                            int ch = fgetc(proc);
+                            if (ch == EOF) break;
+                            output[out_len++] = (char)ch;
+                        }
+                        output[out_len] = 0;
+                        pclose(proc);
+                    }
+                    remove(tmp);
+                }
+            }
+            free(raw_msg);
+            if (out_len == 0)
+                out_len = snprintf(output, output_sz, "Error: failed to %s message",
+                                   strcmp(action, "draft") == 0 ? "draft" : "send");
+
+        } else if (strcmp(action, "trash") == 0) {
+            const char *msg_id = tool_call_get(tc, "id");
+            if (!msg_id) { out_len = snprintf(output, output_sz, "Error: message id required"); return out_len; }
+            printf(ANSI_DIM "  [gmail: trashing message %s]" ANSI_RESET "\n", msg_id);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "'https://gmail.googleapis.com/gmail/v1/users/me/messages/%s/trash' 2>/dev/null",
+                c->access_token, msg_id);
+
+            FILE *proc = popen(cmd, "r");
+            if (proc) {
+                while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                    int ch = fgetc(proc);
+                    if (ch == EOF) break;
+                    output[out_len++] = (char)ch;
+                }
+                output[out_len] = 0;
+                pclose(proc);
+            }
+            if (out_len == 0)
+                out_len = snprintf(output, output_sz, "Error: failed to trash message");
+
+        } else {
+            out_len = snprintf(output, output_sz,
+                "Error: unknown action '%s'. Available: search, read, send, draft, trash, labels, profile", action);
+        }
+
+    } else if (strcmp(name, "gdrive") == 0) {
+        const char *action = tool_call_get(tc, "action");
+        if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
+        Connection *c = get_connection("google");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz, "Error: Google not configured. Run /connections add google");
+            return out_len;
+        }
+        if (!oauth_ensure_token(c)) {
+            out_len = snprintf(output, output_sz, "Error: Google token expired. Run /connections add google");
+            return out_len;
+        }
+
+        char cmd[4096];
+
+        if (strcmp(action, "list") == 0) {
+            const char *folder_id = tool_call_get(tc, "folder_id");
+            const char *count = tool_call_get(tc, "count");
+            int n = count ? atoi(count) : 20;
+            if (n < 1) n = 1; if (n > 100) n = 100;
+            printf(ANSI_DIM "  [gdrive: listing files]" ANSI_RESET "\n");
+            if (folder_id && folder_id[0]) {
+                snprintf(cmd, sizeof(cmd),
+                    "curl -s --max-time 10 "
+                    "-H 'Authorization: Bearer %s' "
+                    "'https://www.googleapis.com/drive/v3/files?q=%%27%s%%27+in+parents&pageSize=%d"
+                    "&fields=files(id,name,mimeType,size,modifiedTime,webViewLink)' 2>/dev/null",
+                    c->access_token, folder_id, n);
+            } else {
+                snprintf(cmd, sizeof(cmd),
+                    "curl -s --max-time 10 "
+                    "-H 'Authorization: Bearer %s' "
+                    "'https://www.googleapis.com/drive/v3/files?pageSize=%d"
+                    "&fields=files(id,name,mimeType,size,modifiedTime,webViewLink)"
+                    "&orderBy=modifiedTime+desc' 2>/dev/null",
+                    c->access_token, n);
+            }
+
+        } else if (strcmp(action, "search") == 0) {
+            const char *query = tool_call_get(tc, "query");
+            if (!query) { out_len = snprintf(output, output_sz, "Error: query required"); return out_len; }
+            char encoded[512] = {0};
+            int ei = 0;
+            for (int qi = 0; query[qi] && ei < (int)sizeof(encoded) - 4; qi++) {
+                if (query[qi] == ' ') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '0'; }
+                else if (query[qi] == '\'') { encoded[ei++] = '%'; encoded[ei++] = '2'; encoded[ei++] = '7'; }
+                else encoded[ei++] = query[qi];
+            }
+            encoded[ei] = 0;
+            printf(ANSI_DIM "  [gdrive: searching '%s']" ANSI_RESET "\n", query);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://www.googleapis.com/drive/v3/files?q=name+contains+%%27%s%%27"
+                "&pageSize=10&fields=files(id,name,mimeType,size,modifiedTime,webViewLink)' 2>/dev/null",
+                c->access_token, encoded);
+
+        } else if (strcmp(action, "download") == 0) {
+            const char *file_id = tool_call_get(tc, "id");
+            const char *dest = tool_call_get(tc, "path");
+            if (!file_id) { out_len = snprintf(output, output_sz, "Error: id required"); return out_len; }
+            if (!dest) { out_len = snprintf(output, output_sz, "Error: path required (local destination)"); return out_len; }
+            char resolved[PATH_MAX];
+            resolve_path(dest, resolved, sizeof(resolved));
+            printf(ANSI_DIM "  [gdrive: downloading %s → %s]" ANSI_RESET "\n", file_id, resolved);
+            snprintf(cmd, sizeof(cmd),
+                "curl -sL --max-time 30 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://www.googleapis.com/drive/v3/files/%s?alt=media' -o '%s' 2>/dev/null && echo 'Downloaded to %s'",
+                c->access_token, file_id, resolved, resolved);
+
+        } else if (strcmp(action, "upload") == 0) {
+            const char *src = tool_call_get(tc, "path");
+            const char *fname = tool_call_get(tc, "name");
+            const char *folder_id = tool_call_get(tc, "folder_id");
+            if (!src) { out_len = snprintf(output, output_sz, "Error: path required (local file)"); return out_len; }
+            char resolved[PATH_MAX];
+            resolve_path(src, resolved, sizeof(resolved));
+            if (!fname) fname = strrchr(resolved, '/') ? strrchr(resolved, '/') + 1 : resolved;
+
+            printf(ANSI_DIM "  [gdrive: uploading %s]" ANSI_RESET "\n", fname);
+
+            // Build metadata JSON
+            char meta_json[512];
+            if (folder_id && folder_id[0])
+                snprintf(meta_json, sizeof(meta_json),
+                    "{\"name\":\"%s\",\"parents\":[\"%s\"]}", fname, folder_id);
+            else
+                snprintf(meta_json, sizeof(meta_json), "{\"name\":\"%s\"}", fname);
+
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 30 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "-F 'metadata=%s;type=application/json' "
+                "-F 'file=@%s' "
+                "'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+                "&fields=id,name,webViewLink' 2>/dev/null",
+                c->access_token, meta_json, resolved);
+
+        } else if (strcmp(action, "mkdir") == 0) {
+            const char *fname = tool_call_get(tc, "name");
+            const char *parent = tool_call_get(tc, "folder_id");
+            if (!fname) { out_len = snprintf(output, output_sz, "Error: name required"); return out_len; }
+            printf(ANSI_DIM "  [gdrive: creating folder '%s']" ANSI_RESET "\n", fname);
+            char tmp[256];
+            snprintf(tmp, sizeof(tmp), "/tmp/pre_gdrive_%d.json", getpid());
+            FILE *tf = fopen(tmp, "w");
+            if (!tf) { out_len = snprintf(output, output_sz, "Error: temp file failed"); return out_len; }
+            if (parent && parent[0])
+                fprintf(tf, "{\"name\":\"%s\",\"mimeType\":\"application/vnd.google-apps.folder\",\"parents\":[\"%s\"]}", fname, parent);
+            else
+                fprintf(tf, "{\"name\":\"%s\",\"mimeType\":\"application/vnd.google-apps.folder\"}", fname);
+            fclose(tf);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "-H 'Content-Type: application/json' "
+                "-d @%s 'https://www.googleapis.com/drive/v3/files?fields=id,name,webViewLink' 2>/dev/null && rm -f %s",
+                c->access_token, tmp, tmp);
+
+        } else if (strcmp(action, "share") == 0) {
+            const char *file_id = tool_call_get(tc, "id");
+            const char *email = tool_call_get(tc, "email");
+            const char *role = tool_call_get(tc, "role");
+            if (!file_id || !email) { out_len = snprintf(output, output_sz, "Error: id and email required"); return out_len; }
+            if (!role) role = "reader";
+            printf(ANSI_DIM "  [gdrive: sharing %s with %s as %s]" ANSI_RESET "\n", file_id, email, role);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "-H 'Content-Type: application/json' "
+                "-d '{\"role\":\"%s\",\"type\":\"user\",\"emailAddress\":\"%s\"}' "
+                "'https://www.googleapis.com/drive/v3/files/%s/permissions' 2>/dev/null",
+                c->access_token, role, email, file_id);
+
+        } else if (strcmp(action, "delete") == 0) {
+            const char *file_id = tool_call_get(tc, "id");
+            if (!file_id) { out_len = snprintf(output, output_sz, "Error: id required"); return out_len; }
+            printf(ANSI_DIM "  [gdrive: deleting %s]" ANSI_RESET "\n", file_id);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X DELETE "
+                "-H 'Authorization: Bearer %s' "
+                "'https://www.googleapis.com/drive/v3/files/%s' -w '%%{http_code}' 2>/dev/null",
+                c->access_token, file_id);
+
+        } else {
+            out_len = snprintf(output, output_sz,
+                "Error: unknown action '%s'. Available: list, search, download, upload, mkdir, share, delete", action);
+            return out_len;
+        }
+
+        // Execute (for actions that didn't return early)
+        if (out_len == 0) {
+            FILE *proc = popen(cmd, "r");
+            if (proc) {
+                while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                    int ch = fgetc(proc);
+                    if (ch == EOF) break;
+                    output[out_len++] = (char)ch;
+                }
+                output[out_len] = 0;
+                pclose(proc);
+            }
+            if (out_len == 0)
+                out_len = snprintf(output, output_sz, "Error: no response from Google Drive API");
+        }
+
+    } else if (strcmp(name, "gdocs") == 0) {
+        const char *action = tool_call_get(tc, "action");
+        if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
+        Connection *c = get_connection("google");
+        if (!c || !c->active) {
+            out_len = snprintf(output, output_sz, "Error: Google not configured. Run /connections add google");
+            return out_len;
+        }
+        if (!oauth_ensure_token(c)) {
+            out_len = snprintf(output, output_sz, "Error: Google token expired. Run /connections add google");
+            return out_len;
+        }
+
+        char cmd[4096];
+
+        if (strcmp(action, "create") == 0) {
+            const char *title = tool_call_get(tc, "title");
+            const char *content = tool_call_get(tc, "content");
+            if (!title) { out_len = snprintf(output, output_sz, "Error: title required"); return out_len; }
+            printf(ANSI_DIM "  [gdocs: creating '%s']" ANSI_RESET "\n", title);
+
+            // Step 1: Create empty doc
+            char tmp[128];
+            snprintf(tmp, sizeof(tmp), "/tmp/pre_gdocs_%d.json", getpid());
+            FILE *tf = fopen(tmp, "w");
+            if (!tf) { out_len = snprintf(output, output_sz, "Error: temp file failed"); return out_len; }
+            fprintf(tf, "{\"title\":\"%s\"}", title);
+            fclose(tf);
+
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "-H 'Content-Type: application/json' "
+                "-d @%s 'https://docs.googleapis.com/v1/documents' 2>/dev/null",
+                c->access_token, tmp);
+
+            FILE *proc = popen(cmd, "r");
+            char create_resp[8192] = {0};
+            int cr_len = 0;
+            if (proc) {
+                while (cr_len < (int)sizeof(create_resp) - 1) {
+                    int ch = fgetc(proc);
+                    if (ch == EOF) break;
+                    create_resp[cr_len++] = (char)ch;
+                }
+                create_resp[cr_len] = 0;
+                pclose(proc);
+            }
+            remove(tmp);
+
+            char doc_id[128] = {0};
+            json_extract_str(create_resp, "documentId", doc_id, sizeof(doc_id));
+
+            // Step 2: Insert content if provided
+            if (content && content[0] && doc_id[0]) {
+                char *esc_content = json_escape_alloc(content);
+                if (esc_content) {
+                    tf = fopen(tmp, "w");
+                    if (tf) {
+                        fprintf(tf, "{\"requests\":[{\"insertText\":{\"location\":{\"index\":1},\"text\":\"%s\"}}]}", esc_content);
+                        fclose(tf);
+                        snprintf(cmd, sizeof(cmd),
+                            "curl -s --max-time 10 -X POST "
+                            "-H 'Authorization: Bearer %s' "
+                            "-H 'Content-Type: application/json' "
+                            "-d @%s 'https://docs.googleapis.com/v1/documents/%s:batchUpdate' 2>/dev/null",
+                            c->access_token, tmp, doc_id);
+                        system(cmd); // fire and forget, we already have the doc
+                        remove(tmp);
+                    }
+                    free(esc_content);
+                }
+            }
+
+            // Return creation result
+            out_len = snprintf(output, output_sz, "%s", create_resp);
+
+        } else if (strcmp(action, "read") == 0) {
+            const char *doc_id = tool_call_get(tc, "id");
+            if (!doc_id) { out_len = snprintf(output, output_sz, "Error: document id required"); return out_len; }
+            printf(ANSI_DIM "  [gdocs: reading %s]" ANSI_RESET "\n", doc_id);
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 "
+                "-H 'Authorization: Bearer %s' "
+                "'https://docs.googleapis.com/v1/documents/%s' 2>/dev/null",
+                c->access_token, doc_id);
+
+            FILE *proc = popen(cmd, "r");
+            if (proc) {
+                while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                    int ch = fgetc(proc);
+                    if (ch == EOF) break;
+                    output[out_len++] = (char)ch;
+                }
+                output[out_len] = 0;
+                pclose(proc);
+            }
+
+        } else if (strcmp(action, "append") == 0) {
+            const char *doc_id = tool_call_get(tc, "id");
+            const char *content = tool_call_get(tc, "content");
+            if (!doc_id || !content) {
+                out_len = snprintf(output, output_sz, "Error: id and content required");
+                return out_len;
+            }
+            printf(ANSI_DIM "  [gdocs: appending to %s]" ANSI_RESET "\n", doc_id);
+
+            char *esc_content = json_escape_alloc(content);
+            if (!esc_content) { out_len = snprintf(output, output_sz, "Error: encoding failed"); return out_len; }
+
+            char tmp[128];
+            snprintf(tmp, sizeof(tmp), "/tmp/pre_gdocs_%d.json", getpid());
+            FILE *tf = fopen(tmp, "w");
+            if (!tf) { free(esc_content); out_len = snprintf(output, output_sz, "Error: temp file failed"); return out_len; }
+            fprintf(tf, "{\"requests\":[{\"insertText\":{\"endOfSegmentLocation\":{\"segmentId\":\"\"},\"text\":\"%s\"}}]}", esc_content);
+            fclose(tf);
+            free(esc_content);
+
+            snprintf(cmd, sizeof(cmd),
+                "curl -s --max-time 10 -X POST "
+                "-H 'Authorization: Bearer %s' "
+                "-H 'Content-Type: application/json' "
+                "-d @%s 'https://docs.googleapis.com/v1/documents/%s:batchUpdate' 2>/dev/null",
+                c->access_token, tmp, doc_id);
+
+            FILE *proc = popen(cmd, "r");
+            if (proc) {
+                while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                    int ch = fgetc(proc);
+                    if (ch == EOF) break;
+                    output[out_len++] = (char)ch;
+                }
+                output[out_len] = 0;
+                pclose(proc);
+            }
+            remove(tmp);
+
+        } else {
+            out_len = snprintf(output, output_sz,
+                "Error: unknown action '%s'. Available: create, read, append", action);
+        }
 
     } else if (strcmp(name, "file_write") == 0) {
         const char *path_arg = tool_call_get(tc, "path");
@@ -3095,6 +4406,7 @@ static void cmd_memory(const char *args);
 static void cmd_forget(const char *args);
 static void cmd_channel(const char *args);
 static void cmd_project(const char *args);
+static void cmd_connections(const char *args);
 
 typedef struct {
     const char *name;
@@ -3131,6 +4443,7 @@ static SlashCommand commands[] = {
     {"/forget",   "<query>",  "Delete a memory matching query",    cmd_forget},
     {"/channel",  "[name]",   "Switch channel or list channels",   cmd_channel},
     {"/project",  NULL,       "Show detected project info",        cmd_project},
+    {"/connections", "[service]", "Manage API connections",        cmd_connections},
     {NULL, NULL, NULL, NULL}
 };
 
@@ -3151,7 +4464,19 @@ static void help_commands(void) {
 }
 
 static void help_tools(void) {
-    printf("\n" ANSI_BOLD "  Agent Tools (29)" ANSI_RESET "\n");
+    // Count active tools
+    int tool_count = 29;
+    if (!g_connections_loaded) load_connections();
+    Connection *brave = get_connection("brave_search");
+    Connection *gh = get_connection("github");
+    Connection *goog = get_connection("google");
+    Connection *wolf = get_connection("wolfram");
+    if (brave && brave->active) tool_count++;
+    if (gh && gh->active) tool_count++;
+    if (goog && goog->active) tool_count += 3; // gmail + gdrive + gdocs
+    if (wolf && wolf->active) tool_count++;
+
+    printf("\n" ANSI_BOLD "  Agent Tools (%d)" ANSI_RESET "\n", tool_count);
     printf("  ─────────────────────────────\n");
     printf("  The model can call these tools autonomously during conversations.\n");
     printf("  Permission levels control what runs automatically vs. needs approval.\n\n");
@@ -3164,10 +4489,33 @@ static void help_tools(void) {
 
     printf("  " ANSI_YELLOW "Confirm once" ANSI_RESET " (write ops — approve once or 'a' for session):\n");
     printf("    file_write, file_edit, clipboard_write, web_fetch, notify,\n");
-    printf("    memory_delete, screenshot, window_focus\n\n");
+    printf("    memory_delete, screenshot, window_focus");
+    if (brave && brave->active) printf(", web_search");
+    if (gh && gh->active) printf(", github");
+    if (goog && goog->active) printf(", gmail, gdrive, gdocs");
+    if (wolf && wolf->active) printf(", wolfram");
+    printf("\n\n");
 
     printf("  " ANSI_RED "Confirm always" ANSI_RESET " (potentially destructive):\n");
     printf("    bash, process_kill, open_app, applescript\n\n");
+
+    // Show connected services
+    int any = (brave && brave->active) || (gh && gh->active) || (goog && goog->active) || (wolf && wolf->active);
+    if (any) {
+        printf("  " ANSI_BOLD "Connected services:" ANSI_RESET "\n");
+        if (brave && brave->active) printf("    " ANSI_GREEN "●" ANSI_RESET " web_search  — Brave Search API\n");
+        if (gh && gh->active)       printf("    " ANSI_GREEN "●" ANSI_RESET " github      — GitHub API (repos, issues, PRs)\n");
+        if (goog && goog->active) {
+            printf("    " ANSI_GREEN "●" ANSI_RESET " gmail       — Gmail (search, read, send, draft, trash)\n");
+            printf("    " ANSI_GREEN "●" ANSI_RESET " gdrive      — Google Drive (list, search, upload, download, share)\n");
+            printf("    " ANSI_GREEN "●" ANSI_RESET " gdocs       — Google Docs (create, read, append)\n");
+        }
+        if (wolf && wolf->active)   printf("    " ANSI_GREEN "●" ANSI_RESET " wolfram     — Wolfram Alpha (math, science, data)\n");
+        printf("\n");
+    } else {
+        printf("  " ANSI_DIM "No external services connected." ANSI_RESET "\n");
+        printf("  " ANSI_DIM "Run /connections setup to enable web_search, github, google, wolfram." ANSI_RESET "\n\n");
+    }
 
     printf("  " ANSI_DIM "Tip: answer 'a' at a confirm prompt to auto-approve for the session." ANSI_RESET "\n\n");
 }
@@ -3295,6 +4643,9 @@ static void cmd_help(const char *args) {
     while (*args == ' ') args++;
 
     if (strcmp(args, "tools") == 0) { help_tools(); return; }
+    if (strcmp(args, "connections") == 0 || strcmp(args, "connect") == 0) {
+        cmd_connections(""); return;
+    }
     if (strcmp(args, "memory") == 0 || strcmp(args, "memories") == 0) { help_memory(); return; }
     if (strcmp(args, "channels") == 0 || strcmp(args, "channel") == 0) { help_channels(); return; }
     if (strcmp(args, "projects") == 0 || strcmp(args, "project") == 0) { help_projects(); return; }
@@ -3464,6 +4815,7 @@ static void cmd_new(const char *args __attribute__((unused))) {
     channel_init(g.channel[0] ? g.channel : "general");
     g.last_tok_s = 0;
     free(g_pending_attach); g_pending_attach = NULL;
+    free(g_pending_image); g_pending_image = NULL;
     printf(ANSI_GREEN "  [new session in #%s]" ANSI_RESET "\n\n", g.channel);
 }
 
@@ -4004,6 +5356,362 @@ static void cmd_project(const char *args __attribute__((unused))) {
 }
 
 // ============================================================================
+// Connections command and setup wizard
+// ============================================================================
+
+static void connections_show_status(void) {
+    printf("\n" ANSI_BOLD "  Connections" ANSI_RESET "\n");
+    printf("  ─────────────────────────────────────\n");
+    int any_active = 0;
+    for (int i = 0; i < g_connections_count; i++) {
+        Connection *c = &g_connections[i];
+        if (c->active) {
+            // Mask key: show first 4 and last 4 chars
+            char masked[32];
+            int klen = (int)strlen(c->key);
+            if (klen > 12) {
+                snprintf(masked, sizeof(masked), "%.4s····%.4s", c->key, c->key + klen - 4);
+            } else {
+                snprintf(masked, sizeof(masked), "****");
+            }
+            printf("  " ANSI_GREEN "●" ANSI_RESET " %-20s " ANSI_DIM "%s" ANSI_RESET "\n",
+                   c->label, masked);
+            any_active = 1;
+        } else {
+            printf("  " ANSI_DIM "○ %-20s not configured" ANSI_RESET "\n", c->label);
+        }
+    }
+    if (!any_active) {
+        printf("\n  " ANSI_DIM "No connections configured. Run " ANSI_RESET
+               "/connections setup" ANSI_DIM " to add them." ANSI_RESET "\n");
+    }
+    printf("\n");
+}
+
+// Test a connection by making a lightweight API call
+static int connection_test(Connection *c) {
+    char cmd[1024];
+    if (strcmp(c->name, "brave_search") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf -o /dev/null -w '%%{http_code}' "
+            "-H 'X-Subscription-Token: %s' "
+            "'https://api.search.brave.com/res/v1/web/search?q=test&count=1' 2>/dev/null",
+            c->key);
+    } else if (strcmp(c->name, "github") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf -o /dev/null -w '%%{http_code}' "
+            "-H 'Authorization: token %s' "
+            "'https://api.github.com/user' 2>/dev/null",
+            c->key);
+    } else if (strcmp(c->name, "wolfram") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf -o /dev/null -w '%%{http_code}' "
+            "'https://api.wolframalpha.com/v2/query?input=1%%2B1&appid=%s&output=json' 2>/dev/null",
+            c->key);
+    } else if (strcmp(c->name, "google") == 0) {
+        if (!oauth_ensure_token(c)) return 0;
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf -o /dev/null -w '%%{http_code}' "
+            "-H 'Authorization: Bearer %s' "
+            "'https://gmail.googleapis.com/gmail/v1/users/me/profile' 2>/dev/null",
+            c->access_token);
+    } else {
+        return -1;
+    }
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    char resp[16];
+    if (fgets(resp, sizeof(resp), p)) {
+        pclose(p);
+        return (resp[0] == '2') ? 1 : 0; // 2xx = success
+    }
+    pclose(p);
+    return -1;
+}
+
+// OAuth2 browser-based setup flow for Google
+static void connections_setup_google(Connection *c) {
+    printf("\n" ANSI_BOLD "  Setting up: %s" ANSI_RESET "\n", c->label);
+    printf(ANSI_DIM "  Full access: Gmail, Google Drive, Google Docs via OAuth2" ANSI_RESET "\n\n");
+
+    printf("  " ANSI_BOLD "Step 1:" ANSI_RESET " Create OAuth credentials:\n");
+    printf("  1. Go to " ANSI_CYAN "https://console.cloud.google.com/apis/credentials" ANSI_RESET "\n");
+    printf("  2. Create a project (or select existing)\n");
+    printf("  3. Enable " ANSI_BOLD "Gmail API" ANSI_RESET ", " ANSI_BOLD "Google Drive API" ANSI_RESET ", and " ANSI_BOLD "Google Docs API" ANSI_RESET " in Library\n");
+    printf("  4. Configure OAuth consent screen (External, add your email as test user)\n");
+    printf("  5. Create credentials → OAuth client ID → Desktop app\n");
+    printf("  6. Copy the Client ID and Client Secret below\n\n");
+
+    printf("  " ANSI_BOLD "Client ID" ANSI_RESET " (or 'skip' / 'remove'): ");
+    fflush(stdout);
+    char cid[256];
+    if (!fgets(cid, sizeof(cid), stdin)) return;
+    int len = (int)strlen(cid);
+    while (len > 0 && (cid[len-1] == '\n' || cid[len-1] == '\r')) cid[--len] = 0;
+
+    if (len == 0 || strcasecmp(cid, "skip") == 0) {
+        printf(ANSI_DIM "  Skipped." ANSI_RESET "\n");
+        return;
+    }
+    if (strcasecmp(cid, "remove") == 0) {
+        c->client_id[0] = c->client_secret[0] = c->access_token[0] = c->refresh_token[0] = 0;
+        c->active = 0; c->token_expiry = 0;
+        save_connections();
+        printf(ANSI_GREEN "  Removed." ANSI_RESET "\n");
+        return;
+    }
+
+    printf("  " ANSI_BOLD "Client Secret" ANSI_RESET ": ");
+    fflush(stdout);
+    char cs[128];
+    if (!fgets(cs, sizeof(cs), stdin)) return;
+    len = (int)strlen(cs);
+    while (len > 0 && (cs[len-1] == '\n' || cs[len-1] == '\r')) cs[--len] = 0;
+    if (len == 0) { printf(ANSI_DIM "  Skipped." ANSI_RESET "\n"); return; }
+
+    strlcpy(c->client_id, cid, sizeof(c->client_id));
+    strlcpy(c->client_secret, cs, sizeof(c->client_secret));
+
+    // Step 2: OAuth authorization via browser
+    int port = 18492; // fixed port for redirect URI
+    printf("\n  " ANSI_BOLD "Step 2:" ANSI_RESET " Authorizing in your browser...\n");
+
+    char auth_url[2048];
+    snprintf(auth_url, sizeof(auth_url),
+        "%s?client_id=%s"
+        "&redirect_uri=http://127.0.0.1:%d"
+        "&response_type=code"
+        "&scope=%s"
+        "&access_type=offline"
+        "&prompt=consent",
+        GOOGLE_AUTH_URL, c->client_id, port, GOOGLE_SCOPES);
+
+    // Open browser
+    char open_cmd[2200];
+    snprintf(open_cmd, sizeof(open_cmd), "open '%s'", auth_url);
+    system(open_cmd);
+
+    printf(ANSI_DIM "  Waiting for authorization (browser should open)..." ANSI_RESET "\n");
+    printf(ANSI_DIM "  If it didn't open, visit:" ANSI_RESET "\n");
+    printf(ANSI_CYAN "  %s" ANSI_RESET "\n\n", auth_url);
+
+    char code[512] = {0};
+    if (!oauth_listen_for_code(port, code, sizeof(code)) || !code[0]) {
+        printf(ANSI_RED "  ✗ Authorization failed or timed out." ANSI_RESET "\n");
+        c->client_id[0] = c->client_secret[0] = 0;
+        return;
+    }
+
+    // Step 3: Exchange code for tokens
+    int codelen = (int)strlen(code);
+    printf(ANSI_DIM "  Code received (%d chars): %.8s...%s" ANSI_RESET "\n",
+           codelen, code, codelen > 12 ? code + codelen - 4 : "");
+    printf(ANSI_DIM "  Exchanging authorization code..." ANSI_RESET);
+    fflush(stdout);
+
+    if (oauth_exchange_code(c, code, port)) {
+        save_connections();
+        printf("\r" ANSI_GREEN "  ● Google connected! Gmail, Drive, Docs ready. " ANSI_RESET "\n");
+    } else {
+        printf("\r" ANSI_RED "  ✗ Token exchange failed.                     " ANSI_RESET "\n");
+        c->client_id[0] = c->client_secret[0] = 0;
+        c->active = 0;
+    }
+}
+
+static void connections_setup_service(Connection *c) {
+    // Delegate to OAuth flow for Google
+    if (c->is_oauth && strcmp(c->name, "google") == 0) {
+        connections_setup_google(c);
+        return;
+    }
+
+    printf("\n" ANSI_BOLD "  Setting up: %s" ANSI_RESET "\n", c->label);
+
+    // Show instructions per service
+    if (strcmp(c->name, "brave_search") == 0) {
+        printf(ANSI_DIM "  Free tier: 2,000 queries/month" ANSI_RESET "\n");
+        printf("  1. Go to " ANSI_CYAN "https://brave.com/search/api/" ANSI_RESET "\n");
+        printf("  2. Sign up and get your API key\n");
+        printf("  3. Paste it below\n\n");
+    } else if (strcmp(c->name, "github") == 0) {
+        printf(ANSI_DIM "  Personal Access Token for repo/issue/PR access" ANSI_RESET "\n");
+        printf("  1. Go to " ANSI_CYAN "https://github.com/settings/tokens" ANSI_RESET "\n");
+        printf("  2. Generate a new token (classic) with repo scope\n");
+        printf("  3. Paste it below\n\n");
+    } else if (strcmp(c->name, "wolfram") == 0) {
+        printf(ANSI_DIM "  Computational knowledge engine — math, science, data" ANSI_RESET "\n");
+        printf("  1. Go to " ANSI_CYAN "https://developer.wolframalpha.com/access" ANSI_RESET "\n");
+        printf("  2. Create an app and get your AppID\n");
+        printf("  3. Paste it below\n\n");
+    }
+
+    printf("  " ANSI_BOLD "API key" ANSI_RESET " (or 'skip' / 'remove'): ");
+    fflush(stdout);
+
+    char input[512];
+    if (!fgets(input, sizeof(input), stdin)) return;
+    // Strip newline
+    int len = (int)strlen(input);
+    while (len > 0 && (input[len-1] == '\n' || input[len-1] == '\r')) input[--len] = 0;
+
+    if (len == 0 || strcasecmp(input, "skip") == 0) {
+        printf(ANSI_DIM "  Skipped." ANSI_RESET "\n");
+        return;
+    }
+    if (strcasecmp(input, "remove") == 0) {
+        c->key[0] = 0;
+        c->active = 0;
+        save_connections();
+        printf(ANSI_GREEN "  Removed." ANSI_RESET "\n");
+        return;
+    }
+
+    // Store and test
+    strlcpy(c->key, input, sizeof(c->key));
+    printf(ANSI_DIM "  Testing connection..." ANSI_RESET);
+    fflush(stdout);
+
+    int result = connection_test(c);
+    if (result == 1) {
+        c->active = 1;
+        save_connections();
+        printf("\r" ANSI_GREEN "  ● Connected!              " ANSI_RESET "\n");
+    } else if (result == 0) {
+        printf("\r" ANSI_RED "  ✗ Authentication failed — key not saved." ANSI_RESET "\n");
+        c->key[0] = 0;
+        c->active = 0;
+    } else {
+        // Can't reach API — save anyway, might be network issue
+        c->active = 1;
+        save_connections();
+        printf("\r" ANSI_YELLOW "  ? Could not verify (network issue?) — key saved." ANSI_RESET "\n");
+    }
+}
+
+static void connections_setup_wizard(void) {
+    printf("\n" ANSI_BOLD ANSI_CYAN "  ┌─ Connection Setup ──────────────────────┐" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  │" ANSI_RESET "  Connect external services to unlock      " ANSI_BOLD ANSI_CYAN "│" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  │" ANSI_RESET "  web search, GitHub, and more.             " ANSI_BOLD ANSI_CYAN "│" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  │" ANSI_RESET ANSI_DIM "  All keys stored locally in ~/.pre/        " ANSI_RESET ANSI_BOLD ANSI_CYAN "│" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  │" ANSI_RESET ANSI_DIM "  Skip any you don't need — add later with  " ANSI_RESET ANSI_BOLD ANSI_CYAN "│" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  │" ANSI_RESET ANSI_DIM "  /connections setup                        " ANSI_RESET ANSI_BOLD ANSI_CYAN "│" ANSI_RESET "\n");
+    printf(ANSI_BOLD ANSI_CYAN "  └─────────────────────────────────────────┘" ANSI_RESET "\n");
+
+    for (int i = 0; i < g_connections_count; i++) {
+        connections_setup_service(&g_connections[i]);
+    }
+
+    printf("\n");
+    connections_show_status();
+}
+
+static void cmd_connections(const char *args) {
+    if (!g_connections_loaded) load_connections();
+
+    if (!args || !args[0]) {
+        connections_show_status();
+        printf(ANSI_DIM "  Usage:" ANSI_RESET "\n");
+        printf("    /connections setup              Run full setup wizard\n");
+        printf("    /connections add <service>      Configure one service\n");
+        printf("    /connections remove <service>   Remove a service key\n");
+        printf("    /connections test               Test all connections\n\n");
+        printf(ANSI_DIM "  Services: brave_search, github, google, wolfram" ANSI_RESET "\n\n");
+        return;
+    }
+
+    // Skip leading whitespace
+    while (*args == ' ') args++;
+
+    if (strcasecmp(args, "setup") == 0) {
+        connections_setup_wizard();
+        return;
+    }
+
+    if (strcasecmp(args, "test") == 0) {
+        printf("\n" ANSI_BOLD "  Testing connections..." ANSI_RESET "\n\n");
+        for (int i = 0; i < g_connections_count; i++) {
+            Connection *c = &g_connections[i];
+            if (!c->active) {
+                printf("  " ANSI_DIM "○ %-20s skipped (not configured)" ANSI_RESET "\n", c->label);
+                continue;
+            }
+            printf("  " ANSI_DIM "  %-20s testing..." ANSI_RESET, c->label);
+            fflush(stdout);
+            int r = connection_test(c);
+            if (r == 1)
+                printf("\r  " ANSI_GREEN "● %-20s ok" ANSI_RESET "                \n", c->label);
+            else if (r == 0)
+                printf("\r  " ANSI_RED "✗ %-20s auth failed" ANSI_RESET "         \n", c->label);
+            else
+                printf("\r  " ANSI_YELLOW "? %-20s unreachable" ANSI_RESET "        \n", c->label);
+        }
+        printf("\n");
+        return;
+    }
+
+    // /connections add <service>
+    if (strncasecmp(args, "add ", 4) == 0) {
+        const char *svc = args + 4;
+        while (*svc == ' ') svc++;
+        Connection *c = get_connection(svc);
+        if (!c) {
+            printf(ANSI_RED "  Unknown service: %s" ANSI_RESET "\n", svc);
+            printf(ANSI_DIM "  Available: brave_search, github, google, wolfram" ANSI_RESET "\n\n");
+            return;
+        }
+        connections_setup_service(c);
+        printf("\n");
+        return;
+    }
+
+    // /connections remove <service>
+    if (strncasecmp(args, "remove ", 7) == 0) {
+        const char *svc = args + 7;
+        while (*svc == ' ') svc++;
+        Connection *c = get_connection(svc);
+        if (!c) {
+            printf(ANSI_RED "  Unknown service: %s" ANSI_RESET "\n\n", svc);
+            return;
+        }
+        c->key[0] = 0;
+        c->active = 0;
+        save_connections();
+        printf(ANSI_GREEN "  Removed %s connection." ANSI_RESET "\n\n", c->label);
+        return;
+    }
+
+    printf(ANSI_YELLOW "  Unknown subcommand: %s" ANSI_RESET "\n", args);
+    printf(ANSI_DIM "  Try: /connections setup, test, add <service>, remove <service>" ANSI_RESET "\n\n");
+}
+
+// First-run check — offer setup if no connections.json exists
+static void first_run_check(void) {
+    if (!g_connections_loaded) load_connections();
+
+    struct stat st;
+    if (stat(connections_path(), &st) == 0) return; // Already exists
+
+    printf(ANSI_DIM "  ─────────────────────────────────────────" ANSI_RESET "\n");
+    printf("  " ANSI_BOLD "First run detected." ANSI_RESET
+           " Would you like to set up external\n"
+           "  connections (web search, GitHub, etc.)?\n\n");
+    printf("  " ANSI_BOLD "[y]" ANSI_RESET " Run setup    "
+           ANSI_BOLD "[n]" ANSI_RESET " Skip (run /connections later)\n\n  > ");
+    fflush(stdout);
+
+    char ch[16];
+    if (fgets(ch, sizeof(ch), stdin) && (ch[0] == 'y' || ch[0] == 'Y')) {
+        connections_setup_wizard();
+    } else {
+        // Create empty file so we don't prompt again
+        FILE *f = fopen(connections_path(), "w");
+        if (f) { fprintf(f, "{}\n"); fclose(f); chmod(connections_path(), 0600); }
+        printf(ANSI_DIM "  Skipped. Run /connections setup anytime." ANSI_RESET "\n\n");
+    }
+}
+
+// ============================================================================
 // Command dispatch
 // ============================================================================
 
@@ -4025,6 +5733,63 @@ static int dispatch_command(const char *input) {
     printf(ANSI_YELLOW "  Unknown command: %.*s" ANSI_RESET "\n", cmd_len, input);
     printf("  Type /help for available commands.\n\n");
     return 1;
+}
+
+// ============================================================================
+// Clipboard image paste (Ctrl+V)
+// ============================================================================
+
+static const char *ctrlv_paste_cb(void) {
+    @autoreleasepool {
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+
+        // Check for image data on clipboard
+        NSData *pngData = [pb dataForType:NSPasteboardTypePNG];
+        if (!pngData) {
+            // Try TIFF (screenshots, Preview copies) and convert to PNG
+            NSData *tiffData = [pb dataForType:NSPasteboardTypeTIFF];
+            if (tiffData) {
+                NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:tiffData];
+                if (rep) {
+                    pngData = [rep representationUsingType:NSBitmapImageFileTypePNG
+                                               properties:@{}];
+                }
+            }
+        }
+
+        if (pngData && pngData.length > 0) {
+            // Base64-encode the PNG data
+            NSString *b64 = [pngData base64EncodedStringWithOptions:0];
+            const char *b64c = [b64 UTF8String];
+
+            // Store as pending image
+            free(g_pending_image);
+            g_pending_image = strdup(b64c);
+
+            // Return placeholder text to insert into the input line
+            static char label[64];
+            double kb = pngData.length / 1024.0;
+            if (kb >= 1024.0)
+                snprintf(label, sizeof(label), "[image: %.1fMB]", kb / 1024.0);
+            else
+                snprintf(label, sizeof(label), "[image: %.0fKB]", kb);
+            return label;
+        }
+
+        // No image — check for plain text and paste that instead
+        NSString *text = [pb stringForType:NSPasteboardTypeString];
+        if (text && text.length > 0) {
+            static char textbuf[4096];
+            const char *utf8 = [text UTF8String];
+            size_t len = strlen(utf8);
+            if (len >= sizeof(textbuf)) len = sizeof(textbuf) - 1;
+            memcpy(textbuf, utf8, len);
+            textbuf[len] = 0;
+            return textbuf;
+        }
+
+        return NULL;
+    }
 }
 
 // ============================================================================
@@ -4165,6 +5930,9 @@ int main(int argc, char **argv) {
         }
         printf(ANSI_GREEN "  Server connected." ANSI_RESET "\n\n");
 
+        // First-run: offer connection setup
+        first_run_check();
+
         g.session_start_ms = now_ms();
 
         // Resume session
@@ -4179,6 +5947,7 @@ int main(int argc, char **argv) {
         linenoiseSetMultiLine(1);
         linenoiseSetCompletionCallback(completion_cb);
         linenoiseSetHintsCallback(hints_cb);
+        linenoiseSetCtrlVCallback(ctrlv_paste_cb);
         linenoiseHistoryLoad(g.history_path);
         linenoiseHistorySetMaxLen(500);
 
@@ -4257,23 +6026,14 @@ int main(int argc, char **argv) {
             free(response);
             g.turn_count++;
 
-            // Show brief status after response
-            {
-                double elapsed = g.session_start_ms > 0 ? now_ms() - g.session_start_ms : 0;
-                printf(ANSI_DIM);
-                if (g.total_tokens_out > 0)
-                    printf("  %d tok", g.total_tokens_out);
-                if (g.last_tok_s > 0)
-                    printf(" | %.1f t/s", g.last_tok_s);
-                if (elapsed > 0)
-                    printf(" | %s", fmt_elapsed(elapsed));
-                printf(ANSI_RESET "\n");
-            }
+            // Stats are shown inline by stream_response()
         }
 
         // Cleanup
         free(g.last_response);
         free(g_pending_attach);
+        free(g_pending_image);
+        g_pending_image = NULL;
 
         printf(ANSI_DIM "Goodbye." ANSI_RESET "\n");
         return 0;

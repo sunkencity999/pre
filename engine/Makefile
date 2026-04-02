@@ -37,7 +37,7 @@ $(INFER_TARGET): $(INFER_SRC) $(SHADER_SRC)
 	$(CC) $(CFLAGS) $(FRAMEWORKS) $(LDFLAGS) $(INFER_SRC) -o $(INFER_TARGET)
 
 $(PRE_TARGET): $(PRE_SRC) linenoise.c linenoise.h
-	$(CC) $(CFLAGS) -framework Foundation $(PRE_SRC) linenoise.c -o $(PRE_TARGET)
+	$(CC) $(CFLAGS) -framework Foundation -framework AppKit $(PRE_SRC) linenoise.c -o $(PRE_TARGET)
 
 $(CHAT_TARGET): $(CHAT_SRC) linenoise.c linenoise.h
 	$(CC) $(CFLAGS) -framework Foundation $(CHAT_SRC) linenoise.c -o $(CHAT_TARGET)

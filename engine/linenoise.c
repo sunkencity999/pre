@@ -124,6 +124,7 @@ static char *unsupported_term[] = {"dumb","cons25","emacs",NULL};
 static linenoiseCompletionCallback *completionCallback = NULL;
 static linenoiseHintsCallback *hintsCallback = NULL;
 static linenoiseFreeHintsCallback *freeHintsCallback = NULL;
+static linenoiseCtrlVCallback ctrlvCallback = NULL;
 static char *linenoiseNoTTY(void);
 static void refreshLineWithCompletion(struct linenoiseState *ls, linenoiseCompletions *lc, int flags);
 static void refreshLineWithFlags(struct linenoiseState *l, int flags);
@@ -417,6 +418,14 @@ static size_t utf8StrWidth(const char *s, size_t len) {
     int after_zwj = 0;  /* Track if previous char was ZWJ */
 
     while (i < len) {
+        /* Skip ANSI escape sequences (ESC [ ... m) — they have zero width */
+        if (s[i] == '\033' && i + 1 < len && s[i+1] == '[') {
+            i += 2;
+            while (i < len && s[i] != 'm') i++;
+            if (i < len) i++; /* skip the 'm' */
+            continue;
+        }
+
         size_t clen;
         uint32_t cp = utf8DecodeChar(s + i, &clen);
 
@@ -463,6 +472,7 @@ enum KEY_ACTION{
 	CTRL_P = 16,        /* Ctrl-p */
 	CTRL_T = 20,        /* Ctrl-t */
 	CTRL_U = 21,        /* Ctrl+u */
+	CTRL_V = 22,        /* Ctrl+v */
 	CTRL_W = 23,        /* Ctrl+w */
 	ESC = 27,           /* Escape */
 	BACKSPACE =  127    /* Backspace */
@@ -780,6 +790,10 @@ void linenoiseSetHintsCallback(linenoiseHintsCallback *fn) {
  * registered with linenoiseSetHintsCallback(). */
 void linenoiseSetFreeHintsCallback(linenoiseFreeHintsCallback *fn) {
     freeHintsCallback = fn;
+}
+
+void linenoiseSetCtrlVCallback(linenoiseCtrlVCallback fn) {
+    ctrlvCallback = fn;
 }
 
 /* This function is used by the callback function registered by the user
@@ -1494,6 +1508,18 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
         break;
     case CTRL_W: /* ctrl+w, delete previous word */
         linenoiseEditDeletePrevWord(l);
+        break;
+    case CTRL_V: /* ctrl+v, paste — delegate to callback if set */
+        if (ctrlvCallback) {
+            const char *text = ctrlvCallback();
+            if (text && text[0]) {
+                int tlen = (int)strlen(text);
+                for (int ti = 0; ti < tlen; ti++) {
+                    char ch[1] = { text[ti] };
+                    linenoiseEditInsert(l, ch, 1);
+                }
+            }
+        }
         break;
     }
     return linenoiseEditMore;
