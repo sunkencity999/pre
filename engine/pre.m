@@ -1,12 +1,12 @@
 /*
  * pre.m — Personal Reasoning Engine (PRE)
  *
- * Rich CLI for chatting with the local Qwen3.5-397B-A17B model.
- * Directory-aware, file-attachable, tool-calling reasoning interface.
+ * Fully local agentic assistant powered by Gemma 4 via Ollama.
+ * Tool-calling, persistent memory, file-aware reasoning interface.
  *
  * Build:  make pre
- * Run:    ./infer --serve 8000  (in another terminal)
- *         ./pre [--port 8000] [--dir /path]
+ * Run:    ./pre-launch          (manages Ollama + PRE)
+ *         ./pre [--port 11434] [--dir /path]
  */
 
 #import <Foundation/Foundation.h>
@@ -24,6 +24,8 @@
 #include <dirent.h>
 #include <limits.h>
 #include <errno.h>
+#include <glob.h>
+#include <signal.h>
 #include "linenoise.h"
 
 // ============================================================================
@@ -33,9 +35,19 @@
 #define MAX_RESPONSE    (1024 * 1024)   // 1MB response buffer
 #define MAX_ATTACH      (128 * 1024)    // 128KB max file attachment
 #define MAX_BODY        (256 * 1024)    // 256KB max HTTP body
-#define SESSIONS_DIR    ".flash-moe/sessions"
-#define HISTORY_FILE    ".flash-moe/pre_history"
-#define MODEL_NAME      "Qwen3.5-397B-A17B"
+#define SESSIONS_DIR    ".pre/sessions"
+#define HISTORY_FILE    ".pre/history"
+#define MEMORY_DIR      ".pre/memory"
+#define MEMORY_INDEX    ".pre/memory/index.md"
+#define MAX_MEMORIES    128
+#define MAX_MEMORY_VAL  4096
+#define MODEL_NAME      "Gemma 4 26B-A4B"
+#define MAX_TOOL_ARGS   8
+#define MAX_ARG_VAL_LEN 65536
+#define MAX_TOOL_LOOP_TURNS 25
+#define CHECKPOINTS_DIR ".pre/checkpoints"
+#define PROJECTS_DIR    ".pre/projects"
+#define MAX_CHANNELS    64
 
 // ANSI escape codes
 #define ANSI_RESET      "\033[0m"
@@ -58,7 +70,7 @@
 // ============================================================================
 
 // Approximate context window budget for the model (tokens)
-#define MAX_CONTEXT     32768
+#define MAX_CONTEXT     131072
 
 typedef struct {
     int port;
@@ -87,14 +99,82 @@ typedef struct {
     // Feature toggles
     int show_thinking;
     int auto_approve_tools;   // 'a' during tool confirm
+
+    // File checkpoints for undo
+    #define MAX_CHECKPOINTS 64
+    struct { char path[PATH_MAX]; char backup[PATH_MAX]; } checkpoints[MAX_CHECKPOINTS];
+    int checkpoint_count;
+    int open_app_approved;  // track first-time approval for open_app
+
+    // Project detection
+    char project_root[PATH_MAX];  // detected project root (e.g. git root)
+    char project_name[128];       // human-readable project name
+    char project_id[128];         // sanitized id for directory names
+    char project_dir[PATH_MAX];   // ~/.pre/projects/{project_id}/
+
+    // Channel system
+    char channel[64];             // active channel name (default: "general")
+    char channel_session[128];    // session_id for current channel
 } PreState;
 
 static PreState g = {
-    .port = 8000,
+    .port = 11434,
     .max_tokens = 8192,
-    .show_thinking = 0,
+    .show_thinking = 1,
     .turn_count = 0,
 };
+
+// Model to request from Ollama
+static const char *g_model = "gemma4:26b-a4b-it-q4_K_M";
+
+// ============================================================================
+// ToolCall struct and helpers
+// ============================================================================
+
+typedef struct {
+    char name[64];
+    int argc;
+    char keys[MAX_TOOL_ARGS][64];
+    char *vals[MAX_TOOL_ARGS];  // heap-allocated
+} ToolCall;
+
+static void tool_call_free(ToolCall *tc) {
+    for (int i = 0; i < tc->argc; i++) {
+        free(tc->vals[i]);
+        tc->vals[i] = NULL;
+    }
+    tc->argc = 0;
+}
+
+static const char *tool_call_get(const ToolCall *tc, const char *key) {
+    for (int i = 0; i < tc->argc; i++) {
+        if (strcmp(tc->keys[i], key) == 0) return tc->vals[i];
+    }
+    return NULL;
+}
+
+// ============================================================================
+// Permission model
+// ============================================================================
+
+typedef enum { PERM_AUTO, PERM_CONFIRM_ONCE, PERM_CONFIRM_ALWAYS } PermLevel;
+
+static PermLevel tool_permission(const char *name) {
+    if (strcmp(name, "read_file") == 0 || strcmp(name, "list_dir") == 0 ||
+        strcmp(name, "glob") == 0 || strcmp(name, "grep") == 0 ||
+        strcmp(name, "clipboard_read") == 0 || strcmp(name, "system_info") == 0 ||
+        strcmp(name, "process_list") == 0 || strcmp(name, "memory_search") == 0 ||
+        strcmp(name, "memory_list") == 0 || strcmp(name, "memory_save") == 0 ||
+        strcmp(name, "window_list") == 0 || strcmp(name, "display_info") == 0 ||
+        strcmp(name, "net_info") == 0 || strcmp(name, "net_connections") == 0 ||
+        strcmp(name, "service_status") == 0 || strcmp(name, "disk_usage") == 0 ||
+        strcmp(name, "hardware_info") == 0) return PERM_AUTO;
+    if (strcmp(name, "file_write") == 0 || strcmp(name, "file_edit") == 0 ||
+        strcmp(name, "clipboard_write") == 0 || strcmp(name, "web_fetch") == 0 ||
+        strcmp(name, "notify") == 0 || strcmp(name, "memory_delete") == 0 ||
+        strcmp(name, "screenshot") == 0 || strcmp(name, "window_focus") == 0) return PERM_CONFIRM_ONCE;
+    return PERM_CONFIRM_ALWAYS; // bash, process_kill, open_app (first time)
+}
 
 // Pending file attachment(s) — prepended to next message
 static char *g_pending_attach = NULL;
@@ -178,6 +258,604 @@ static void resolve_path(const char *input, char *out, size_t outsize) {
 }
 
 // ============================================================================
+// PRE directories and file checkpoints
+// ============================================================================
+
+static void init_pre_dirs(void) {
+    char path[PATH_MAX];
+    const char *home = getenv("HOME");
+    snprintf(path, sizeof(path), "%s/.pre", home);
+    mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/.pre/checkpoints", home);
+    mkdir(path, 0755);
+}
+
+static int checkpoint_file(const char *path) {
+    struct stat st;
+    if (stat(path, &st) < 0) return 0; // new file, nothing to backup
+
+    if (g.checkpoint_count >= MAX_CHECKPOINTS) return 0;
+
+    char backup[PATH_MAX];
+    const char *home = getenv("HOME");
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    snprintf(backup, sizeof(backup), "%s/.pre/checkpoints/%s_%d_%s",
+             home, g.session_id, g.checkpoint_count, base);
+
+    // Copy file
+    FILE *src = fopen(path, "r");
+    FILE *dst = fopen(backup, "w");
+    if (!src || !dst) { if (src) fclose(src); if (dst) fclose(dst); return 0; }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) fwrite(buf, 1, n, dst);
+    fclose(src); fclose(dst);
+
+    strncpy(g.checkpoints[g.checkpoint_count].path, path, PATH_MAX - 1);
+    strncpy(g.checkpoints[g.checkpoint_count].backup, backup, PATH_MAX - 1);
+    g.checkpoint_count++;
+
+    printf(ANSI_DIM "  [checkpointed %s]" ANSI_RESET "\n", base);
+    return 1;
+}
+
+// Forward declarations for functions used by project/channel code
+static int session_load_title(const char *session_id, char *out, size_t outsize);
+
+// ============================================================================
+// Project detection
+// ============================================================================
+
+// Detect project root by walking up from cwd looking for markers
+static void detect_project(void) {
+    g.project_root[0] = 0;
+    g.project_name[0] = 0;
+    g.project_id[0] = 0;
+    g.project_dir[0] = 0;
+
+    static const char *markers[] = {
+        ".git", "package.json", "pyproject.toml", "Cargo.toml",
+        "go.mod", "Makefile", "CMakeLists.txt", "pom.xml",
+        ".pre.md", "PRE.md", NULL
+    };
+
+    char dir[PATH_MAX];
+    strncpy(dir, g.cwd, sizeof(dir) - 1);
+
+    while (strlen(dir) > 1) {
+        for (int i = 0; markers[i]; i++) {
+            char check[PATH_MAX];
+            snprintf(check, sizeof(check), "%s/%s", dir, markers[i]);
+            struct stat st;
+            if (stat(check, &st) == 0) {
+                strncpy(g.project_root, dir, sizeof(g.project_root) - 1);
+                goto found;
+            }
+        }
+        // Walk up
+        char *slash = strrchr(dir, '/');
+        if (!slash || slash == dir) break;
+        *slash = 0;
+    }
+    return; // no project found
+
+found:;
+    // Derive project name from directory basename
+    const char *base = strrchr(g.project_root, '/');
+    base = base ? base + 1 : g.project_root;
+    strncpy(g.project_name, base, sizeof(g.project_name) - 1);
+
+    // Sanitize into project_id (lowercase, replace non-alnum with _)
+    int pi = 0;
+    for (int i = 0; base[i] && pi < 126; i++) {
+        char c = base[i];
+        if (c >= 'A' && c <= 'Z') g.project_id[pi++] = c + 32;
+        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) g.project_id[pi++] = c;
+        else if (c == '-' || c == '_' || c == '.') g.project_id[pi++] = c;
+        else g.project_id[pi++] = '_';
+    }
+    g.project_id[pi] = 0;
+
+    // Create project directory under ~/.pre/projects/
+    const char *home = getenv("HOME");
+    char proj_base[PATH_MAX];
+    snprintf(proj_base, sizeof(proj_base), "%s/.pre/projects", home);
+    mkdir(proj_base, 0755);
+
+    snprintf(g.project_dir, sizeof(g.project_dir), "%s/%s", proj_base, g.project_id);
+    mkdir(g.project_dir, 0755);
+
+    // Create project subdirs
+    char sub[PATH_MAX];
+    snprintf(sub, sizeof(sub), "%s/memory", g.project_dir);
+    mkdir(sub, 0755);
+    snprintf(sub, sizeof(sub), "%s/channels", g.project_dir);
+    mkdir(sub, 0755);
+}
+
+// ============================================================================
+// Channel system
+// ============================================================================
+
+// Initialize channel — sets g.channel, g.channel_session, and session paths
+static void channel_init(const char *name) {
+    if (!name || !name[0]) name = "general";
+    strncpy(g.channel, name, sizeof(g.channel) - 1);
+
+    // Channel session id: project_id:channel (or just channel if no project)
+    if (g.project_id[0])
+        snprintf(g.channel_session, sizeof(g.channel_session), "%s:%s", g.project_id, name);
+    else
+        snprintf(g.channel_session, sizeof(g.channel_session), "global:%s", name);
+
+    // Use channel_session as the session_id for JSONL storage
+    strncpy(g.session_id, g.channel_session, sizeof(g.session_id) - 1);
+
+    // Reset conversation state for the new channel
+    g.turn_count = 0;
+    g.total_tokens_in = 0;
+    g.total_tokens_out = 0;
+    g.cumulative_gen_ms = 0;
+    g.session_start_ms = now_ms();
+    free(g.last_response); g.last_response = NULL;
+    g.session_title[0] = 0;
+    g.auto_approve_tools = 0;
+}
+
+// List channels for current project (or global)
+static void channel_list(void) {
+    // Channels are discovered from session JSONL files matching the project prefix
+    const char *prefix = g.project_id[0] ? g.project_id : "global";
+    size_t plen = strlen(prefix);
+
+    DIR *dir = opendir(g.sessions_dir);
+    if (!dir) { printf("  No channels found.\n\n"); return; }
+
+    printf(ANSI_BOLD "  Channels" ANSI_RESET);
+    if (g.project_name[0]) printf(" (%s)", g.project_name);
+    printf(":\n");
+
+    struct dirent *entry;
+    int count = 0;
+    while ((entry = readdir(dir))) {
+        if (entry->d_name[0] == '.') continue;
+        char *dot = strrchr(entry->d_name, '.');
+        if (!dot || strcmp(dot, ".jsonl") != 0) continue;
+
+        // Check if it matches our project prefix
+        if (strncmp(entry->d_name, prefix, plen) != 0) continue;
+        if (entry->d_name[plen] != ':') continue;
+
+        // Extract channel name
+        const char *chan = entry->d_name + plen + 1;
+        char chan_name[64];
+        strncpy(chan_name, chan, 63);
+        char *ext = strrchr(chan_name, '.');
+        if (ext) *ext = 0;
+
+        // Count lines in session file
+        char path[1024];
+        snprintf(path, sizeof(path), "%s/%s", g.sessions_dir, entry->d_name);
+        FILE *f = fopen(path, "r");
+        int lines = 0;
+        if (f) {
+            char buf[1024];
+            while (fgets(buf, sizeof(buf), f)) lines++;
+            fclose(f);
+        }
+
+        int active = (strcmp(chan_name, g.channel) == 0);
+        printf("  %s " ANSI_CYAN "%s" ANSI_RESET "  (%d messages)\n",
+               active ? ANSI_GREEN "▸" ANSI_RESET : " ",
+               chan_name, lines);
+        count++;
+    }
+    closedir(dir);
+
+    if (count == 0) {
+        printf("  " ANSI_GREEN "▸" ANSI_RESET " " ANSI_CYAN "general" ANSI_RESET "  (new)\n");
+    }
+    printf("\n");
+}
+
+// Switch to a channel — loads existing session or starts fresh
+static void channel_switch(const char *name) {
+    if (!name || !name[0]) {
+        printf(ANSI_YELLOW "  Usage: /channel <name>" ANSI_RESET "\n\n");
+        return;
+    }
+
+    // Sanitize channel name
+    char clean[64];
+    int ci = 0;
+    for (int i = 0; name[i] && ci < 62; i++) {
+        char c = name[i];
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_')
+            clean[ci++] = c;
+        else if (c >= 'A' && c <= 'Z')
+            clean[ci++] = c + 32;
+        else if (c == ' ')
+            clean[ci++] = '-';
+    }
+    clean[ci] = 0;
+    if (ci == 0) {
+        printf(ANSI_YELLOW "  Invalid channel name" ANSI_RESET "\n\n");
+        return;
+    }
+
+    channel_init(clean);
+
+    // Try to load existing session for this channel
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, g.session_id);
+    struct stat st;
+    if (stat(path, &st) == 0 && st.st_size > 0) {
+        // Count turns
+        FILE *f = fopen(path, "r");
+        if (f) {
+            char buf[4096];
+            int lines = 0;
+            while (fgets(buf, sizeof(buf), f)) lines++;
+            fclose(f);
+            g.turn_count = lines / 2;
+        }
+        printf(ANSI_GREEN "  [channel: #%s — %d turns]" ANSI_RESET "\n\n", clean, g.turn_count);
+    } else {
+        printf(ANSI_GREEN "  [channel: #%s — new]" ANSI_RESET "\n\n", clean);
+    }
+
+    // Load channel title if exists
+    session_load_title(g.session_id, g.session_title, sizeof(g.session_title));
+}
+
+// ============================================================================
+// Memory system — persistent file-based memory
+// ============================================================================
+
+// Memory entry loaded from disk
+typedef struct {
+    char name[128];
+    char type[32];       // user, feedback, project, reference
+    char description[256];
+    char file[PATH_MAX]; // path to the .md file
+} MemoryEntry;
+
+static MemoryEntry g_memories[MAX_MEMORIES];
+static int g_memory_count = 0;
+
+static void init_memory_dir(void) {
+    char path[PATH_MAX];
+    const char *home = getenv("HOME");
+    snprintf(path, sizeof(path), "%s/.pre/memory", home);
+    mkdir(path, 0755);
+
+    // Create index.md index if it doesn't exist
+    char idx[PATH_MAX];
+    snprintf(idx, sizeof(idx), "%s/.pre/memory/index.md", home);
+    struct stat st;
+    if (stat(idx, &st) < 0) {
+        FILE *f = fopen(idx, "w");
+        if (f) {
+            fprintf(f, "# PRE Memory\n\n");
+            fclose(f);
+        }
+    }
+}
+
+// Parse frontmatter from a memory .md file
+// Returns 1 on success, fills entry
+static int parse_memory_file(const char *path, MemoryEntry *entry) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    memset(entry, 0, sizeof(*entry));
+    strncpy(entry->file, path, PATH_MAX - 1);
+
+    char line[1024];
+    int in_front = 0;
+    while (fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n\r")] = 0;
+        if (strcmp(line, "---") == 0) {
+            if (in_front) break; // end of frontmatter
+            in_front = 1;
+            continue;
+        }
+        if (!in_front) continue;
+
+        // Parse key: value
+        char *colon = strchr(line, ':');
+        if (!colon) continue;
+        *colon = 0;
+        char *key = line;
+        char *val = colon + 1;
+        while (*val == ' ') val++;
+        // Trim trailing whitespace from key
+        int kl = (int)strlen(key);
+        while (kl > 0 && key[kl-1] == ' ') key[--kl] = 0;
+
+        if (strcmp(key, "name") == 0) strncpy(entry->name, val, sizeof(entry->name) - 1);
+        else if (strcmp(key, "type") == 0) strncpy(entry->type, val, sizeof(entry->type) - 1);
+        else if (strcmp(key, "description") == 0) strncpy(entry->description, val, sizeof(entry->description) - 1);
+    }
+    fclose(f);
+    return entry->name[0] != 0;
+}
+
+// Load all memories from ~/.pre/memory/*.md (not index.md)
+// Load .md files from a directory into g_memories (skips index.md)
+static void load_memories_from_dir(const char *dir_path) {
+    char pattern[PATH_MAX];
+    snprintf(pattern, sizeof(pattern), "%s/*.md", dir_path);
+
+    glob_t gl;
+    if (glob(pattern, GLOB_TILDE, NULL, &gl) != 0) return;
+
+    for (size_t i = 0; i < gl.gl_pathc && g_memory_count < MAX_MEMORIES; i++) {
+        const char *base = strrchr(gl.gl_pathv[i], '/');
+        base = base ? base + 1 : gl.gl_pathv[i];
+        if (strcmp(base, "index.md") == 0) continue;
+
+        if (parse_memory_file(gl.gl_pathv[i], &g_memories[g_memory_count])) {
+            g_memory_count++;
+        }
+    }
+    globfree(&gl);
+}
+
+static void load_memories(void) {
+    g_memory_count = 0;
+    const char *home = getenv("HOME");
+
+    // Load global memories
+    char global_dir[PATH_MAX];
+    snprintf(global_dir, sizeof(global_dir), "%s/.pre/memory", home);
+    load_memories_from_dir(global_dir);
+
+    // Load project-scoped memories if in a project
+    if (g.project_dir[0]) {
+        char proj_mem[PATH_MAX];
+        snprintf(proj_mem, sizeof(proj_mem), "%s/memory", g.project_dir);
+        load_memories_from_dir(proj_mem);
+    }
+}
+
+// Read the body (content after frontmatter) of a memory file
+static char *read_memory_body(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+
+    char line[1024];
+    int dashes = 0;
+    // Skip frontmatter
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "---", 3) == 0) {
+            dashes++;
+            if (dashes >= 2) break;
+        }
+    }
+
+    // Read rest
+    size_t cap = 4096, len = 0;
+    char *body = malloc(cap);
+    while (fgets(line, sizeof(line), f)) {
+        size_t ll = strlen(line);
+        if (len + ll + 1 > cap) { cap *= 2; body = realloc(body, cap); }
+        memcpy(body + len, line, ll);
+        len += ll;
+    }
+    body[len] = 0;
+    fclose(f);
+
+    // Trim leading newlines
+    char *start = body;
+    while (*start == '\n' || *start == '\r') start++;
+    if (start != body) memmove(body, start, strlen(start) + 1);
+
+    return body;
+}
+
+// Save a memory: writes the .md file and updates index.md index
+// scope: "project" saves to project memory dir, anything else saves globally
+static int save_memory(const char *name, const char *type, const char *description, const char *content, const char *scope) {
+    const char *home = getenv("HOME");
+
+    // Generate filename from name: lowercase, replace spaces with _
+    char filename[128];
+    int fi = 0;
+    for (int i = 0; name[i] && fi < 120; i++) {
+        char c = name[i];
+        if (c == ' ' || c == '/' || c == '\\') filename[fi++] = '_';
+        else if (c >= 'A' && c <= 'Z') filename[fi++] = c + 32;
+        else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
+            filename[fi++] = c;
+    }
+    filename[fi] = 0;
+    if (fi == 0) strncpy(filename, "untitled", sizeof(filename));
+
+    // Determine target directory
+    char mem_dir[PATH_MAX];
+    int is_project = (scope && strcmp(scope, "project") == 0 && g.project_dir[0]);
+    if (is_project) {
+        snprintf(mem_dir, sizeof(mem_dir), "%s/memory", g.project_dir);
+    } else {
+        snprintf(mem_dir, sizeof(mem_dir), "%s/.pre/memory", home);
+    }
+
+    char filepath[PATH_MAX];
+    snprintf(filepath, sizeof(filepath), "%s/%s.md", mem_dir, filename);
+
+    // Write the memory file with frontmatter
+    FILE *f = fopen(filepath, "w");
+    if (!f) return 0;
+    fprintf(f, "---\nname: %s\ndescription: %s\ntype: %s\n---\n\n%s\n", name, description, type, content);
+    fclose(f);
+
+    // Update index.md in the appropriate directory
+    char idx_path[PATH_MAX];
+    snprintf(idx_path, sizeof(idx_path), "%s/index.md", mem_dir);
+
+    // Read existing index
+    FILE *idx = fopen(idx_path, "r");
+    size_t idx_cap = 8192, idx_len = 0;
+    char *idx_buf = malloc(idx_cap);
+    idx_buf[0] = 0;
+    int found = 0;
+    if (idx) {
+        char line[512];
+        while (fgets(line, sizeof(line), idx)) {
+            // Check if this line references the same file
+            char ref[256];
+            snprintf(ref, sizeof(ref), "(%s.md)", filename);
+            if (strstr(line, ref)) {
+                // Replace this line with updated entry
+                int wrote = snprintf(idx_buf + idx_len, idx_cap - idx_len,
+                    "- [%s](%s.md) — %s\n", name, filename, description);
+                if (wrote > 0) idx_len += wrote;
+                found = 1;
+            } else {
+                size_t ll = strlen(line);
+                if (idx_len + ll + 1 > idx_cap) { idx_cap *= 2; idx_buf = realloc(idx_buf, idx_cap); }
+                memcpy(idx_buf + idx_len, line, ll);
+                idx_len += ll;
+            }
+        }
+        fclose(idx);
+    }
+
+    if (!found) {
+        // Append new entry
+        if (idx_len == 0) {
+            idx_len = snprintf(idx_buf, idx_cap, "# PRE Memory\n\n");
+        }
+        idx_len += snprintf(idx_buf + idx_len, idx_cap - idx_len,
+            "- [%s](%s.md) — %s\n", name, filename, description);
+    }
+    idx_buf[idx_len] = 0;
+
+    idx = fopen(idx_path, "w");
+    if (idx) { fputs(idx_buf, idx); fclose(idx); }
+    free(idx_buf);
+
+    // Reload memories
+    load_memories();
+    return 1;
+}
+
+// Delete a memory by name (partial match)
+static int delete_memory(const char *query) {
+    int deleted = 0;
+    for (int i = 0; i < g_memory_count; i++) {
+        if (strcasestr(g_memories[i].name, query) ||
+            strcasestr(g_memories[i].description, query)) {
+            // Remove the .md file
+            remove(g_memories[i].file);
+
+            // Remove from index.md index
+            const char *base = strrchr(g_memories[i].file, '/');
+            base = base ? base + 1 : g_memories[i].file;
+
+            char idx_path[PATH_MAX];
+            const char *home = getenv("HOME");
+            snprintf(idx_path, sizeof(idx_path), "%s/.pre/memory/index.md", home);
+
+            FILE *idx = fopen(idx_path, "r");
+            if (idx) {
+                size_t cap = 8192, len = 0;
+                char *buf = malloc(cap);
+                buf[0] = 0;
+                char line[512];
+                while (fgets(line, sizeof(line), idx)) {
+                    if (!strstr(line, base)) {
+                        size_t ll = strlen(line);
+                        if (len + ll + 1 > cap) { cap *= 2; buf = realloc(buf, cap); }
+                        memcpy(buf + len, line, ll);
+                        len += ll;
+                    }
+                }
+                fclose(idx);
+                buf[len] = 0;
+                idx = fopen(idx_path, "w");
+                if (idx) { fputs(buf, idx); fclose(idx); }
+                free(buf);
+            }
+            deleted++;
+            break; // delete first match only
+        }
+    }
+    if (deleted) load_memories();
+    return deleted;
+}
+
+// Search memories by query — returns heap-allocated result string
+static char *search_memories(const char *query) {
+    size_t cap = 4096, len = 0;
+    char *result = malloc(cap);
+    result[0] = 0;
+    int matches = 0;
+
+    for (int i = 0; i < g_memory_count; i++) {
+        int match = 0;
+        if (!query || !query[0]) match = 1; // list all
+        else if (strcasestr(g_memories[i].name, query)) match = 1;
+        else if (strcasestr(g_memories[i].description, query)) match = 1;
+        else if (strcasestr(g_memories[i].type, query)) match = 1;
+        else {
+            // Search body
+            char *body = read_memory_body(g_memories[i].file);
+            if (body && strcasestr(body, query)) match = 1;
+            free(body);
+        }
+
+        if (match) {
+            char *body = read_memory_body(g_memories[i].file);
+            int wrote = snprintf(result + len, cap - len,
+                "[%s] (%s) %s\n%s\n\n",
+                g_memories[i].type, g_memories[i].name,
+                g_memories[i].description,
+                body ? body : "");
+            free(body);
+            if (wrote > 0) {
+                len += wrote;
+                if (len + 2048 > cap) { cap *= 2; result = realloc(result, cap); }
+            }
+            matches++;
+        }
+    }
+
+    if (matches == 0) {
+        snprintf(result, cap, "No memories found%s%s%s.",
+                 query && query[0] ? " matching '" : "",
+                 query && query[0] ? query : "",
+                 query && query[0] ? "'" : "");
+    }
+    return result;
+}
+
+// Build a compact memory summary for context injection
+static char *build_memory_context(void) {
+    if (g_memory_count == 0) return NULL;
+
+    size_t cap = 8192, len = 0;
+    char *buf = malloc(cap);
+    len = snprintf(buf, cap, "<memory>\n");
+
+    for (int i = 0; i < g_memory_count; i++) {
+        char *body = read_memory_body(g_memories[i].file);
+        int wrote = snprintf(buf + len, cap - len,
+            "## %s (%s)\n%s\n\n",
+            g_memories[i].name, g_memories[i].type,
+            body ? body : g_memories[i].description);
+        free(body);
+        if (wrote > 0) len += wrote;
+        if (len + 2048 > cap) { cap *= 2; buf = realloc(buf, cap); }
+    }
+    len += snprintf(buf + len, cap - len, "</memory>\n");
+    buf[len] = 0;
+    return buf;
+}
+
+// ============================================================================
 // TUI — status bar, banner, spinner
 // ============================================================================
 
@@ -194,8 +872,13 @@ static void tui_banner(void) {
            "╚══════════════════════════════════════════════════╝\n" ANSI_RESET,
            MODEL_NAME);
     printf("  Server:  " ANSI_GREEN "http://localhost:%d" ANSI_RESET "\n", g.port);
-    printf("  Session: %s\n", g.session_id);
+    if (g.project_name[0])
+        printf("  Project: " ANSI_BOLD "%s" ANSI_RESET "  " ANSI_DIM "%s" ANSI_RESET "\n",
+               g.project_name, g.project_root);
+    printf("  Channel: " ANSI_CYAN "#%s" ANSI_RESET "\n", g.channel[0] ? g.channel : "general");
     printf("  CWD:     %s\n", g.cwd);
+    if (g_memory_count > 0)
+        printf("  Memory:  %d entries loaded\n", g_memory_count);
     printf("  Type " ANSI_BOLD "/help" ANSI_RESET " for commands\n\n");
 }
 
@@ -206,19 +889,13 @@ static void tui_banner(void) {
 static void init_sessions_dir(void) {
     const char *home = getenv("HOME") ?: "/tmp";
     char parent[1024];
-    snprintf(parent, sizeof(parent), "%s/.flash-moe", home);
+    snprintf(parent, sizeof(parent), "%s/.pre", home);
     mkdir(parent, 0755);
     snprintf(g.sessions_dir, sizeof(g.sessions_dir), "%s/%s", home, SESSIONS_DIR);
     mkdir(g.sessions_dir, 0755);
     snprintf(g.history_path, sizeof(g.history_path), "%s/%s", home, HISTORY_FILE);
 }
 
-static void generate_session_id(char *buf, size_t bufsize) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    snprintf(buf, bufsize, "pre-%d-%ld%06d",
-             (int)getpid(), (long)tv.tv_sec, (int)tv.tv_usec);
-}
 
 static void session_save_title(const char *session_id, const char *title) {
     char path[1024];
@@ -510,24 +1187,155 @@ static char *build_context_preamble(void) {
         closedir(dir);
     }
 
-    size_t cap = 8192 + flen;
+    // Check for PRE.md in CWD (project-specific instructions)
+    char pre_md_path[PATH_MAX];
+    snprintf(pre_md_path, sizeof(pre_md_path), "%s/PRE.md", g.cwd);
+    char *pre_md_content = NULL;
+    struct stat pre_md_st;
+    if (stat(pre_md_path, &pre_md_st) == 0 && pre_md_st.st_size < 8192) {
+        FILE *pmf = fopen(pre_md_path, "r");
+        if (pmf) {
+            pre_md_content = malloc((size_t)pre_md_st.st_size + 1);
+            size_t nr = fread(pre_md_content, 1, (size_t)pre_md_st.st_size, pmf);
+            pre_md_content[nr] = 0;
+            fclose(pmf);
+        }
+    }
+
+    // Get git branch and status if in a repo
+    char git_info[2048] = "";
+    int git_len = 0;
+    {
+        char git_dir[PATH_MAX];
+        snprintf(git_dir, sizeof(git_dir), "%s/.git", g.cwd);
+        struct stat gs;
+        if (stat(git_dir, &gs) == 0) {
+            // Get branch name
+            FILE *p = popen("git -C \"$PWD\" branch --show-current 2>/dev/null", "r");
+            if (p) {
+                char branch[128] = "";
+                if (fgets(branch, sizeof(branch), p)) {
+                    branch[strcspn(branch, "\n")] = 0;
+                    git_len += snprintf(git_info + git_len, sizeof(git_info) - git_len,
+                        "Git branch: %s\n", branch);
+                }
+                pclose(p);
+            }
+            // Get short status
+            p = popen("git -C \"$PWD\" status --short 2>/dev/null | head -20", "r");
+            if (p) {
+                char line[256];
+                int status_lines = 0;
+                while (fgets(line, sizeof(line), p) && status_lines < 20 &&
+                       git_len < (int)sizeof(git_info) - 256) {
+                    git_len += snprintf(git_info + git_len, sizeof(git_info) - git_len,
+                        "  %s", line);
+                    status_lines++;
+                }
+                pclose(p);
+            }
+        }
+    }
+
+    // Build memory context
+    char *memory_ctx = build_memory_context();
+
+    size_t cap = 32768 + flen + (pre_md_content ? strlen(pre_md_content) : 0) +
+                 (memory_ctx ? strlen(memory_ctx) : 0) + git_len;
     char *preamble = malloc(cap);
-    snprintf(preamble, cap,
+    int plen = 0;
+
+    // System identity and role
+    plen += snprintf(preamble + plen, cap - plen,
+        "You are PRE (Personal Reasoning Engine), a fully local agentic assistant running on Apple Silicon. "
+        "All data stays on this machine. You have persistent memory across sessions.\n\n");
+
+    // Project instructions
+    if (pre_md_content) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "<project_instructions>\n%s\n</project_instructions>\n\n", pre_md_content);
+        free(pre_md_content);
+    }
+
+    // Memory context
+    if (memory_ctx && g_memory_count > 0) {
+        plen += snprintf(preamble + plen, cap - plen, "%s\n", memory_ctx);
+    }
+    free(memory_ctx);
+
+    // Environment context
+    plen += snprintf(preamble + plen, cap - plen,
         "<context>\n"
-        "Working directory: %s\n"
-        "Files:\n%s\n"
-        "Available tools (wrap calls in <tool_call>JSON</tool_call> tags):\n"
-        "- bash: Run a shell command. {\"name\":\"bash\",\"arguments\":{\"command\":\"...\"}}\n"
-        "- read_file: Read a file. {\"name\":\"read_file\",\"arguments\":{\"path\":\"...\"}}\n"
-        "- list_dir: List directory. {\"name\":\"list_dir\",\"arguments\":{\"path\":\"...\"}}\n"
+        "Working directory: %s\n", g.cwd);
+    if (g.project_name[0]) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "Project: %s (root: %s)\n"
+            "Channel: #%s\n",
+            g.project_name, g.project_root, g.channel);
+    }
+    if (git_len > 0) {
+        plen += snprintf(preamble + plen, cap - plen, "%s", git_info);
+    }
+    plen += snprintf(preamble + plen, cap - plen,
+        "Files:\n%s"
+        "</context>\n\n", files_list);
+
+    // Tool instructions
+    plen += snprintf(preamble + plen, cap - plen,
+        "You have tools to interact with the local system. To use a tool, output EXACTLY this format:\n\n"
+        "<tool_call>\n"
+        "{\"name\": \"TOOL_NAME\", \"arguments\": {\"KEY\": \"VALUE\"}}\n"
+        "</tool_call>\n\n"
+        "Available tools:\n"
+        "1. bash - Run a shell command. Args: command\n"
+        "2. read_file - Read a file. Args: path\n"
+        "3. list_dir - List directory contents. Args: path\n"
+        "4. glob - Find files by pattern. Args: pattern, path (optional)\n"
+        "5. grep - Search file contents. Args: pattern, path (optional), include (optional glob)\n"
+        "6. file_write - Write/create a file. Args: path, content\n"
+        "7. file_edit - Edit a file (find & replace). Args: path, old_string, new_string\n"
+        "8. web_fetch - Fetch a URL. Args: url\n"
+        "9. system_info - Get system information. No args.\n"
+        "10. process_list - List running processes. Args: filter (optional)\n"
+        "11. process_kill - Kill a process. Args: pid\n"
+        "12. clipboard_read - Read clipboard. No args.\n"
+        "13. clipboard_write - Write to clipboard. Args: content\n"
+        "14. open_app - Open file/app/URL with macOS 'open'. Args: target\n"
+        "15. notify - Show macOS notification. Args: title, message\n"
+        "16. memory_save - Save a persistent memory. Args: name, type (user/feedback/project/reference), description, content, scope (optional: 'project' or 'global', default global)\n"
+        "17. memory_search - Search saved memories. Args: query (optional, omit to list all)\n"
+        "18. memory_list - List all saved memories. No args.\n"
+        "19. memory_delete - Delete a memory by name. Args: query\n"
+        "20. screenshot - Capture screen. Args: region (optional: 'full', 'window', or 'x,y,w,h')\n"
+        "21. window_list - List all open windows with positions. No args.\n"
+        "22. window_focus - Bring an app to front. Args: app\n"
+        "23. display_info - Display/GPU information. No args.\n"
+        "24. net_info - Network interfaces, IPs, DNS. No args.\n"
+        "25. net_connections - Active network connections. Args: filter (optional: 'listening', 'established', or port number)\n"
+        "26. service_status - List or search launchd services. Args: service (optional)\n"
+        "27. disk_usage - Disk/volume usage. Args: path (optional)\n"
+        "28. hardware_info - Detailed hardware/thermal/battery info. No args.\n"
+        "29. applescript - Run AppleScript for deep macOS automation. Args: script\n"
         "\n"
-        "Guidelines:\n"
-        "- Running locally on Apple Silicon. All data stays on this machine.\n"
-        "- File paths are relative to the working directory unless absolute.\n"
-        "- When using tools, stop and wait for <tool_response> before continuing.\n"
-        "- For complex tasks, think step by step.\n"
-        "</context>\n\n",
-        g.cwd, files_list);
+        "Example — edit a file:\n"
+        "<tool_call>\n"
+        "{\"name\": \"file_edit\", \"arguments\": {\"path\": \"src/main.py\", \"old_string\": \"def old_func():\\n    pass\", \"new_string\": \"def new_func():\\n    return 42\"}}\n"
+        "</tool_call>\n\n"
+        "Example — save a memory:\n"
+        "<tool_call>\n"
+        "{\"name\": \"memory_save\", \"arguments\": {\"name\": \"User prefers concise output\", \"type\": \"feedback\", \"description\": \"User wants terse responses\", \"content\": \"User prefers short, direct answers without trailing summaries.\"}}\n"
+        "</tool_call>\n\n"
+        "RULES:\n"
+        "- ALWAYS include JSON with \"name\" and \"arguments\" inside <tool_call> tags.\n"
+        "- NEVER output empty <tool_call></tool_call>.\n"
+        "- After a tool call, STOP and wait for <tool_response>.\n"
+        "- file_edit old_string must match exactly once in the file.\n"
+        "- Paths are relative to working directory unless absolute.\n"
+        "- Save memories proactively when you learn the user's preferences, project context, or workflow patterns.\n"
+        "- Memory types: user (about the person), feedback (how to work), project (current work), reference (where info lives).\n"
+        "- Use scope 'project' for project-specific memories, 'global' for cross-project knowledge.\n"
+        "\n");
+
     return preamble;
 }
 
@@ -553,6 +1361,139 @@ static char *build_message(const char *input, int is_first_turn) {
 }
 
 // ============================================================================
+// Context compaction — auto-summarize when approaching context limit
+// ============================================================================
+
+// Compact the session JSONL by replacing older turns with a summary.
+// Keeps the last `keep_turns` user/assistant pairs intact.
+// Returns 1 if compaction happened, 0 if not needed.
+static int compact_session(const char *session_id, int keep_turns) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, session_id);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+
+    // Read all lines
+    char **lines = NULL;
+    int line_count = 0, line_cap = 0;
+    char buf[MAX_RESPONSE];
+    while (fgets(buf, sizeof(buf), f)) {
+        if (line_count >= line_cap) {
+            line_cap = line_cap ? line_cap * 2 : 64;
+            lines = realloc(lines, (size_t)line_cap * sizeof(char *));
+        }
+        lines[line_count++] = strdup(buf);
+    }
+    fclose(f);
+
+    // Count user turns (each user+assistant pair = 1 turn)
+    int user_count = 0;
+    for (int i = 0; i < line_count; i++) {
+        if (strstr(lines[i], "\"user\"")) user_count++;
+    }
+
+    if (user_count <= keep_turns + 1) {
+        // Not enough turns to compact
+        for (int i = 0; i < line_count; i++) free(lines[i]);
+        free(lines);
+        return 0;
+    }
+
+    // Find the split point: keep last `keep_turns` user messages and everything after
+    int turns_from_end = 0;
+    int split_idx = line_count;
+    for (int i = line_count - 1; i >= 0; i--) {
+        if (strstr(lines[i], "\"user\"")) {
+            turns_from_end++;
+            if (turns_from_end >= keep_turns) {
+                split_idx = i;
+                break;
+            }
+        }
+    }
+
+    // Build summary of older turns
+    size_t summary_cap = 4096;
+    char *summary = malloc(summary_cap);
+    int summary_len = snprintf(summary, summary_cap,
+        "[Previous conversation summary — %d turns compacted]\n", split_idx);
+
+    for (int i = 0; i < split_idx && summary_len < (int)summary_cap - 512; i++) {
+        // Extract role and abbreviated content
+        char *role_p = strstr(lines[i], "\"role\":\"");
+        char *content_p = strstr(lines[i], "\"content\":\"");
+        if (!role_p || !content_p) continue;
+
+        role_p += 8;
+        char role[32]; int ri = 0;
+        while (*role_p && *role_p != '"' && ri < 31) role[ri++] = *role_p++;
+        role[ri] = 0;
+
+        content_p += 11;
+        // Get first 150 chars of content for summary
+        char preview[160] = "";
+        int pi = 0;
+        for (int j = 0; content_p[j] && content_p[j] != '"' && pi < 150; j++) {
+            if (content_p[j] == '\\' && content_p[j+1]) {
+                j++;
+                if (content_p[j] == 'n') preview[pi++] = ' ';
+                else preview[pi++] = content_p[j];
+            } else {
+                preview[pi++] = content_p[j];
+            }
+        }
+        preview[pi] = 0;
+
+        // Skip tool responses in summary (too verbose)
+        if (strcmp(role, "tool") == 0) continue;
+
+        summary_len += snprintf(summary + summary_len, summary_cap - summary_len,
+            "- %s: %s%s\n", role, preview, pi >= 150 ? "..." : "");
+    }
+    summary[summary_len] = 0;
+
+    // Rewrite the session file: summary as first "system" message + kept turns
+    f = fopen(path, "w");
+    if (f) {
+        char *escaped = json_escape_alloc(summary);
+        if (escaped) {
+            fprintf(f, "{\"role\":\"user\",\"content\":\"%s\"}\n", escaped);
+            free(escaped);
+        }
+        // Write a synthetic assistant acknowledgment
+        fprintf(f, "{\"role\":\"assistant\",\"content\":\"Understood, I have context from our previous %d turns.\"}\n",
+                split_idx);
+
+        for (int i = split_idx; i < line_count; i++) {
+            fputs(lines[i], f);
+        }
+        fclose(f);
+    }
+
+    for (int i = 0; i < line_count; i++) free(lines[i]);
+    free(lines);
+    free(summary);
+
+    printf(ANSI_DIM "  [compacted %d older turns to stay within context budget]" ANSI_RESET "\n",
+           split_idx);
+    return 1;
+}
+
+// Check if we should compact and do it
+static void maybe_compact(void) {
+    int estimated_tokens = g.total_tokens_in + g.total_tokens_out;
+    // Compact when we've used 75% of context budget
+    int threshold = MAX_CONTEXT * 3 / 4;
+    if (estimated_tokens > threshold) {
+        // Keep last 6 turns (12 messages) for immediate context
+        compact_session(g.session_id, 6);
+        // Reset token estimates after compaction
+        g.total_tokens_in = estimated_tokens / 4; // rough estimate of compacted size
+    }
+}
+
+// ============================================================================
 // HTTP / SSE client
 // ============================================================================
 
@@ -571,16 +1512,56 @@ static int send_request(const char *user_message, int max_tokens, const char *se
         return -1;
     }
 
-    char *escaped = json_escape_alloc(user_message);
-    if (!escaped) { close(sock); return -1; }
+    // Build full conversation history from session file
+    // Each line in the JSONL is: {"role":"...","content":"..."}
+    char session_path[1024];
+    snprintf(session_path, sizeof(session_path), "%s/%s.jsonl", g.sessions_dir, session_id);
 
-    size_t elen = strlen(escaped);
-    size_t body_cap = elen + 256;
+    // Start with generous capacity; grow if needed
+    size_t body_cap = 1024 * 1024; // 1MB initial
     char *body = malloc(body_cap);
-    int body_len = snprintf(body, body_cap,
-        "{\"messages\":[{\"role\":\"user\",\"content\":\"%s\"}],"
-        "\"max_tokens\":%d,\"stream\":true,\"session_id\":\"%s\"}",
-        escaped, max_tokens, session_id);
+    int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"messages\":[", g_model);
+
+    // Replay session history
+    FILE *sf = fopen(session_path, "r");
+    if (sf) {
+        char sline[MAX_RESPONSE];
+        int first_msg = 1;
+        while (fgets(sline, sizeof(sline), sf)) {
+            // Each line is already a JSON object with role+content
+            // Strip trailing newline
+            int sl = (int)strlen(sline);
+            while (sl > 0 && (sline[sl-1] == '\n' || sline[sl-1] == '\r')) sline[--sl] = 0;
+            if (sl == 0) continue;
+
+            // Ensure capacity
+            if ((int)(body_len + sl + 10) > (int)body_cap - 100) {
+                body_cap *= 2;
+                body = realloc(body, body_cap);
+            }
+
+            if (!first_msg) body[body_len++] = ',';
+            memcpy(body + body_len, sline, sl);
+            body_len += sl;
+            first_msg = 0;
+        }
+        fclose(sf);
+    }
+
+    // Append the new user message
+    char *escaped = json_escape_alloc(user_message);
+    if (!escaped) { free(body); close(sock); return -1; }
+    size_t elen = strlen(escaped);
+
+    // Ensure capacity for the new message
+    if ((int)(body_len + elen + 256) > (int)body_cap - 100) {
+        body_cap = body_len + elen + 4096;
+        body = realloc(body, body_cap);
+    }
+
+    body_len += snprintf(body + body_len, body_cap - body_len,
+        "%s{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":%d,\"stream\":true}",
+        (body_len > 50 ? "," : ""), escaped, max_tokens);
     free(escaped);
 
     size_t req_cap = body_len + 256;
@@ -621,6 +1602,7 @@ static int health_check(void) {
 
 typedef struct {
     int bold, italic, code_inline, code_block, skip_lang, line_start;
+    int in_blockquote, in_table_row;
     char lang[32];
     int lang_idx;
 } MdState;
@@ -671,12 +1653,79 @@ static void md_print(const char *text) {
         if (g_md.code_inline) { putchar(c); continue; }
 
         if (g_md.line_start && c == '#') {
-            while (text[i] == '#') i++;
+            int level = 0;
+            while (text[i + level] == '#') level++;
+            i += level;
             while (text[i] == ' ') i++;
-            printf(ANSI_HEADER);
+            // Header styling: h1 bold+underline, h2 bold, h3+ bold+dim
+            if (level == 1) printf(ANSI_BOLD "\033[4m" ANSI_HEADER);
+            else if (level == 2) printf(ANSI_BOLD ANSI_HEADER);
+            else printf(ANSI_BOLD ANSI_CYAN);
             while (text[i] && text[i] != '\n') { putchar(text[i]); i++; }
             printf(ANSI_RESET);
             if (text[i] == '\n') { putchar('\n'); g_md.line_start = 1; }
+            continue;
+        }
+
+        // Horizontal rule: --- or *** or ___ (3+ chars, nothing else on line)
+        if (g_md.line_start && (c == '-' || c == '*' || c == '_')) {
+            int peek = i;
+            int count = 0;
+            char ruler = c;
+            while (text[peek] == ruler || text[peek] == ' ') {
+                if (text[peek] == ruler) count++;
+                peek++;
+            }
+            if (count >= 3 && (text[peek] == '\n' || text[peek] == '\0')) {
+                printf(ANSI_DIM);
+                for (int d = 0; d < 50; d++) printf("─");
+                printf(ANSI_RESET "\n");
+                i = peek;
+                if (text[i] == '\n') g_md.line_start = 1;
+                else g_md.line_start = 0;
+                continue;
+            }
+        }
+
+        // Blockquote: > text
+        if (g_md.line_start && c == '>' && (text[i+1] == ' ' || text[i+1] == '\t')) {
+            printf(ANSI_DIM "  │ " ANSI_RESET ANSI_ITALIC);
+            g_md.in_blockquote = 1;
+            i += 1; // skip '>', the space after is consumed naturally
+            g_md.line_start = 0;
+            continue;
+        }
+
+        // Table row: | col | col | col |
+        if (g_md.line_start && c == '|') {
+            // Check if this is a separator row (|---|---|)
+            int peek = i + 1;
+            int is_sep = 1;
+            while (text[peek] && text[peek] != '\n') {
+                if (text[peek] != '-' && text[peek] != '|' && text[peek] != ' '
+                    && text[peek] != ':' && text[peek] != '+') {
+                    is_sep = 0;
+                    break;
+                }
+                peek++;
+            }
+            if (is_sep && peek > i + 2) {
+                // Render separator as a dim line
+                printf(ANSI_DIM);
+                while (text[i] && text[i] != '\n') {
+                    if (text[i] == '|') putchar('|');
+                    else if (text[i] == '-' || text[i] == '+') printf("─");
+                    else putchar(text[i]);
+                    i++;
+                }
+                printf(ANSI_RESET);
+                if (text[i] == '\n') { putchar('\n'); g_md.line_start = 1; }
+                continue;
+            }
+            // Data row — colorize pipes as delimiters
+            printf(ANSI_DIM "|" ANSI_RESET);
+            g_md.in_table_row = 1;
+            g_md.line_start = 0;
             continue;
         }
 
@@ -727,8 +1776,18 @@ static void md_print(const char *text) {
             continue;
         }
 
-        if (c == '\n') g_md.line_start = 1;
-        else g_md.line_start = 0;
+        if (c == '\n') {
+            if (g_md.in_blockquote) { printf(ANSI_RESET); g_md.in_blockquote = 0; }
+            if (g_md.in_table_row) { printf(ANSI_DIM "|" ANSI_RESET); g_md.in_table_row = 0; }
+            g_md.line_start = 1;
+        } else {
+            // Mid-line pipe in a table row
+            if (c == '|' && g_md.in_table_row) {
+                printf(ANSI_DIM "|" ANSI_RESET);
+                continue;
+            }
+            g_md.line_start = 0;
+        }
 
         putchar(c);
     }
@@ -783,24 +1842,62 @@ static char *stream_response(int sock) {
         if (strncmp(line, "data: ", 6) != 0) continue;
         if (strncmp(line + 6, "[DONE]", 6) == 0) break;
 
+        // Decode a JSON string value starting at p into buf, return length
+        // Handles \n \t \" \\ and \uXXXX (BMP codepoints, ASCII subset)
+        #define DECODE_JSON_STR(p, buf, bufsz) ({ \
+            int _di = 0; \
+            for (int _i = 0; (p)[_i] && (p)[_i] != '"' && _di < (bufsz)-1; _i++) { \
+                if ((p)[_i] == '\\' && (p)[_i+1]) { \
+                    _i++; \
+                    if ((p)[_i] == 'u' && (p)[_i+1] && (p)[_i+2] && (p)[_i+3] && (p)[_i+4]) { \
+                        /* Parse 4 hex digits */ \
+                        char _hex[5] = {(p)[_i+1],(p)[_i+2],(p)[_i+3],(p)[_i+4],0}; \
+                        unsigned int _cp = (unsigned int)strtol(_hex, NULL, 16); \
+                        _i += 4; \
+                        if (_cp < 0x80) { \
+                            (buf)[_di++] = (char)_cp; \
+                        } else if (_cp < 0x800) { \
+                            (buf)[_di++] = (char)(0xC0 | (_cp >> 6)); \
+                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
+                        } else { \
+                            (buf)[_di++] = (char)(0xE0 | (_cp >> 12)); \
+                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | ((_cp >> 6) & 0x3F)); \
+                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
+                        } \
+                    } else { \
+                        switch ((p)[_i]) { \
+                            case 'n': (buf)[_di++]='\n'; break; \
+                            case 't': (buf)[_di++]='\t'; break; \
+                            case '"': (buf)[_di++]='"'; break; \
+                            case '\\': (buf)[_di++]='\\'; break; \
+                            default: (buf)[_di++]=(p)[_i]; break; \
+                        } \
+                    } \
+                } else (buf)[_di++] = (p)[_i]; \
+            } \
+            (buf)[_di] = 0; \
+            _di; \
+        })
+
+        // Check for reasoning field (Gemma 4 / Ollama thinking)
+        char *rk = strstr(line + 6, "\"reasoning\":\"");
+        if (rk) {
+            rk += 13;
+            char rdecoded[4096]; int rdi = DECODE_JSON_STR(rk, rdecoded, 4096);
+            if (rdi > 0) {
+                if (spinning) { printf("\r\033[K"); fflush(stdout); spinning = 0; }
+                tokens++;
+                if (!t_first) t_first = now_ms();
+                if (g.show_thinking) { printf(ANSI_DIM "%s" ANSI_RESET, rdecoded); fflush(stdout); }
+            }
+        }
+
+        // Check for content field
         char *ck = strstr(line + 6, "\"content\":\"");
         if (!ck) continue;
         ck += 11;
 
-        char decoded[4096]; int di = 0;
-        for (int i = 0; ck[i] && ck[i] != '"' && di < 4095; i++) {
-            if (ck[i] == '\\' && ck[i+1]) {
-                i++;
-                switch (ck[i]) {
-                    case 'n': decoded[di++]='\n'; break;
-                    case 't': decoded[di++]='\t'; break;
-                    case '"': decoded[di++]='"'; break;
-                    case '\\': decoded[di++]='\\'; break;
-                    default: decoded[di++]=ck[i]; break;
-                }
-            } else decoded[di++] = ck[i];
-        }
-        decoded[di] = 0;
+        char decoded[4096]; int di = DECODE_JSON_STR(ck, decoded, 4096);
         if (!di) continue;
 
         // Clear spinner on first real token
@@ -810,6 +1907,7 @@ static char *stream_response(int sock) {
             spinning = 0;
         }
 
+        // Handle Qwen-style <think> tags in content (backwards compat)
         if (strstr(decoded, "<think>")) in_think = 1;
         if (strstr(decoded, "</think>")) { in_think = 0; tokens++; continue; }
         tokens++;
@@ -856,130 +1954,771 @@ static char *stream_response(int sock) {
 // Tool call handling
 // ============================================================================
 
-// Extract command string from tool call body (handles JSON and fallback formats)
-static int extract_tool_call(const char *tc_body, char *name, size_t name_sz,
-                             char *arg_key, size_t key_sz, char *arg_val, size_t val_sz) {
-    name[0] = arg_key[0] = arg_val[0] = 0;
+// Decode a JSON string starting at p (just after the opening quote) into a malloc'd buffer.
+// Returns the decoded string (caller must free) and advances *endp past the closing quote.
+// Handles \n, \t, \", \\, \uXXXX (UTF-8 output).
+static char *decode_json_string(const char *p, const char **endp) {
+    size_t cap = 256;
+    char *buf = malloc(cap);
+    size_t di = 0;
 
-    // JSON format: {"name":"bash","arguments":{"command":"..."}}
-    char *nk = strstr(tc_body, "\"name\"");
-    if (nk) {
-        nk = strchr(nk + 6, '"'); if (nk) { nk++;
-            int ni = 0;
-            while (*nk && *nk != '"' && ni < (int)name_sz - 1) name[ni++] = *nk++;
-            name[ni] = 0;
-        }
-    }
-
-    // Find the argument value
-    // For "command":"..." or "path":"..."
-    static const char *keys[] = {"command", "path", NULL};
-    for (int k = 0; keys[k]; k++) {
-        char search[64];
-        snprintf(search, sizeof(search), "\"%s\"", keys[k]);
-        char *ck = strstr(tc_body, search);
-        if (!ck) continue;
-        strncpy(arg_key, keys[k], key_sz - 1);
-        ck = strchr(ck + strlen(search), '"');
-        if (!ck) continue; ck++;
-        int vi = 0;
-        for (int i = 0; ck[i] && ck[i] != '"' && vi < (int)val_sz - 1; i++) {
-            if (ck[i] == '\\' && ck[i+1]) {
-                i++;
-                switch (ck[i]) {
-                    case 'n': arg_val[vi++] = '\n'; break;
-                    case 't': arg_val[vi++] = '\t'; break;
-                    case '"': arg_val[vi++] = '"'; break;
-                    case '\\': arg_val[vi++] = '\\'; break;
-                    default: arg_val[vi++] = ck[i]; break;
+    for (int i = 0; p[i] && p[i] != '"'; i++) {
+        if (di + 8 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (p[i] == '\\' && p[i+1]) {
+            i++;
+            if (p[i] == 'u' && p[i+1] && p[i+2] && p[i+3] && p[i+4]) {
+                char hex[5] = {p[i+1], p[i+2], p[i+3], p[i+4], 0};
+                unsigned int cp = (unsigned int)strtol(hex, NULL, 16);
+                i += 4;
+                if (cp < 0x80) {
+                    buf[di++] = (char)cp;
+                } else if (cp < 0x800) {
+                    buf[di++] = (char)(0xC0 | (cp >> 6));
+                    buf[di++] = (char)(0x80 | (cp & 0x3F));
+                } else {
+                    buf[di++] = (char)(0xE0 | (cp >> 12));
+                    buf[di++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                    buf[di++] = (char)(0x80 | (cp & 0x3F));
                 }
-            } else arg_val[vi++] = ck[i];
-        }
-        arg_val[vi] = 0;
-        return 1;
-    }
-
-    // Fallback: look for bash command text
-    if (name[0] == 0 && strstr(tc_body, "bash")) strncpy(name, "bash", name_sz);
-    return arg_val[0] != 0;
-}
-
-static char *handle_tool_calls(char *response) {
-    g.auto_approve_tools = 0;
-
-    while (response && strstr(response, "<tool_call>")) {
-        char *tc_start = strstr(response, "<tool_call>");
-        char *tc_end = strstr(tc_start, "</tool_call>");
-        if (!tc_start || !tc_end) break;
-
-        tc_start += 11;
-        char tc_body[8192] = {0};
-        int tc_len = (int)(tc_end - tc_start);
-        if (tc_len > 8191) tc_len = 8191;
-        memcpy(tc_body, tc_start, tc_len);
-
-        char name[64], arg_key[64], arg_val[4096];
-        if (!extract_tool_call(tc_body, name, sizeof(name),
-                               arg_key, sizeof(arg_key), arg_val, sizeof(arg_val))) {
-            break;
-        }
-
-        char output[65536] = {0};
-        int out_len = 0;
-
-        if (strcmp(name, "read_file") == 0) {
-            // Read-only: no confirmation needed
-            char resolved[PATH_MAX];
-            resolve_path(arg_val, resolved, sizeof(resolved));
-            printf(ANSI_DIM "  [reading %s]" ANSI_RESET "\n", resolved);
-            char *content = file_read_for_context(resolved);
-            if (content) {
-                int cl = (int)strlen(content);
-                if (cl > 65535) cl = 65535;
-                memcpy(output, content, cl);
-                out_len = cl;
-                free(content);
             } else {
-                out_len = snprintf(output, sizeof(output), "Error: cannot read file '%s'", arg_val);
-            }
-        } else if (strcmp(name, "list_dir") == 0) {
-            // Read-only: no confirmation needed
-            char resolved[PATH_MAX];
-            resolve_path(arg_val, resolved, sizeof(resolved));
-            printf(ANSI_DIM "  [listing %s]" ANSI_RESET "\n", resolved);
-            char *listing = dir_listing(resolved);
-            if (listing) {
-                int ll = (int)strlen(listing);
-                if (ll > 65535) ll = 65535;
-                memcpy(output, listing, ll);
-                out_len = ll;
-                free(listing);
-            } else {
-                out_len = snprintf(output, sizeof(output), "Error: cannot list directory '%s'", arg_val);
+                switch (p[i]) {
+                    case 'n': buf[di++] = '\n'; break;
+                    case 't': buf[di++] = '\t'; break;
+                    case 'r': buf[di++] = '\r'; break;
+                    case '"': buf[di++] = '"'; break;
+                    case '\\': buf[di++] = '\\'; break;
+                    case '/': buf[di++] = '/'; break;
+                    default: buf[di++] = p[i]; break;
+                }
             }
         } else {
-            // bash: needs confirmation
-            printf(ANSI_YELLOW "  $ %s" ANSI_RESET "\n", arg_val);
+            buf[di++] = p[i];
+        }
+    }
+    buf[di] = 0;
 
-            int approved = g.auto_approve_tools;
-            if (!approved) {
-                printf(ANSI_DIM "  [execute? y/n/a(lways)] " ANSI_RESET);
-                fflush(stdout);
-                int ch = getchar();
-                while (getchar() != '\n');
-                if (ch == 'a' || ch == 'A') { approved = 1; g.auto_approve_tools = 1; }
-                else if (ch == 'y' || ch == 'Y') approved = 1;
+    // Advance endp past the closing quote
+    if (endp) {
+        int i = 0;
+        while (p[i] && p[i] != '"') {
+            if (p[i] == '\\' && p[i+1]) i += 2;
+            else i++;
+        }
+        *endp = p[i] == '"' ? p + i + 1 : p + i;
+    }
+    return buf;
+}
+
+// Extract tool call with full multi-argument support.
+// Fills ToolCall struct. Returns 1 on success.
+static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
+    memset(tc, 0, sizeof(*tc));
+
+    // === Try JSON format: {"name":"...","arguments":{...}} ===
+    char *nk = strstr(tc_body, "\"name\"");
+    if (nk) {
+        // Find the opening quote of the name value
+        nk += 6;
+        while (*nk && *nk != '"') nk++;
+        if (*nk == '"') {
+            nk++;
+            int ni = 0;
+            while (*nk && *nk != '"' && ni < 63) tc->name[ni++] = *nk++;
+            tc->name[ni] = 0;
+        }
+    }
+
+    // Find "arguments" then the opening {
+    char *args_start = strstr(tc_body, "\"arguments\"");
+    if (args_start) {
+        args_start += 11;
+        while (*args_start && *args_start != '{') args_start++;
+        if (*args_start == '{') {
+            args_start++; // skip {
+            // Parse key-value pairs
+            const char *p = args_start;
+            while (*p && tc->argc < MAX_TOOL_ARGS) {
+                // Skip whitespace and commas
+                while (*p && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) p++;
+                if (*p == '}') break; // end of arguments
+                if (*p != '"') break; // expect key string
+
+                // Parse key
+                p++; // skip opening "
+                int ki = 0;
+                while (*p && *p != '"' && ki < 63) {
+                    tc->keys[tc->argc][ki++] = *p++;
+                }
+                tc->keys[tc->argc][ki] = 0;
+                if (*p == '"') p++; // skip closing "
+
+                // Skip colon and whitespace
+                while (*p && (*p == ' ' || *p == ':' || *p == '\t')) p++;
+
+                if (*p == '"') {
+                    // String value
+                    p++; // skip opening "
+                    const char *endp;
+                    tc->vals[tc->argc] = decode_json_string(p, &endp);
+                    p = endp;
+                } else {
+                    // Non-string value (number, bool, null) — read until , or }
+                    const char *start = p;
+                    while (*p && *p != ',' && *p != '}') p++;
+                    size_t vlen = (size_t)(p - start);
+                    tc->vals[tc->argc] = malloc(vlen + 1);
+                    memcpy(tc->vals[tc->argc], start, vlen);
+                    tc->vals[tc->argc][vlen] = 0;
+                    // Trim trailing whitespace
+                    while (vlen > 0 && (tc->vals[tc->argc][vlen-1] == ' ' ||
+                           tc->vals[tc->argc][vlen-1] == '\n')) {
+                        tc->vals[tc->argc][--vlen] = 0;
+                    }
+                }
+                tc->argc++;
             }
+            if (tc->argc > 0) return 1;
+        }
+    }
 
-            if (!approved) {
-                printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
-                free(response);
-                return NULL;
+    // === Fallback: Qwen XML-style format ===
+    if (tc->name[0] == 0) {
+        const char *p = tc_body;
+        while (*p && (*p == ' ' || *p == '\n' || *p == '\r')) p++;
+        if (*p && *p != '{' && *p != '<') {
+            int ni = 0;
+            while (*p && *p != '\n' && *p != '\r' && *p != '<' && *p != ' ' && ni < 63)
+                tc->name[ni++] = *p++;
+            tc->name[ni] = 0;
+        }
+    }
+
+    char *ak = strstr(tc_body, "<arg_key>");
+    char *av = strstr(tc_body, "<arg_value>");
+    if (ak && av) {
+        ak += 9;
+        char *ak_end = strstr(ak, "</arg_key>");
+        if (ak_end) {
+            int kl = (int)(ak_end - ak);
+            if (kl > 63) kl = 63;
+            memcpy(tc->keys[0], ak, kl);
+            tc->keys[0][kl] = 0;
+        }
+        av += 11;
+        char *av_end = strstr(av, "</arg_value>");
+        if (!av_end) av_end = strstr(av, "</function>");
+        if (!av_end) av_end = strstr(av, "</tool_call>");
+        if (av_end) {
+            int vl = (int)(av_end - av);
+            tc->vals[0] = malloc(vl + 1);
+            memcpy(tc->vals[0], av, vl);
+            tc->vals[0][vl] = 0;
+        }
+        if (tc->vals[0]) { tc->argc = 1; return 1; }
+    }
+
+    // Bare argument on the line after the tool name
+    if (tc->name[0] != 0 && tc->argc == 0) {
+        const char *p = tc_body;
+        while (*p && (*p == ' ' || *p == '\n' || *p == '\r')) p++;
+        while (*p && *p != '\n') p++;
+        while (*p == '\n' || *p == '\r') p++;
+        if (*p && *p != '<') {
+            const char *end = p + strlen(p);
+            while (end > p && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ')) end--;
+            int vl = (int)(end - p);
+            if (vl > 0) {
+                // Default key based on tool name
+                if (strcmp(tc->name, "bash") == 0)
+                    strncpy(tc->keys[0], "command", 63);
+                else
+                    strncpy(tc->keys[0], "path", 63);
+                tc->vals[0] = malloc(vl + 1);
+                memcpy(tc->vals[0], p, vl);
+                tc->vals[0][vl] = 0;
+                tc->argc = 1;
+                return 1;
             }
+        }
+    }
 
-            FILE *proc = popen(arg_val, "r");
+    if (tc->name[0] == 0 && strstr(tc_body, "bash")) strncpy(tc->name, "bash", 64);
+
+    // Default path for list_dir/read_file when no argument given
+    if (tc->argc == 0 && (strcmp(tc->name, "list_dir") == 0 || strcmp(tc->name, "read_file") == 0)) {
+        strncpy(tc->keys[0], "path", 63);
+        tc->vals[0] = strdup(".");
+        tc->argc = 1;
+    }
+
+    return tc->argc > 0;
+}
+
+// Max bytes per tool response injected into context (keeps prefill fast)
+#define MAX_TOOL_RESPONSE (8 * 1024)
+
+// Execute a single tool call and write output into buf. Returns output length.
+static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
+    int out_len = 0;
+    output[0] = 0;
+    const char *name = tc->name;
+
+    // --- Permission check ---
+    PermLevel perm = tool_permission(name);
+
+    // Special case: open_app is confirm first time only
+    if (strcmp(name, "open_app") == 0 && g.open_app_approved) perm = PERM_AUTO;
+
+    if (perm == PERM_CONFIRM_ALWAYS) {
+        const char *detail = tool_call_get(tc, "command");
+        if (!detail) detail = tool_call_get(tc, "pid");
+        if (!detail) detail = tool_call_get(tc, "target");
+        if (!detail) detail = name;
+        printf(ANSI_YELLOW "  [%s: %s]" ANSI_RESET "\n", name, detail);
+        printf(ANSI_DIM "  [execute? y/n] " ANSI_RESET);
+        fflush(stdout);
+        int ch = getchar(); while (getchar() != '\n');
+        if (ch != 'y' && ch != 'Y') {
+            printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
+            return -1;
+        }
+        if (strcmp(name, "open_app") == 0) g.open_app_approved = 1;
+    } else if (perm == PERM_CONFIRM_ONCE && !g.auto_approve_tools) {
+        const char *detail = tool_call_get(tc, "path");
+        if (!detail) detail = tool_call_get(tc, "url");
+        if (!detail) detail = tool_call_get(tc, "title");
+        if (!detail) detail = name;
+        printf(ANSI_YELLOW "  [%s: %s]" ANSI_RESET "\n", name, detail);
+        printf(ANSI_DIM "  [allow? y/n/a(lways)] " ANSI_RESET);
+        fflush(stdout);
+        int ch = getchar(); while (getchar() != '\n');
+        if (ch == 'a' || ch == 'A') { g.auto_approve_tools = 1; }
+        else if (ch != 'y' && ch != 'Y') {
+            printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
+            return -1;
+        }
+    }
+
+    // --- Dispatch tools ---
+
+    if (strcmp(name, "read_file") == 0) {
+        const char *path_arg = tool_call_get(tc, "path");
+        if (!path_arg) path_arg = ".";
+        char resolved[PATH_MAX];
+        resolve_path(path_arg, resolved, sizeof(resolved));
+        printf(ANSI_DIM "  [reading %s]" ANSI_RESET "\n", resolved);
+        char *content = file_read_for_context(resolved);
+        if (content) {
+            int cl = (int)strlen(content);
+            int limit = MAX_TOOL_RESPONSE < (int)output_sz - 1 ? MAX_TOOL_RESPONSE : (int)output_sz - 1;
+            if (cl > limit) {
+                memcpy(output, content, limit);
+                output[limit] = 0;
+                out_len = limit + snprintf(output + limit, output_sz - limit,
+                    "\n\n[... truncated %d/%d bytes — use bash to see full file]", limit, cl);
+                printf(ANSI_DIM "  [truncated to %dKB of %dKB]" ANSI_RESET "\n",
+                    limit / 1024, cl / 1024);
+            } else {
+                memcpy(output, content, cl);
+                out_len = cl;
+                output[cl] = 0;
+            }
+            free(content);
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot read file '%s'", path_arg);
+        }
+
+    } else if (strcmp(name, "list_dir") == 0) {
+        const char *path_arg = tool_call_get(tc, "path");
+        if (!path_arg) path_arg = ".";
+        char resolved[PATH_MAX];
+        resolve_path(path_arg, resolved, sizeof(resolved));
+        printf(ANSI_DIM "  [listing %s]" ANSI_RESET "\n", resolved);
+        char *listing = dir_listing(resolved);
+        if (listing) {
+            int ll = (int)strlen(listing);
+            if (ll > (int)output_sz - 1) ll = (int)output_sz - 1;
+            memcpy(output, listing, ll);
+            out_len = ll;
+            output[ll] = 0;
+            free(listing);
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot list directory '%s'", path_arg);
+        }
+
+    } else if (strcmp(name, "bash") == 0) {
+        const char *cmd = tool_call_get(tc, "command");
+        if (!cmd) { out_len = snprintf(output, output_sz, "Error: no command provided"); return out_len; }
+        printf(ANSI_DIM "  [$ %s]" ANSI_RESET "\n", cmd);
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+        if (out_len > 0) {
+            // Truncate display if very long
+            if (out_len > 2000) {
+                printf(ANSI_DIM "%.2000s\n  [...%d more bytes]" ANSI_RESET "\n", output, out_len - 2000);
+            } else {
+                printf(ANSI_DIM "%s" ANSI_RESET, output);
+                if (output[out_len - 1] != '\n') printf("\n");
+            }
+        }
+
+    } else if (strcmp(name, "system_info") == 0) {
+        printf(ANSI_DIM "  [gathering system info]" ANSI_RESET "\n");
+        out_len = 0;
+        // CPU
+        FILE *p = popen("sysctl -n machdep.cpu.brand_string 2>/dev/null", "r");
+        if (p) {
+            out_len += snprintf(output + out_len, output_sz - out_len, "CPU: ");
+            char buf[256];
+            if (fgets(buf, sizeof(buf), p)) {
+                buf[strcspn(buf, "\n")] = 0;
+                out_len += snprintf(output + out_len, output_sz - out_len, "%s\n", buf);
+            }
+            pclose(p);
+        }
+        // Memory
+        p = popen("sysctl -n hw.memsize 2>/dev/null", "r");
+        if (p) {
+            char buf[64];
+            if (fgets(buf, sizeof(buf), p)) {
+                long long mem = atoll(buf);
+                out_len += snprintf(output + out_len, output_sz - out_len,
+                    "Memory: %.1f GB\n", mem / (1024.0*1024*1024));
+            }
+            pclose(p);
+        }
+        // VM stats
+        p = popen("vm_stat 2>/dev/null | head -5", "r");
+        if (p) {
+            out_len += snprintf(output + out_len, output_sz - out_len, "VM Stats:\n");
+            char buf[256];
+            while (fgets(buf, sizeof(buf), p) && out_len < (int)output_sz - 256)
+                out_len += snprintf(output + out_len, output_sz - out_len, "  %s", buf);
+            pclose(p);
+        }
+        // Disk
+        p = popen("df -h / 2>/dev/null", "r");
+        if (p) {
+            out_len += snprintf(output + out_len, output_sz - out_len, "Disk:\n");
+            char buf[256];
+            while (fgets(buf, sizeof(buf), p) && out_len < (int)output_sz - 256)
+                out_len += snprintf(output + out_len, output_sz - out_len, "  %s", buf);
+            pclose(p);
+        }
+        // Battery
+        p = popen("pmset -g batt 2>/dev/null | tail -1", "r");
+        if (p) {
+            char buf[256];
+            if (fgets(buf, sizeof(buf), p)) {
+                buf[strcspn(buf, "\n")] = 0;
+                out_len += snprintf(output + out_len, output_sz - out_len, "Battery: %s\n", buf);
+            }
+            pclose(p);
+        }
+
+    } else if (strcmp(name, "process_list") == 0) {
+        const char *filter = tool_call_get(tc, "filter");
+        printf(ANSI_DIM "  [listing processes%s%s]" ANSI_RESET "\n",
+               filter ? " filter=" : "", filter ? filter : "");
+        char cmd[512];
+        if (filter && filter[0])
+            snprintf(cmd, sizeof(cmd), "ps aux | head -1; ps aux | grep '%s' | grep -v grep", filter);
+        else
+            snprintf(cmd, sizeof(cmd), "ps aux");
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "process_kill") == 0) {
+        const char *pid_str = tool_call_get(tc, "pid");
+        if (!pid_str) { out_len = snprintf(output, output_sz, "Error: no pid provided"); return out_len; }
+        // Validate numeric
+        for (int i = 0; pid_str[i]; i++) {
+            if (pid_str[i] < '0' || pid_str[i] > '9') {
+                out_len = snprintf(output, output_sz, "Error: invalid pid '%s'", pid_str);
+                return out_len;
+            }
+        }
+        pid_t pid = (pid_t)atoi(pid_str);
+        printf(ANSI_DIM "  [killing pid %d]" ANSI_RESET "\n", pid);
+        if (kill(pid, SIGTERM) == 0) {
+            out_len = snprintf(output, output_sz, "Sent SIGTERM to pid %d", pid);
+        } else {
+            out_len = snprintf(output, output_sz, "Error killing pid %d: %s", pid, strerror(errno));
+        }
+
+    } else if (strcmp(name, "clipboard_read") == 0) {
+        printf(ANSI_DIM "  [reading clipboard]" ANSI_RESET "\n");
+        FILE *proc = popen("pbpaste", "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot read clipboard");
+        }
+
+    } else if (strcmp(name, "clipboard_write") == 0) {
+        const char *content = tool_call_get(tc, "content");
+        if (!content) { out_len = snprintf(output, output_sz, "Error: no content provided"); return out_len; }
+        printf(ANSI_DIM "  [writing to clipboard]" ANSI_RESET "\n");
+        FILE *proc = popen("pbcopy", "w");
+        if (proc) {
+            fwrite(content, 1, strlen(content), proc);
+            pclose(proc);
+            out_len = snprintf(output, output_sz, "Copied %zu bytes to clipboard", strlen(content));
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot write to clipboard");
+        }
+
+    } else if (strcmp(name, "open_app") == 0) {
+        const char *target = tool_call_get(tc, "target");
+        if (!target) { out_len = snprintf(output, output_sz, "Error: no target provided"); return out_len; }
+        printf(ANSI_DIM "  [opening %s]" ANSI_RESET "\n", target);
+        char cmd[PATH_MAX + 32];
+        snprintf(cmd, sizeof(cmd), "open '%s' 2>&1", target);
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            int ret = pclose(proc);
+            if (ret == 0 && out_len == 0)
+                out_len = snprintf(output, output_sz, "Opened %s", target);
+        }
+
+    } else if (strcmp(name, "notify") == 0) {
+        const char *title = tool_call_get(tc, "title");
+        const char *message = tool_call_get(tc, "message");
+        if (!title || !message) {
+            out_len = snprintf(output, output_sz, "Error: title and message required");
+            return out_len;
+        }
+        printf(ANSI_DIM "  [notify: %s]" ANSI_RESET "\n", title);
+        // Shell-escape by replacing single quotes
+        char safe_title[256], safe_msg[1024];
+        int ti = 0, mi = 0;
+        for (int i = 0; title[i] && ti < 250; i++) {
+            if (title[i] == '\'') { safe_title[ti++] = '\\'; safe_title[ti++] = '\''; }
+            else safe_title[ti++] = title[i];
+        }
+        safe_title[ti] = 0;
+        for (int i = 0; message[i] && mi < 1018; i++) {
+            if (message[i] == '\'') { safe_msg[mi++] = '\\'; safe_msg[mi++] = '\''; }
+            else safe_msg[mi++] = message[i];
+        }
+        safe_msg[mi] = 0;
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd),
+            "osascript -e 'display notification \"%s\" with title \"%s\"' 2>&1",
+            safe_msg, safe_title);
+        FILE *proc = popen(cmd, "r");
+        if (proc) { pclose(proc); }
+        out_len = snprintf(output, output_sz, "Notification sent: %s", title);
+
+    } else if (strcmp(name, "glob") == 0) {
+        const char *pattern = tool_call_get(tc, "pattern");
+        const char *path_arg = tool_call_get(tc, "path");
+        if (!pattern) { out_len = snprintf(output, output_sz, "Error: no pattern provided"); return out_len; }
+
+        char full_pattern[PATH_MAX];
+        if (path_arg && path_arg[0]) {
+            char resolved[PATH_MAX];
+            resolve_path(path_arg, resolved, sizeof(resolved));
+            snprintf(full_pattern, sizeof(full_pattern), "%s/%s", resolved, pattern);
+        } else {
+            // If pattern is already absolute, use as-is
+            if (pattern[0] == '/' || pattern[0] == '~') {
+                strncpy(full_pattern, pattern, sizeof(full_pattern) - 1);
+            } else {
+                snprintf(full_pattern, sizeof(full_pattern), "%s/%s", g.cwd, pattern);
+            }
+        }
+        printf(ANSI_DIM "  [glob %s]" ANSI_RESET "\n", full_pattern);
+
+        glob_t gl;
+        int ret = glob(full_pattern, GLOB_TILDE | GLOB_MARK, NULL, &gl);
+        if (ret == 0) {
+            for (size_t i = 0; i < gl.gl_pathc && out_len < (int)output_sz - PATH_MAX; i++) {
+                out_len += snprintf(output + out_len, output_sz - out_len, "%s\n", gl.gl_pathv[i]);
+            }
+            if (gl.gl_pathc == 0)
+                out_len = snprintf(output, output_sz, "No matches found");
+            globfree(&gl);
+        } else {
+            out_len = snprintf(output, output_sz, "No matches found for pattern '%s'", full_pattern);
+        }
+
+    } else if (strcmp(name, "grep") == 0) {
+        const char *pattern = tool_call_get(tc, "pattern");
+        const char *path_arg = tool_call_get(tc, "path");
+        const char *include = tool_call_get(tc, "include");
+        if (!pattern) { out_len = snprintf(output, output_sz, "Error: no pattern provided"); return out_len; }
+
+        char resolved[PATH_MAX];
+        if (path_arg && path_arg[0])
+            resolve_path(path_arg, resolved, sizeof(resolved));
+        else
+            strncpy(resolved, g.cwd, sizeof(resolved) - 1);
+
+        printf(ANSI_DIM "  [grep '%s' in %s]" ANSI_RESET "\n", pattern, resolved);
+
+        // Build grep command — shell-escape pattern by replacing single quotes
+        char safe_pattern[1024];
+        int pi = 0;
+        for (int i = 0; pattern[i] && pi < 1018; i++) {
+            if (pattern[i] == '\'') { safe_pattern[pi++] = '\''; safe_pattern[pi++] = '\\';
+                                      safe_pattern[pi++] = '\''; safe_pattern[pi++] = '\''; }
+            else safe_pattern[pi++] = pattern[i];
+        }
+        safe_pattern[pi] = 0;
+
+        char cmd[2048];
+        if (include && include[0])
+            snprintf(cmd, sizeof(cmd), "grep -rn --include='%s' '%s' '%s' 2>/dev/null", include, safe_pattern, resolved);
+        else
+            snprintf(cmd, sizeof(cmd), "grep -rn '%s' '%s' 2>/dev/null", safe_pattern, resolved);
+
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "No matches found");
+
+    } else if (strcmp(name, "web_fetch") == 0) {
+        const char *url = tool_call_get(tc, "url");
+        if (!url) { out_len = snprintf(output, output_sz, "Error: no url provided"); return out_len; }
+        // Validate URL and reject command injection
+        if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
+            out_len = snprintf(output, output_sz, "Error: URL must start with http:// or https://");
+            return out_len;
+        }
+        if (strchr(url, '\'') || strchr(url, '`') || strchr(url, '$') || strchr(url, ';')) {
+            out_len = snprintf(output, output_sz, "Error: URL contains invalid characters");
+            return out_len;
+        }
+        printf(ANSI_DIM "  [fetching %s]" ANSI_RESET "\n", url);
+        char cmd[2048];
+        snprintf(cmd, sizeof(cmd),
+            "curl -sL --max-time 15 '%s' | textutil -stdin -format html -convert txt -stdout 2>/dev/null || curl -sL --max-time 15 '%s'",
+            url, url);
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "Error: no content fetched from %s", url);
+
+    } else if (strcmp(name, "file_write") == 0) {
+        const char *path_arg = tool_call_get(tc, "path");
+        const char *content = tool_call_get(tc, "content");
+        if (!path_arg || !content) {
+            out_len = snprintf(output, output_sz, "Error: path and content required");
+            return out_len;
+        }
+        char resolved[PATH_MAX];
+        resolve_path(path_arg, resolved, sizeof(resolved));
+        printf(ANSI_DIM "  [writing %s]" ANSI_RESET "\n", resolved);
+        checkpoint_file(resolved);
+        FILE *f = fopen(resolved, "w");
+        if (f) {
+            size_t written = fwrite(content, 1, strlen(content), f);
+            fclose(f);
+            out_len = snprintf(output, output_sz, "Wrote %zu bytes to %s", written, resolved);
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot write '%s': %s", resolved, strerror(errno));
+        }
+
+    } else if (strcmp(name, "file_edit") == 0) {
+        const char *path_arg = tool_call_get(tc, "path");
+        const char *old_str = tool_call_get(tc, "old_string");
+        const char *new_str = tool_call_get(tc, "new_string");
+        if (!path_arg || !old_str || !new_str) {
+            out_len = snprintf(output, output_sz, "Error: path, old_string, and new_string required");
+            return out_len;
+        }
+        char resolved[PATH_MAX];
+        resolve_path(path_arg, resolved, sizeof(resolved));
+        printf(ANSI_DIM "  [editing %s]" ANSI_RESET "\n", resolved);
+
+        // Read file
+        struct stat st;
+        if (stat(resolved, &st) < 0) {
+            out_len = snprintf(output, output_sz, "Error: file not found '%s'", resolved);
+            return out_len;
+        }
+        FILE *f = fopen(resolved, "r");
+        if (!f) {
+            out_len = snprintf(output, output_sz, "Error: cannot read '%s'", resolved);
+            return out_len;
+        }
+        char *file_content = malloc((size_t)st.st_size + 1);
+        size_t nread = fread(file_content, 1, (size_t)st.st_size, f);
+        file_content[nread] = 0;
+        fclose(f);
+
+        // Find old_string — must appear exactly once
+        char *first = strstr(file_content, old_str);
+        if (!first) {
+            free(file_content);
+            out_len = snprintf(output, output_sz, "Error: old_string not found in %s", resolved);
+            return out_len;
+        }
+        char *second = strstr(first + strlen(old_str), old_str);
+        if (second) {
+            free(file_content);
+            out_len = snprintf(output, output_sz, "Error: old_string appears multiple times in %s", resolved);
+            return out_len;
+        }
+
+        // Checkpoint and replace
+        checkpoint_file(resolved);
+
+        size_t old_len = strlen(old_str);
+        size_t new_len = strlen(new_str);
+        size_t prefix_len = (size_t)(first - file_content);
+        size_t suffix_len = nread - prefix_len - old_len;
+        size_t result_len = prefix_len + new_len + suffix_len;
+        char *result = malloc(result_len + 1);
+        memcpy(result, file_content, prefix_len);
+        memcpy(result + prefix_len, new_str, new_len);
+        memcpy(result + prefix_len + new_len, first + old_len, suffix_len);
+        result[result_len] = 0;
+        free(file_content);
+
+        f = fopen(resolved, "w");
+        if (f) {
+            fwrite(result, 1, result_len, f);
+            fclose(f);
+            out_len = snprintf(output, output_sz, "Edited %s: replaced %zu bytes with %zu bytes",
+                             resolved, old_len, new_len);
+        } else {
+            out_len = snprintf(output, output_sz, "Error: cannot write '%s'", resolved);
+        }
+        free(result);
+
+    } else if (strcmp(name, "memory_save") == 0) {
+        const char *mem_name = tool_call_get(tc, "name");
+        const char *mem_type = tool_call_get(tc, "type");
+        const char *mem_desc = tool_call_get(tc, "description");
+        const char *mem_content = tool_call_get(tc, "content");
+        const char *mem_scope = tool_call_get(tc, "scope"); // "project" or "global" (default)
+        if (!mem_name || !mem_type || !mem_content) {
+            out_len = snprintf(output, output_sz, "Error: name, type, and content required");
+            return out_len;
+        }
+        if (!mem_desc) mem_desc = mem_name;
+        int is_proj = (mem_scope && strcmp(mem_scope, "project") == 0);
+        printf(ANSI_DIM "  [saving %s memory: %s (%s)]" ANSI_RESET "\n",
+               is_proj ? "project" : "global", mem_name, mem_type);
+        if (save_memory(mem_name, mem_type, mem_desc, mem_content, mem_scope)) {
+            out_len = snprintf(output, output_sz, "Memory saved: %s [%s] (%s)",
+                             mem_name, mem_type, is_proj ? "project" : "global");
+        } else {
+            out_len = snprintf(output, output_sz, "Error: failed to save memory");
+        }
+
+    } else if (strcmp(name, "memory_search") == 0) {
+        const char *query = tool_call_get(tc, "query");
+        printf(ANSI_DIM "  [searching memories%s%s]" ANSI_RESET "\n",
+               query ? ": " : "", query ? query : "");
+        char *result = search_memories(query);
+        if (result) {
+            int rl = (int)strlen(result);
+            if (rl > (int)output_sz - 1) rl = (int)output_sz - 1;
+            memcpy(output, result, rl);
+            output[rl] = 0;
+            out_len = rl;
+            free(result);
+        }
+
+    } else if (strcmp(name, "memory_list") == 0) {
+        printf(ANSI_DIM "  [listing %d memories]" ANSI_RESET "\n", g_memory_count);
+        for (int i = 0; i < g_memory_count && out_len < (int)output_sz - 512; i++) {
+            out_len += snprintf(output + out_len, output_sz - out_len,
+                "%d. [%s] %s — %s\n",
+                i + 1, g_memories[i].type, g_memories[i].name, g_memories[i].description);
+        }
+        if (g_memory_count == 0)
+            out_len = snprintf(output, output_sz, "No memories saved yet.");
+
+    } else if (strcmp(name, "memory_delete") == 0) {
+        const char *query = tool_call_get(tc, "query");
+        if (!query) { out_len = snprintf(output, output_sz, "Error: query required"); return out_len; }
+        printf(ANSI_DIM "  [deleting memory matching: %s]" ANSI_RESET "\n", query);
+        if (delete_memory(query)) {
+            out_len = snprintf(output, output_sz, "Deleted memory matching '%s'", query);
+        } else {
+            out_len = snprintf(output, output_sz, "No memory found matching '%s'", query);
+        }
+
+    // === Priority 3: Deep System Access ===
+
+    } else if (strcmp(name, "screenshot") == 0) {
+        const char *region = tool_call_get(tc, "region"); // "full", "window", or x,y,w,h
+        printf(ANSI_DIM "  [capturing screenshot%s%s]" ANSI_RESET "\n",
+               region ? ": " : "", region ? region : "");
+
+        // Generate temp path
+        char tmp_path[PATH_MAX];
+        snprintf(tmp_path, sizeof(tmp_path), "/tmp/pre_screenshot_%d.png", (int)getpid());
+
+        char cmd[512];
+        if (region && strcmp(region, "window") == 0) {
+            snprintf(cmd, sizeof(cmd), "screencapture -w '%s' 2>&1", tmp_path);
+        } else if (region && strcmp(region, "full") != 0 && region[0] >= '0' && region[0] <= '9') {
+            // Parse x,y,w,h
+            int x = 0, y = 0, w = 0, h = 0;
+            sscanf(region, "%d,%d,%d,%d", &x, &y, &w, &h);
+            snprintf(cmd, sizeof(cmd), "screencapture -R%d,%d,%d,%d '%s' 2>&1", x, y, w, h, tmp_path);
+        } else {
+            snprintf(cmd, sizeof(cmd), "screencapture -x '%s' 2>&1", tmp_path);
+        }
+        int ret = system(cmd);
+
+        struct stat ss;
+        if (ret == 0 && stat(tmp_path, &ss) == 0 && ss.st_size > 0) {
+            // Base64 encode for model (Gemma 4 vision)
+            char b64_cmd[PATH_MAX + 64];
+            snprintf(b64_cmd, sizeof(b64_cmd), "base64 -i '%s' 2>/dev/null", tmp_path);
+            FILE *proc = popen(b64_cmd, "r");
             if (proc) {
-                while (out_len < 65535) {
+                while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
                     int ch = fgetc(proc);
                     if (ch == EOF) break;
                     output[out_len++] = (char)ch;
@@ -987,22 +2726,332 @@ static char *handle_tool_calls(char *response) {
                 output[out_len] = 0;
                 pclose(proc);
             }
-
-            if (out_len > 0) {
-                printf(ANSI_DIM "%s" ANSI_RESET, output);
-                if (output[out_len - 1] != '\n') printf("\n");
+            // Prepend metadata
+            char meta[256];
+            int ml = snprintf(meta, sizeof(meta),
+                "Screenshot saved: %s (%s)\nBase64 PNG data (%s):\n",
+                tmp_path, fmt_size(ss.st_size), fmt_size(ss.st_size));
+            if (out_len + ml < (int)output_sz) {
+                memmove(output + ml, output, out_len + 1);
+                memcpy(output, meta, ml);
+                out_len += ml;
             }
+        } else {
+            out_len = snprintf(output, output_sz,
+                "Screenshot saved to %s (use bash to inspect). Note: screencapture may need Screen Recording permission.",
+                tmp_path);
         }
 
-        // Send tool response back
-        char *tool_msg = malloc(out_len + 256);
-        snprintf(tool_msg, out_len + 256, "<tool_response>\n%s</tool_response>", output);
+    } else if (strcmp(name, "window_list") == 0) {
+        printf(ANSI_DIM "  [listing windows]" ANSI_RESET "\n");
+        const char *script =
+            "osascript -e '"
+            "set output to \"\"\n"
+            "tell application \"System Events\"\n"
+            "  repeat with proc in (every process whose background only is false)\n"
+            "    set appName to name of proc\n"
+            "    try\n"
+            "      repeat with w in (every window of proc)\n"
+            "        set winName to name of w\n"
+            "        set {x, y} to position of w\n"
+            "        set {ww, wh} to size of w\n"
+            "        set output to output & appName & \" | \" & winName & \" | \" & x & \",\" & y & \" \" & ww & \"x\" & wh & \"\n\"\n"
+            "      end repeat\n"
+            "    end try\n"
+            "  end repeat\n"
+            "end tell\n"
+            "return output' 2>&1";
+        FILE *proc = popen(script, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "No windows found (may need Accessibility permission)");
 
-        session_save_turn(g.session_id, "tool", tool_msg);
+    } else if (strcmp(name, "window_focus") == 0) {
+        const char *app = tool_call_get(tc, "app");
+        if (!app) { out_len = snprintf(output, output_sz, "Error: app name required"); return out_len; }
+        printf(ANSI_DIM "  [focusing %s]" ANSI_RESET "\n", app);
+        // Shell-escape app name
+        char safe_app[256];
+        int ai = 0;
+        for (int i = 0; app[i] && ai < 250; i++) {
+            if (app[i] == '\'') { safe_app[ai++] = '\\'; safe_app[ai++] = '\''; }
+            else safe_app[ai++] = app[i];
+        }
+        safe_app[ai] = 0;
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+            "osascript -e 'tell application \"%s\" to activate' 2>&1", safe_app);
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            int ret = pclose(proc);
+            if (ret == 0 && out_len == 0)
+                out_len = snprintf(output, output_sz, "Focused %s", app);
+        }
+
+    } else if (strcmp(name, "display_info") == 0) {
+        printf(ANSI_DIM "  [getting display info]" ANSI_RESET "\n");
+        FILE *proc = popen("system_profiler SPDisplaysDataType 2>/dev/null", "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "net_info") == 0) {
+        printf(ANSI_DIM "  [gathering network info]" ANSI_RESET "\n");
+        // Active interfaces and IPs
+        FILE *proc = popen(
+            "echo '=== Active Interfaces ===' && "
+            "ifconfig | grep -E '^[a-z]|inet ' | grep -v '127.0.0.1' && "
+            "echo '' && echo '=== Default Route ===' && "
+            "route -n get default 2>/dev/null | grep -E 'gateway|interface' && "
+            "echo '' && echo '=== DNS ===' && "
+            "scutil --dns 2>/dev/null | head -20", "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "net_connections") == 0) {
+        const char *filter = tool_call_get(tc, "filter"); // "listening", "established", or port number
+        printf(ANSI_DIM "  [listing connections%s%s]" ANSI_RESET "\n",
+               filter ? ": " : "", filter ? filter : "");
+        char cmd[512];
+        if (filter && strcmp(filter, "listening") == 0) {
+            snprintf(cmd, sizeof(cmd), "lsof -iTCP -sTCP:LISTEN -P -n 2>/dev/null | head -50");
+        } else if (filter && strcmp(filter, "established") == 0) {
+            snprintf(cmd, sizeof(cmd), "lsof -iTCP -sTCP:ESTABLISHED -P -n 2>/dev/null | head -50");
+        } else if (filter && filter[0] >= '0' && filter[0] <= '9') {
+            snprintf(cmd, sizeof(cmd), "lsof -iTCP:%s -P -n 2>/dev/null", filter);
+        } else {
+            snprintf(cmd, sizeof(cmd), "lsof -iTCP -P -n 2>/dev/null | head -80");
+        }
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "service_status") == 0) {
+        const char *svc = tool_call_get(tc, "service");
+        printf(ANSI_DIM "  [checking services%s%s]" ANSI_RESET "\n",
+               svc ? ": " : "", svc ? svc : "");
+        char cmd[512];
+        if (svc && svc[0]) {
+            // Shell-escape
+            char safe[256]; int si = 0;
+            for (int i = 0; svc[i] && si < 250; i++) {
+                if (svc[i] == '\'') { safe[si++] = '\''; safe[si++] = '\\'; safe[si++] = '\''; safe[si++] = '\''; }
+                else safe[si++] = svc[i];
+            }
+            safe[si] = 0;
+            snprintf(cmd, sizeof(cmd),
+                "launchctl list 2>/dev/null | grep -i '%s'", safe);
+        } else {
+            snprintf(cmd, sizeof(cmd),
+                "echo '=== User Services ===' && launchctl list 2>/dev/null | head -30 && "
+                "echo '' && echo '=== System Services (running) ===' && "
+                "sudo launchctl list 2>/dev/null | grep -v '\"0\"' | head -30 || "
+                "launchctl list 2>/dev/null | head -40");
+        }
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "disk_usage") == 0) {
+        const char *path_arg = tool_call_get(tc, "path");
+        printf(ANSI_DIM "  [checking disk usage]" ANSI_RESET "\n");
+        char cmd[512];
+        if (path_arg && path_arg[0]) {
+            char resolved[PATH_MAX];
+            resolve_path(path_arg, resolved, sizeof(resolved));
+            snprintf(cmd, sizeof(cmd), "du -sh '%s'/* 2>/dev/null | sort -rh | head -30", resolved);
+        } else {
+            snprintf(cmd, sizeof(cmd),
+                "echo '=== Volumes ===' && df -h 2>/dev/null && "
+                "echo '' && echo '=== Largest in CWD ===' && "
+                "du -sh '%s'/* 2>/dev/null | sort -rh | head -20", g.cwd);
+        }
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "hardware_info") == 0) {
+        printf(ANSI_DIM "  [gathering hardware info]" ANSI_RESET "\n");
+        FILE *proc = popen(
+            "echo '=== Hardware ===' && "
+            "sysctl -n hw.model 2>/dev/null && "
+            "sysctl -n machdep.cpu.brand_string 2>/dev/null && "
+            "echo \"Cores: $(sysctl -n hw.ncpu 2>/dev/null) ($(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || echo '?')P + $(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null || echo '?')E)\" && "
+            "echo \"Memory: $(( $(sysctl -n hw.memsize 2>/dev/null) / 1073741824 )) GB\" && "
+            "echo \"GPU Cores: $(system_profiler SPDisplaysDataType 2>/dev/null | grep 'Total Number of Cores' | awk -F: '{print $2}' | xargs)\" && "
+            "echo \"Memory Bandwidth: $(sysctl -n hw.memsize 2>/dev/null | awk '{printf \"%.0f GB/s (theoretical)\", $1/1073741824 * 4.266}')\" && "
+            "echo '' && echo '=== Thermal ===' && "
+            "pmset -g therm 2>/dev/null && "
+            "echo '' && echo '=== Battery ===' && "
+            "pmset -g batt 2>/dev/null", "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+
+    } else if (strcmp(name, "applescript") == 0) {
+        const char *script = tool_call_get(tc, "script");
+        if (!script) { out_len = snprintf(output, output_sz, "Error: script required"); return out_len; }
+        printf(ANSI_DIM "  [running AppleScript]" ANSI_RESET "\n");
+
+        // Write script to temp file to avoid shell escaping issues
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "/tmp/pre_applescript_%d.scpt", (int)getpid());
+        FILE *sf = fopen(tmp, "w");
+        if (!sf) {
+            out_len = snprintf(output, output_sz, "Error: cannot create temp script");
+            return out_len;
+        }
+        fputs(script, sf);
+        fclose(sf);
+
+        char cmd[PATH_MAX + 64];
+        snprintf(cmd, sizeof(cmd), "osascript '%s' 2>&1", tmp);
+        FILE *proc = popen(cmd, "r");
+        if (proc) {
+            while (out_len < (int)output_sz - 1 && out_len < MAX_TOOL_RESPONSE) {
+                int ch = fgetc(proc);
+                if (ch == EOF) break;
+                output[out_len++] = (char)ch;
+            }
+            output[out_len] = 0;
+            pclose(proc);
+        }
+        remove(tmp);
+        if (out_len == 0)
+            out_len = snprintf(output, output_sz, "AppleScript executed (no output)");
+
+    } else {
+        out_len = snprintf(output, output_sz, "Error: unknown tool '%s'", name);
+    }
+
+    return out_len;
+}
+
+static char *handle_tool_calls(char *response) {
+    g.auto_approve_tools = 0;
+    int loop_turns = 0;
+
+    while (response && strstr(response, "<tool_call>")) {
+        if (++loop_turns > MAX_TOOL_LOOP_TURNS) {
+            printf(ANSI_YELLOW "\n  [tool loop limit reached (%d turns)]" ANSI_RESET "\n", MAX_TOOL_LOOP_TURNS);
+            break;
+        }
+
+        // Collect all tool calls from the current response
+        #define MAX_BATCH_TOOLS 8
+        ToolCall batch[MAX_BATCH_TOOLS];
+        int batch_count = 0;
+
+        char *scan = response;
+        while (batch_count < MAX_BATCH_TOOLS) {
+            char *tc_start = strstr(scan, "<tool_call>");
+            if (!tc_start) break;
+            char *tc_end = strstr(tc_start, "</tool_call>");
+            if (!tc_end) break;
+
+            char *body_start = tc_start + 11;
+            int tc_len = (int)(tc_end - body_start);
+
+            // Heap-allocate tc_body for large payloads (file_write content)
+            char *tc_body = malloc(tc_len + 1);
+            memcpy(tc_body, body_start, tc_len);
+            tc_body[tc_len] = 0;
+
+            if (extract_tool_call_v2(tc_body, &batch[batch_count])) {
+                batch_count++;
+            }
+            free(tc_body);
+            scan = tc_end + 12; // past </tool_call>
+        }
+
+        if (batch_count == 0) break;
+
+        // Execute all collected tool calls and combine responses
+        size_t combined_cap = 65536 * batch_count + 512;
+        char *combined = malloc(combined_cap);
+        combined[0] = 0;
+        size_t combined_len = 0;
+        int denied = 0;
+
+        for (int i = 0; i < batch_count && !denied; i++) {
+            char output[65536];
+            int out_len = execute_tool(&batch[i], output, sizeof(output));
+            if (out_len < 0) { denied = 1; break; }
+
+            int wrote = snprintf(combined + combined_len, combined_cap - combined_len,
+                "<tool_response name=\"%s\">\n%s</tool_response>\n",
+                batch[i].name, output);
+            if (wrote > 0) combined_len += wrote;
+        }
+
+        // Free all ToolCall heap memory
+        for (int i = 0; i < batch_count; i++) tool_call_free(&batch[i]);
+
+        if (denied) {
+            free(combined);
+            free(response);
+            return NULL;
+        }
+
+        session_save_turn(g.session_id, "tool", combined);
         free(response);
 
-        int sock = send_request(tool_msg, g.max_tokens, g.session_id);
-        free(tool_msg);
+        int sock = send_request(combined, g.max_tokens, g.session_id);
+        free(combined);
         if (sock < 0) return NULL;
 
         printf("\n");
@@ -1041,6 +3090,11 @@ static void cmd_rename(const char *args);
 static void cmd_context(const char *args);
 static void cmd_run(const char *args);
 static void cmd_edit(const char *args);
+static void cmd_undo(const char *args);
+static void cmd_memory(const char *args);
+static void cmd_forget(const char *args);
+static void cmd_channel(const char *args);
+static void cmd_project(const char *args);
 
 typedef struct {
     const char *name;
@@ -1050,7 +3104,7 @@ typedef struct {
 } SlashCommand;
 
 static SlashCommand commands[] = {
-    {"/help",     NULL,       "Show available commands",         cmd_help},
+    {"/help",     "[topic]",  "Show help (tools/memory/channels/projects/tips)", cmd_help},
     {"/quit",     NULL,       "Exit PRE",                        cmd_quit},
     {"/exit",     NULL,       "Exit PRE",                        cmd_quit},
     {"/file",     "<path>",   "Attach file to next message",     cmd_file},
@@ -1072,27 +3126,211 @@ static SlashCommand commands[] = {
     {"/context",  NULL,       "Show context/token budget",       cmd_context},
     {"/run",      "<cmd>",    "Run shell command, optionally feed to model", cmd_run},
     {"/edit",     NULL,       "Open $EDITOR for multi-line input", cmd_edit},
+    {"/undo",     NULL,       "Undo last file change",             cmd_undo},
+    {"/memory",   "[query]",  "List or search saved memories",     cmd_memory},
+    {"/forget",   "<query>",  "Delete a memory matching query",    cmd_forget},
+    {"/channel",  "[name]",   "Switch channel or list channels",   cmd_channel},
+    {"/project",  NULL,       "Show detected project info",        cmd_project},
     {NULL, NULL, NULL, NULL}
 };
 
 static int g_should_quit = 0;
 
-static void cmd_help(const char *args __attribute__((unused))) {
+static void help_commands(void) {
     printf("\n" ANSI_BOLD "  Commands:" ANSI_RESET "\n");
     for (int i = 0; commands[i].name; i++) {
-        if (strcmp(commands[i].name, "/exit") == 0) continue; // skip alias
-        if (commands[i].args_hint) {
+        if (strcmp(commands[i].name, "/exit") == 0) continue;
+        if (commands[i].args_hint)
             printf("  " ANSI_CYAN "%-12s" ANSI_RESET " %-10s %s\n",
                    commands[i].name, commands[i].args_hint, commands[i].description);
-        } else {
+        else
             printf("  " ANSI_CYAN "%-12s" ANSI_RESET " %-10s %s\n",
                    commands[i].name, "", commands[i].description);
+    }
+    printf("\n");
+}
+
+static void help_tools(void) {
+    printf("\n" ANSI_BOLD "  Agent Tools (29)" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    printf("  The model can call these tools autonomously during conversations.\n");
+    printf("  Permission levels control what runs automatically vs. needs approval.\n\n");
+
+    printf("  " ANSI_GREEN "Auto-approved" ANSI_RESET " (read-only, safe):\n");
+    printf("    read_file, list_dir, glob, grep, system_info, process_list,\n");
+    printf("    clipboard_read, memory_save, memory_search, memory_list,\n");
+    printf("    window_list, display_info, net_info, net_connections,\n");
+    printf("    service_status, disk_usage, hardware_info\n\n");
+
+    printf("  " ANSI_YELLOW "Confirm once" ANSI_RESET " (write ops — approve once or 'a' for session):\n");
+    printf("    file_write, file_edit, clipboard_write, web_fetch, notify,\n");
+    printf("    memory_delete, screenshot, window_focus\n\n");
+
+    printf("  " ANSI_RED "Confirm always" ANSI_RESET " (potentially destructive):\n");
+    printf("    bash, process_kill, open_app, applescript\n\n");
+
+    printf("  " ANSI_DIM "Tip: answer 'a' at a confirm prompt to auto-approve for the session." ANSI_RESET "\n\n");
+}
+
+static void help_memory(void) {
+    printf("\n" ANSI_BOLD "  Memory System" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    printf("  PRE has persistent memory that survives across sessions.\n\n");
+
+    printf("  " ANSI_BOLD "How it works:" ANSI_RESET "\n");
+    printf("    Memories are stored as .md files in " ANSI_DIM "~/.pre/memory/" ANSI_RESET "\n");
+    printf("    Project-scoped memories live in " ANSI_DIM "~/.pre/projects/{name}/memory/" ANSI_RESET "\n");
+    printf("    All memories are loaded into context at the start of each session.\n\n");
+
+    printf("  " ANSI_BOLD "Memory types:" ANSI_RESET "\n");
+    printf("    " ANSI_CYAN "user" ANSI_RESET "       Your role, preferences, expertise\n");
+    printf("    " ANSI_CYAN "feedback" ANSI_RESET "   How you want PRE to work (corrections & confirmations)\n");
+    printf("    " ANSI_CYAN "project" ANSI_RESET "    Ongoing work, decisions, deadlines\n");
+    printf("    " ANSI_CYAN "reference" ANSI_RESET "  Pointers to external resources\n\n");
+
+    printf("  " ANSI_BOLD "Commands:" ANSI_RESET "\n");
+    printf("    " ANSI_CYAN "/memory" ANSI_RESET "          List all memories\n");
+    printf("    " ANSI_CYAN "/memory <query>" ANSI_RESET "  Search memories\n");
+    printf("    " ANSI_CYAN "/forget <query>" ANSI_RESET "  Delete a memory\n\n");
+
+    printf("  " ANSI_BOLD "Automatic:" ANSI_RESET " The model saves memories proactively when it learns\n");
+    printf("  your preferences or discovers project context. You can also ask it\n");
+    printf("  explicitly: " ANSI_DIM "\"Remember that I prefer tabs over spaces.\"" ANSI_RESET "\n\n");
+}
+
+static void help_channels(void) {
+    printf("\n" ANSI_BOLD "  Channels" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    printf("  Channels are separate conversation threads within a project.\n");
+    printf("  Each channel has its own history, context, and turn count.\n\n");
+
+    printf("  " ANSI_BOLD "Commands:" ANSI_RESET "\n");
+    printf("    " ANSI_CYAN "/channel" ANSI_RESET "          List channels for current project\n");
+    printf("    " ANSI_CYAN "/channel <name>" ANSI_RESET "   Switch to a channel (creates if new)\n");
+    printf("    " ANSI_CYAN "/new" ANSI_RESET "              Fresh session in current channel\n\n");
+
+    printf("  " ANSI_BOLD "Examples:" ANSI_RESET "\n");
+    printf("    " ANSI_DIM "/channel refactor" ANSI_RESET "    — work on refactoring in isolation\n");
+    printf("    " ANSI_DIM "/channel debug-auth" ANSI_RESET "  — debug auth without polluting main context\n");
+    printf("    " ANSI_DIM "/channel general" ANSI_RESET "     — back to default channel\n\n");
+
+    printf("  " ANSI_DIM "Channels are scoped to the detected project. Changing projects\n");
+    printf("  via /cd automatically switches to that project's #general channel." ANSI_RESET "\n\n");
+}
+
+static void help_projects(void) {
+    printf("\n" ANSI_BOLD "  Projects" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    printf("  PRE auto-detects projects by looking for marker files when you\n");
+    printf("  launch or " ANSI_CYAN "/cd" ANSI_RESET " into a directory.\n\n");
+
+    printf("  " ANSI_BOLD "Detected markers:" ANSI_RESET "\n");
+    printf("    .git  package.json  pyproject.toml  Cargo.toml  go.mod\n");
+    printf("    Makefile  CMakeLists.txt  pom.xml  PRE.md\n\n");
+
+    printf("  " ANSI_BOLD "Project config:" ANSI_RESET "  " ANSI_CYAN "PRE.md" ANSI_RESET "\n");
+    printf("    Place a PRE.md in your project root with instructions for the model.\n");
+    printf("    It's loaded into context on the first turn — like a briefing document.\n\n");
+    printf("    Example PRE.md:\n");
+    printf(ANSI_DIM
+        "    # My Project\n"
+        "    This is a FastAPI app with PostgreSQL.\n"
+        "    - Always use async/await for database calls.\n"
+        "    - Tests are in tests/ — run with: pytest -xvs\n"
+        "    - Deploy target: AWS ECS on arm64.\n" ANSI_RESET "\n\n");
+
+    printf("  " ANSI_BOLD "Project data:" ANSI_RESET "  " ANSI_DIM "~/.pre/projects/{name}/" ANSI_RESET "\n");
+    printf("    " ANSI_DIM "memory/" ANSI_RESET "    Project-scoped memories\n");
+    printf("    " ANSI_DIM "channels/" ANSI_RESET "   Channel metadata\n\n");
+
+    printf("  " ANSI_BOLD "Commands:" ANSI_RESET "\n");
+    printf("    " ANSI_CYAN "/project" ANSI_RESET "   Show detected project info\n");
+    printf("    " ANSI_CYAN "/cd" ANSI_RESET "        Change directory (re-detects project)\n\n");
+}
+
+static void help_tips(void) {
+    printf("\n" ANSI_BOLD "  Tips & Best Practices" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n\n");
+
+    printf("  " ANSI_BOLD "Getting the best results:" ANSI_RESET "\n");
+    printf("    • Be specific. " ANSI_DIM "\"Review auth.py for SQL injection\"" ANSI_RESET " > " ANSI_DIM "\"check my code\"" ANSI_RESET "\n");
+    printf("    • Attach files before asking. " ANSI_CYAN "/file src/main.py" ANSI_RESET " then ask your question.\n");
+    printf("    • Use " ANSI_CYAN "/edit" ANSI_RESET " for complex prompts — opens your $EDITOR.\n");
+    printf("    • Use " ANSI_CYAN "/think" ANSI_RESET " to watch the model's reasoning process.\n\n");
+
+    printf("  " ANSI_BOLD "Context management:" ANSI_RESET "\n");
+    printf("    • Check " ANSI_CYAN "/context" ANSI_RESET " to see how much of the 128K window you've used.\n");
+    printf("    • PRE auto-compacts old turns at 75%% capacity to stay within budget.\n");
+    printf("    • Use " ANSI_CYAN "/rewind" ANSI_RESET " to undo turns that added noise to context.\n");
+    printf("    • Use channels to keep different tasks in separate contexts.\n\n");
+
+    printf("  " ANSI_BOLD "Tool calling:" ANSI_RESET "\n");
+    printf("    • The model reads files, searches code, and runs commands autonomously.\n");
+    printf("    • Answer " ANSI_BOLD "'a'" ANSI_RESET " at a permission prompt to auto-approve for the session.\n");
+    printf("    • " ANSI_CYAN "/undo" ANSI_RESET " reverts the last file_write or file_edit.\n");
+    printf("    • Tool responses are capped at 8KB to preserve context budget.\n\n");
+
+    printf("  " ANSI_BOLD "Shell integration:" ANSI_RESET "\n");
+    printf("    • " ANSI_BOLD "!" ANSI_RESET "command runs a shell command (output not sent to model).\n");
+    printf("    • " ANSI_CYAN "/run" ANSI_RESET " command runs it and offers to feed output to the model.\n\n");
+
+    printf("  " ANSI_BOLD "Privacy:" ANSI_RESET "\n");
+    printf("    • Everything runs locally. No data leaves your machine.\n");
+    printf("    • Model: Gemma 4 26B-A4B via Ollama on port 11434.\n");
+    printf("    • Session data: " ANSI_DIM "~/.pre/" ANSI_RESET "\n\n");
+}
+
+static void cmd_help(const char *args) {
+    if (!args || !args[0]) {
+        // Default: show overview with topic hints
+        help_commands();
+        printf("  Type a message to chat. Prefix with " ANSI_BOLD "!" ANSI_RESET " for shell commands.\n\n");
+        printf("  " ANSI_BOLD "Help topics:" ANSI_RESET "  " ANSI_CYAN "/help tools" ANSI_RESET
+               "  " ANSI_CYAN "/help memory" ANSI_RESET
+               "  " ANSI_CYAN "/help channels" ANSI_RESET
+               "  " ANSI_CYAN "/help projects" ANSI_RESET
+               "  " ANSI_CYAN "/help tips" ANSI_RESET "\n\n");
+        return;
+    }
+    while (*args == ' ') args++;
+
+    if (strcmp(args, "tools") == 0) { help_tools(); return; }
+    if (strcmp(args, "memory") == 0 || strcmp(args, "memories") == 0) { help_memory(); return; }
+    if (strcmp(args, "channels") == 0 || strcmp(args, "channel") == 0) { help_channels(); return; }
+    if (strcmp(args, "projects") == 0 || strcmp(args, "project") == 0) { help_projects(); return; }
+    if (strcmp(args, "tips") == 0 || strcmp(args, "best") == 0 || strcmp(args, "practices") == 0) { help_tips(); return; }
+    if (strcmp(args, "all") == 0) {
+        help_commands();
+        help_tools();
+        help_memory();
+        help_channels();
+        help_projects();
+        help_tips();
+        return;
+    }
+
+    // Per-command help: /help <command>
+    char lookup[32];
+    if (args[0] == '/') strncpy(lookup, args, 31);
+    else { lookup[0] = '/'; strncpy(lookup + 1, args, 30); }
+    lookup[31] = 0;
+
+    for (int i = 0; commands[i].name; i++) {
+        if (strcmp(lookup, commands[i].name) == 0) {
+            printf("\n  " ANSI_CYAN "%s" ANSI_RESET, commands[i].name);
+            if (commands[i].args_hint) printf(" %s", commands[i].args_hint);
+            printf("\n  %s\n\n", commands[i].description);
+            return;
         }
     }
-    printf("\n  Type a message to chat. Prefix with " ANSI_BOLD "!" ANSI_RESET
-           " for shell commands.\n"
-           "  Use " ANSI_BOLD "/file" ANSI_RESET " to attach files, "
-           ANSI_BOLD "/edit" ANSI_RESET " for multi-line input.\n\n");
+
+    printf(ANSI_YELLOW "  Unknown help topic: %s" ANSI_RESET "\n", args);
+    printf("  Try: " ANSI_CYAN "/help tools" ANSI_RESET ", "
+           ANSI_CYAN "/help memory" ANSI_RESET ", "
+           ANSI_CYAN "/help channels" ANSI_RESET ", "
+           ANSI_CYAN "/help projects" ANSI_RESET ", "
+           ANSI_CYAN "/help tips" ANSI_RESET ", or "
+           ANSI_CYAN "/help all" ANSI_RESET "\n\n");
 }
 
 static void cmd_quit(const char *args __attribute__((unused))) {
@@ -1205,21 +3443,28 @@ static void cmd_cd(const char *args) {
     }
     strncpy(g.cwd, real, PATH_MAX - 1);
     chdir(g.cwd);
-    printf(ANSI_GREEN "  [cwd: %s]" ANSI_RESET "\n\n", g.cwd);
+
+    // Re-detect project for new directory
+    char old_project[128];
+    strncpy(old_project, g.project_id, sizeof(old_project));
+    detect_project();
+    load_memories(); // reload with new project scope
+
+    printf(ANSI_GREEN "  [cwd: %s]" ANSI_RESET "\n", g.cwd);
+    if (g.project_name[0] && strcmp(old_project, g.project_id) != 0) {
+        printf(ANSI_GREEN "  [project: %s]" ANSI_RESET "\n", g.project_name);
+        channel_init("general");
+        printf(ANSI_GREEN "  [channel: #general]" ANSI_RESET "\n");
+    }
+    printf("\n");
 }
 
 static void cmd_new(const char *args __attribute__((unused))) {
-    generate_session_id(g.session_id, sizeof(g.session_id));
-    g.turn_count = 0;
+    // Start fresh in current channel
+    channel_init(g.channel[0] ? g.channel : "general");
     g.last_tok_s = 0;
-    g.total_tokens_in = 0;
-    g.total_tokens_out = 0;
-    g.cumulative_gen_ms = 0;
-    g.session_start_ms = now_ms();
-    g.session_title[0] = 0;
-    free(g.last_response); g.last_response = NULL;
     free(g_pending_attach); g_pending_attach = NULL;
-    printf(ANSI_GREEN "  [new session: %s]" ANSI_RESET "\n\n", g.session_id);
+    printf(ANSI_GREEN "  [new session in #%s]" ANSI_RESET "\n\n", g.channel);
 }
 
 static void cmd_sessions(const char *args __attribute__((unused))) {
@@ -1262,9 +3507,12 @@ static void cmd_status(const char *args __attribute__((unused))) {
     printf("\n");
     printf("  " ANSI_BOLD "Model:" ANSI_RESET "     %s\n", MODEL_NAME);
     printf("  " ANSI_BOLD "Server:" ANSI_RESET "    http://localhost:%d\n", g.port);
-    printf("  " ANSI_BOLD "Session:" ANSI_RESET "   %s\n", g.session_id);
+    if (g.project_name[0])
+        printf("  " ANSI_BOLD "Project:" ANSI_RESET "   %s (%s)\n", g.project_name, g.project_root);
+    printf("  " ANSI_BOLD "Channel:" ANSI_RESET "   #%s\n", g.channel);
     printf("  " ANSI_BOLD "CWD:" ANSI_RESET "       %s\n", g.cwd);
     printf("  " ANSI_BOLD "Turn:" ANSI_RESET "      %d\n", g.turn_count);
+    printf("  " ANSI_BOLD "Memory:" ANSI_RESET "    %d entries\n", g_memory_count);
     printf("  " ANSI_BOLD "Thinking:" ANSI_RESET "  %s\n", g.show_thinking ? "visible" : "hidden");
     if (g.last_tok_s > 0) {
         printf("  " ANSI_BOLD "Last:" ANSI_RESET "     %d tokens, %.1f tok/s, TTFT %.1fs\n",
@@ -1601,6 +3849,160 @@ static void cmd_edit(const char *args __attribute__((unused))) {
     printf(ANSI_GREEN "  [attached %d lines from editor — type your message or press Enter to send]" ANSI_RESET "\n\n", lines);
 }
 
+static void cmd_undo(const char *args) {
+    (void)args;
+    if (g.checkpoint_count == 0) {
+        printf("  [no file changes to undo]\n\n");
+        return;
+    }
+    g.checkpoint_count--;
+    const char *orig = g.checkpoints[g.checkpoint_count].path;
+    const char *back = g.checkpoints[g.checkpoint_count].backup;
+
+    FILE *src = fopen(back, "r");
+    FILE *dst = fopen(orig, "w");
+    if (!src || !dst) {
+        printf("  [error restoring %s]\n\n", orig);
+        if (src) fclose(src); if (dst) fclose(dst);
+        return;
+    }
+    char buf[8192]; size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) fwrite(buf, 1, n, dst);
+    fclose(src); fclose(dst);
+    remove(back);
+    printf("  [restored %s]\n\n", orig);
+}
+
+static void cmd_memory(const char *args) {
+    const char *query = (args && args[0]) ? args : NULL;
+    if (query) while (*query == ' ') query++;
+
+    if (g_memory_count == 0 && (!query || !query[0])) {
+        printf("  [no memories saved yet]\n\n");
+        return;
+    }
+
+    printf("\n" ANSI_BOLD "  Memories" ANSI_RESET " (%d total)\n", g_memory_count);
+    printf("  ─────────────────────────────\n");
+
+    for (int i = 0; i < g_memory_count; i++) {
+        int match = 1;
+        if (query && query[0]) {
+            match = 0;
+            if (strcasestr(g_memories[i].name, query)) match = 1;
+            else if (strcasestr(g_memories[i].description, query)) match = 1;
+            else if (strcasestr(g_memories[i].type, query)) match = 1;
+        }
+        if (!match) continue;
+
+        printf("  " ANSI_CYAN "[%s]" ANSI_RESET " " ANSI_BOLD "%s" ANSI_RESET "\n",
+               g_memories[i].type, g_memories[i].name);
+        printf("  " ANSI_DIM "%s" ANSI_RESET "\n", g_memories[i].description);
+
+        // Show first 2 lines of body
+        char *body = read_memory_body(g_memories[i].file);
+        if (body && body[0]) {
+            char preview[256];
+            strncpy(preview, body, 255);
+            preview[255] = 0;
+            // Truncate at 2nd newline
+            int nl = 0;
+            for (int j = 0; preview[j]; j++) {
+                if (preview[j] == '\n') {
+                    nl++;
+                    if (nl >= 2) { preview[j] = 0; break; }
+                }
+            }
+            printf("  " ANSI_DIM "%s" ANSI_RESET "\n", preview);
+        }
+        free(body);
+        printf("\n");
+    }
+}
+
+static void cmd_forget(const char *args) {
+    if (!args || !args[0]) {
+        printf(ANSI_YELLOW "  Usage: /forget <query>" ANSI_RESET "\n\n");
+        return;
+    }
+    while (*args == ' ') args++;
+
+    // Show what will be deleted
+    for (int i = 0; i < g_memory_count; i++) {
+        if (strcasestr(g_memories[i].name, args) ||
+            strcasestr(g_memories[i].description, args)) {
+            printf("  Found: " ANSI_BOLD "%s" ANSI_RESET " [%s]\n",
+                   g_memories[i].name, g_memories[i].type);
+            printf(ANSI_DIM "  [delete? y/n] " ANSI_RESET);
+            fflush(stdout);
+            int ch = getchar(); while (getchar() != '\n');
+            if (ch == 'y' || ch == 'Y') {
+                if (delete_memory(args)) {
+                    printf(ANSI_GREEN "  [memory deleted]" ANSI_RESET "\n\n");
+                } else {
+                    printf(ANSI_RED "  [error deleting memory]" ANSI_RESET "\n\n");
+                }
+            } else {
+                printf("  [cancelled]\n\n");
+            }
+            return;
+        }
+    }
+    printf(ANSI_YELLOW "  No memory found matching '%s'" ANSI_RESET "\n\n", args);
+}
+
+static void cmd_channel(const char *args) {
+    if (!args || !args[0]) {
+        // No args: list channels
+        channel_list();
+        return;
+    }
+    while (*args == ' ') args++;
+
+    // /channel list
+    if (strcmp(args, "list") == 0) {
+        channel_list();
+        return;
+    }
+
+    // /channel <name> — switch to channel
+    channel_switch(args);
+}
+
+static void cmd_project(const char *args __attribute__((unused))) {
+    printf("\n" ANSI_BOLD "  Project" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    if (g.project_root[0]) {
+        printf("  " ANSI_DIM "Name:    " ANSI_RESET ANSI_BOLD "%s" ANSI_RESET "\n", g.project_name);
+        printf("  " ANSI_DIM "Root:    " ANSI_RESET "%s\n", g.project_root);
+        printf("  " ANSI_DIM "ID:      " ANSI_RESET "%s\n", g.project_id);
+        printf("  " ANSI_DIM "Data:    " ANSI_RESET "%s\n", g.project_dir);
+        printf("  " ANSI_DIM "Channel: " ANSI_RESET "#%s\n", g.channel);
+
+        // Check for PRE.md
+        char pre_md[PATH_MAX];
+        snprintf(pre_md, sizeof(pre_md), "%s/PRE.md", g.project_root);
+        struct stat st;
+        if (stat(pre_md, &st) == 0)
+            printf("  " ANSI_DIM "Config:  " ANSI_RESET "%s (%s)\n", pre_md, fmt_size(st.st_size));
+        else
+            printf("  " ANSI_DIM "Config:  " ANSI_RESET ANSI_DIM "none (create PRE.md in project root)" ANSI_RESET "\n");
+
+        // Count project memories
+        int proj_mems = 0;
+        for (int i = 0; i < g_memory_count; i++) {
+            if (strstr(g_memories[i].file, g.project_dir)) proj_mems++;
+        }
+        printf("  " ANSI_DIM "Memories:" ANSI_RESET " %d project, %d global\n",
+               proj_mems, g_memory_count - proj_mems);
+    } else {
+        printf("  " ANSI_DIM "No project detected." ANSI_RESET "\n");
+        printf("  " ANSI_DIM "Projects are detected via .git, package.json, pyproject.toml, etc." ANSI_RESET "\n");
+        printf("  " ANSI_DIM "CWD: %s" ANSI_RESET "\n", g.cwd);
+    }
+    printf("\n");
+}
+
 // ============================================================================
 // Command dispatch
 // ============================================================================
@@ -1685,6 +4087,7 @@ int main(int argc, char **argv) {
         };
 
         init_sessions_dir();
+        init_pre_dirs();
 
         int c;
         while ((c = getopt_long(argc, argv, "p:t:sr:ld:h", long_options, NULL)) != -1) {
@@ -1731,11 +4134,24 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Session
+        // Detect project from CWD
+        detect_project();
+
+        // Initialize memory (must come after detect_project for per-project memories)
+        init_memory_dir();
+        load_memories();
+
+        // Session / channel
         if (resume_id) {
             strncpy(g.session_id, resume_id, sizeof(g.session_id) - 1);
+            // Try to extract channel from session id (format: project:channel)
+            char *colon = strchr(g.session_id, ':');
+            if (colon) {
+                strncpy(g.channel, colon + 1, sizeof(g.channel) - 1);
+            }
         } else {
-            generate_session_id(g.session_id, sizeof(g.session_id));
+            // Start in 'general' channel for this project
+            channel_init("general");
         }
 
         // Banner
@@ -1768,7 +4184,15 @@ int main(int argc, char **argv) {
 
         // Main loop
         for (;;) {
-            char *line = linenoise(ANSI_BOLD "pre> " ANSI_RESET);
+            // Build prompt with channel name
+            char prompt[128];
+            if (g.project_name[0])
+                snprintf(prompt, sizeof(prompt),
+                    ANSI_DIM "%s" ANSI_RESET ANSI_BOLD " #%s> " ANSI_RESET,
+                    g.project_name, g.channel);
+            else
+                snprintf(prompt, sizeof(prompt), ANSI_BOLD "pre #%s> " ANSI_RESET, g.channel);
+            char *line = linenoise(prompt);
 
             if (!line) { printf("\n"); break; }
             if (strlen(line) == 0) { free(line); continue; }
@@ -1808,6 +4232,9 @@ int main(int argc, char **argv) {
 
             // Save user turn (save original input, not the preamble-augmented version)
             session_save_turn(g.session_id, "user", message);
+
+            // Auto-compact if context is getting large
+            maybe_compact();
 
             // Send to server
             int sock = send_request(message, g.max_tokens, g.session_id);

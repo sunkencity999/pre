@@ -1,416 +1,517 @@
 # PRE — Personal Reasoning Engine
 
-> A 397-billion-parameter language model, running on a MacBook Pro. No cloud. No API keys. No data leaves your machine.
+> A fully local agentic assistant. No cloud. No API keys. No data leaves your machine.
 
-PRE is a fit-for-purpose deployment of **Qwen3.5-397B-A17B** — one of the most capable open-weight language models in existence — on a single Apple Silicon laptop. Powered by the [Flash-MoE](https://github.com/danveloper/flash-moe) inference engine, PRE streams a 209 GB model from your SSD through hand-tuned Metal compute shaders, delivering near-state-of-the-art reasoning at conversational speed with complete privacy.
+PRE is a tool-calling, memory-equipped AI agent that runs entirely on your Mac. Powered by **Google Gemma 4 26B-A4B** (a Mixture-of-Experts model with 3.8B active parameters) via [Ollama](https://ollama.ai), PRE delivers **~56 tokens/second** on Apple Silicon with 29 integrated tools, persistent memory, project detection, and channel-based conversations.
 
-The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**, where it achieves **9+ tokens/second**. It also runs on machines with as little as 48 GB of RAM — slower, but with the same full-quality output from all 397 billion parameters.
-
-![Progress](progress.png)
+The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
 ---
 
 ## Table of Contents
 
-- [What Makes This Possible](#what-makes-this-possible)
-- [Hardware Requirements](#hardware-requirements)
+- [Quick Start](#quick-start)
+- [What PRE Can Do](#what-pre-can-do)
 - [Installation](#installation)
-- [Tutorial: Your First Session](#tutorial-your-first-session)
-- [Command Reference](#command-reference)
-- [Best Uses](#best-uses)
-- [How the Engine Works](#how-the-engine-works)
+- [Documentation](#documentation)
+  - [Commands](#commands)
+  - [Tools](#tools)
+  - [Memory System](#memory-system)
+  - [Projects & PRE.md](#projects--premd)
+  - [Channels](#channels)
+  - [Context Management](#context-management)
+- [Best Practices](#best-practices)
+- [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
-- [Acknowledgments](#acknowledgments)
 - [License](#license)
 
 ---
 
-## What Makes This Possible
+## Quick Start
 
-Running a 397-billion-parameter model on a laptop sounds impossible. The entire model would need **~800 GB of memory** at full precision. Even at 4-bit quantization, the expert weights alone occupy **209 GB** — far more than any laptop's RAM.
+```bash
+# 1. Install Ollama (if not already installed)
+brew install ollama
 
-The Flash-MoE engine solves this through a combination of techniques purpose-built for Apple Silicon hardware:
+# 2. Pull the model (~17 GB)
+ollama pull gemma4:26b-a4b-it-q4_K_M
 
-**Mixture-of-Experts architecture** — Qwen3.5-397B-A17B has 512 experts per layer, but only activates 4 per token. That means only ~17 billion parameters are computed for each token. The other 380 billion sit on your SSD until needed.
+# 3. Clone and build PRE
+git clone https://github.com/sunkencity999/pre.git
+cd pre/engine
+make pre
 
-**SSD expert streaming** — The 4 active experts per layer (~27 MB total) are loaded from NVMe SSD on demand via parallel `pread()` system calls. Apple's internal SSDs deliver 7–17 GB/s sequential read throughput, making this feasible in real time.
+# 4. Launch
+./pre-launch
+```
 
-**OS page cache as LRU** — Rather than building a custom cache (we tried — 58 experiments, all slower), the engine trusts macOS to manage expert caching in unused RAM. On the reference 128 GB system, ~90 GB of page cache yields high hit rates. On a 48 GB system, ~35 GB of cache still achieves ~71% hits.
+PRE detects your project, loads memories, and drops you into an interactive prompt:
 
-**Hand-tuned Metal shaders** — Every GPU operation uses custom Metal compute kernels: FMA-optimized 4-bit dequantization, fused SwiGLU activation, two-pass RMS normalization, batched attention, and a single-kernel MoE combine+residual+norm. No framework overhead. No generic GEMM. Just the exact operations this model needs.
+```
+╔══════════════════════════════════════════════════╗
+║  Personal Reasoning Engine (PRE)                ║
+║  Gemma 4 26B-A4B                                ║
+╚══════════════════════════════════════════════════╝
+  Server:  http://localhost:11434
+  Project: my-project  /Users/you/my-project
+  Channel: #general
+  Memory:  3 entries loaded
+  Type /help for commands
 
-**Deferred GPU pipelining** — Expert computation is submitted to the GPU asynchronously. While the GPU processes one layer's experts, the CPU is already preparing the next layer's attention. This eliminates idle gaps in the pipeline.
+my-project #general>
+```
 
-The result: a model that would cost ~$0.50–$2.00 per conversation through a cloud API runs for free, as fast as you can type, with zero data exposure. Every optimization in the Flash-MoE engine exists to make this specific model practical on this specific class of hardware.
+---
 
-## Hardware Requirements
+## What PRE Can Do
 
-PRE is developed and tested on:
+PRE is not a chatbot — it's a local agent with deep system access.
 
-> **MacBook Pro** — Apple M4 Max, 16-core CPU, 40-core GPU, **128 GB unified memory**, 1 TB SSD
-> **Performance:** 9.3 tokens/second, ~2s time-to-first-token
+**Read and modify your codebase** — The model reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-That's the reference configuration. Here's how other systems compare:
+**Run commands autonomously** — Bash execution with a three-tier permission model. Read-only tools auto-approve; writes confirm once; destructive operations confirm every time.
 
-| Machine | Unified Memory | Speed | Notes |
-|---------|---------------|-------|-------|
-| **M4 Max MacBook Pro** | **128 GB** | **~9.3 tok/s** | **Reference system** — ~90 GB page cache, most experts warm |
-| M3 Max MacBook Pro | 48 GB | ~4.4 tok/s | Fully functional, ~35 GB page cache, 71% hit rate |
-| M3 Max Mac Studio | 96 GB | ~7 tok/s | Expected — sweet spot of price/performance |
-| M2/M3/M4 Ultra Mac | 192 GB | ~12+ tok/s | Expected — nearly all experts cached in RAM |
+**Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts.
 
-**Minimum requirements:**
+**Manage multiple workstreams** — Channels let you run parallel conversations with separate contexts within the same project.
 
-| Component | Minimum | Recommended |
-|-----------|---------|-------------|
-| **Chip** | Apple M1 Pro/Max | M3/M4 Max or Ultra |
-| **Unified Memory** | 48 GB | 128 GB |
-| **Free Disk Space** | 430 GB (install) / 215 GB (runtime) | 1 TB SSD |
-| **macOS** | 14.0 (Sonoma) | 15.0+ |
-| **Xcode CLI Tools** | Required | `xcode-select --install` |
+**Deep system inspection** — Network interfaces, running processes, disk usage, hardware info, window management, screenshots, and arbitrary AppleScript automation.
 
-The install process needs ~430 GB temporarily (HuggingFace cache + packed weights). After installation, you can clear the HuggingFace cache to reclaim ~214 GB if needed.
+**Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Nothing phones home.
+
+---
 
 ## Installation
 
-### One-Line Install
+### Prerequisites
+
+| Component | Required |
+|-----------|----------|
+| **macOS** | 14.0+ (Sonoma or later) |
+| **Chip** | Apple Silicon (M1 or later) |
+| **RAM** | 16 GB minimum, 32+ GB recommended |
+| **Ollama** | [ollama.ai](https://ollama.ai) or `brew install ollama` |
+| **Xcode CLI** | `xcode-select --install` |
+
+### Install
 
 ```bash
+# Pull the model (Gemma 4 26B-A4B, MoE, ~17 GB)
+ollama pull gemma4:26b-a4b-it-q4_K_M
+
+# Clone and build
 git clone https://github.com/sunkencity999/pre.git
-cd pre
-./install.sh
+cd pre/engine
+make pre
+
+# Optional: add to PATH
+ln -sf "$(pwd)/pre-launch" ~/.local/bin/pre-launch
 ```
 
-The installer is fully automated and idempotent — safe to interrupt and re-run at any point. It will:
-
-1. **Check your system** — verifies Apple Silicon, RAM, disk space, Xcode tools
-2. **Install Python dependencies** — numpy, safetensors, huggingface-hub (for weight processing only)
-3. **Download the model** — 214 GB from HuggingFace (resumable)
-4. **Extract non-expert weights** → `engine/model_weights.bin` (5.5 GB)
-5. **Export tokenizer** → `engine/tokenizer.bin` (7.8 MB)
-6. **Repack expert weights** → `packed_experts/` (209 GB, 30–60 minutes)
-7. **Compile the inference engine** — pure C/Objective-C/Metal, no external dependencies
-8. **Install `pre-launch`** into your PATH
-
-Total install time: **30–90 minutes** depending on internet speed and SSD performance.
-
-### Manual Build (if model already downloaded)
+### Launch
 
 ```bash
-cd engine
-make              # Builds the inference server and PRE CLI
-make install      # Symlinks pre-launch into ~/.local/bin
+pre-launch                         # From any directory
+pre-launch --dir /path/to/project  # Override working directory
+pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
-### Launching
+The launcher checks that Ollama is running (starts it if not), verifies the model is pulled, and launches the PRE binary.
 
-```bash
-pre-launch
+---
+
+## Documentation
+
+### Commands
+
+PRE supports slash commands for managing sessions, files, and configuration. Type `/help` for the full list, or `/help <topic>` for detailed guides.
+
+#### Chat & Input
+
+| Command | Description |
+|---------|-------------|
+| *(type a message)* | Send to the model |
+| `!command` | Run a shell command (output stays local, not sent to model) |
+| `/edit` | Open `$EDITOR` for multi-line prompts |
+| `/file <path>` | Attach a file to next message (stackable) |
+| `/run <cmd>` | Run a command, optionally feed output to model |
+
+#### Session Management
+
+| Command | Description |
+|---------|-------------|
+| `/new` | Fresh session in current channel |
+| `/sessions` | List all saved sessions |
+| `/resume <id>` | Resume a previous session |
+| `/rename <name>` | Name the current session |
+| `/rewind [N]` | Remove last N turns (default: 1) |
+| `/save <path>` | Save last response to a file |
+| `/export [path]` | Export conversation to markdown |
+| `/summary` | Model-generated session summary |
+
+#### Navigation & Project
+
+| Command | Description |
+|---------|-------------|
+| `/cd <path>` | Change directory (re-detects project) |
+| `/ls [path]` | List directory |
+| `/tree [path]` | Directory tree (depth 3) |
+| `/project` | Show detected project info |
+| `/channel [name]` | List or switch channels |
+
+#### Memory & Status
+
+| Command | Description |
+|---------|-------------|
+| `/memory [query]` | List or search memories |
+| `/forget <query>` | Delete a memory |
+| `/context` | Context window usage bar |
+| `/status` | Current state overview |
+| `/stats` | Detailed session statistics |
+| `/undo` | Revert last file change |
+| `/think` | Toggle reasoning visibility |
+
+#### Help
+
+| Command | Description |
+|---------|-------------|
+| `/help` | Command overview |
+| `/help tools` | All 29 tools with permission levels |
+| `/help memory` | Memory system guide |
+| `/help channels` | Channel system guide |
+| `/help projects` | Project detection & PRE.md |
+| `/help tips` | Best practices and tips |
+| `/help all` | Everything at once |
+
+---
+
+### Tools
+
+PRE has 29 built-in tools the model can call autonomously. Each has a permission level:
+
+#### File & Code (auto-approved)
+
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file contents |
+| `list_dir` | List directory |
+| `glob` | Find files by pattern |
+| `grep` | Search file contents (regex) |
+
+#### File Modification (confirm once)
+
+| Tool | Description |
+|------|-------------|
+| `file_write` | Create or overwrite a file (checkpointed) |
+| `file_edit` | Find-and-replace in a file (checkpointed) |
+
+#### Shell (confirm always)
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute a shell command |
+
+#### System Inspection (auto-approved)
+
+| Tool | Description |
+|------|-------------|
+| `system_info` | CPU, memory, disk, battery |
+| `hardware_info` | Detailed hardware, thermal, GPU |
+| `process_list` | Running processes (with optional filter) |
+| `disk_usage` | Volume and directory usage |
+| `display_info` | Display and GPU details |
+
+#### Network (auto-approved)
+
+| Tool | Description |
+|------|-------------|
+| `net_info` | Interfaces, IPs, DNS, routes |
+| `net_connections` | TCP connections (listening/established/port) |
+| `service_status` | launchd service listing |
+
+#### Desktop Integration
+
+| Tool | Permission | Description |
+|------|-----------|-------------|
+| `screenshot` | Confirm once | Capture screen (full/window/region) |
+| `window_list` | Auto | List open windows with positions |
+| `window_focus` | Confirm once | Bring an app to front |
+| `clipboard_read` | Auto | Read clipboard |
+| `clipboard_write` | Confirm once | Write to clipboard |
+| `open_app` | Confirm first | Open files/apps/URLs via macOS `open` |
+| `notify` | Confirm once | macOS notification |
+| `applescript` | Confirm always | Run arbitrary AppleScript |
+
+#### Web
+
+| Tool | Permission | Description |
+|------|-----------|-------------|
+| `web_fetch` | Confirm once | Fetch a URL (HTML→text conversion) |
+
+#### Memory
+
+| Tool | Permission | Description |
+|------|-----------|-------------|
+| `memory_save` | Auto | Save a persistent memory (global or project-scoped) |
+| `memory_search` | Auto | Search saved memories |
+| `memory_list` | Auto | List all memories |
+| `memory_delete` | Confirm once | Delete a memory |
+
+#### Process Control
+
+| Tool | Permission | Description |
+|------|-----------|-------------|
+| `process_kill` | Confirm always | Send SIGTERM to a process |
+
+---
+
+### Memory System
+
+PRE has persistent, file-based memory that survives across sessions and restarts.
+
+#### How It Works
+
+Memories are markdown files with YAML frontmatter stored in `~/.pre/memory/` (global) or `~/.pre/projects/{name}/memory/` (project-scoped). All relevant memories are injected into context at the start of each session.
+
+#### Memory Types
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| `user` | About you — role, preferences, expertise | "Senior Python dev, prefers type hints" |
+| `feedback` | How to work — corrections and confirmations | "Don't add docstrings to unchanged code" |
+| `project` | Current work — decisions, deadlines, context | "Auth rewrite driven by compliance, not tech debt" |
+| `reference` | External pointers — where info lives | "Bugs tracked in Linear project INGEST" |
+
+#### Saving Memories
+
+The model saves memories proactively when it learns something about you or your project. You can also be explicit:
+
+```
+pre> Remember that I prefer functional style over class-based components.
+pre> Save a project memory: we're migrating from REST to GraphQL by Q3.
 ```
 
-From any directory. The launcher:
-- Starts the inference server if it isn't already running
-- Waits for the model to load (~10–15 seconds)
-- Opens the PRE interface with your current directory as context
-- Shuts down the server when you exit
+Project-scoped memories stay with that project and don't leak into other contexts.
 
-You can also pass options:
+#### Managing Memories
 
-```bash
-pre-launch --show-think        # Show the model's reasoning process
-pre-launch --max-tokens 16384  # Allow longer responses
-PRE_PORT=9000 pre-launch       # Use a different port
+```
+/memory              # List all memories
+/memory auth         # Search for "auth" in memories
+/forget "old rule"   # Delete a memory (with confirmation)
+```
+
+#### File Format
+
+```markdown
+---
+name: User prefers functional style
+description: Coding style preference for React components
+type: feedback
+---
+
+User prefers functional components with hooks over class-based components.
+Confirmed when reviewing frontend code on 2026-03-15.
 ```
 
 ---
 
-## Tutorial: Your First Session
+### Projects & PRE.md
 
-### 1. Start PRE
+#### Auto-Detection
 
-```bash
-cd ~/my-project
-pre-launch
+PRE detects project boundaries by walking up from your working directory looking for:
+
+`.git` · `package.json` · `pyproject.toml` · `Cargo.toml` · `go.mod` · `Makefile` · `CMakeLists.txt` · `pom.xml` · `PRE.md`
+
+When a project is detected, PRE:
+1. Shows the project name in the prompt and banner
+2. Creates `~/.pre/projects/{name}/` for project data
+3. Loads project-scoped memories alongside global ones
+4. Scopes channels to the project
+
+#### PRE.md — Project Configuration
+
+Place a `PRE.md` file in your project root to give the model project-specific instructions. It's loaded into context on the first turn of every session.
+
+```markdown
+# My API Service
+
+FastAPI application with PostgreSQL and Redis.
+
+## Conventions
+- Use async/await for all I/O
+- Type hints required on all public functions
+- Tests in tests/ — run with: pytest -xvs
+- Deploy target: AWS ECS on arm64
+
+## Architecture
+- src/api/ — FastAPI routes
+- src/models/ — SQLAlchemy models
+- src/services/ — Business logic
+- migrations/ — Alembic migrations
 ```
 
-You'll see the banner and a `pre>` prompt. PRE already knows your working directory and can see its files.
-
-### 2. Ask a question
-
-```
-pre> What is this project? Describe its structure.
-```
-
-The model reads the directory listing injected as context on the first turn and responds. You'll see a spinner while it thinks, then streaming output with rendered markdown.
-
-### 3. Attach a file for deep analysis
-
-```
-pre> /file src/main.py
-  [attached: /Users/you/my-project/src/main.py (8.2K)]
-
-pre> Review this code for bugs and security issues
-```
-
-The file contents are sent along with your message. The model analyzes them in full.
-
-### 4. Attach multiple files
-
-```
-pre> /file config.yaml
-pre> /file src/database.py
-pre> /file src/auth.py
-pre> How do these components interact? Is the auth flow secure?
-```
-
-### 5. Run a shell command and feed output to the model
-
-```
-pre> /run git log --oneline -20
-  $ git log --oneline -20
-  a1b2c3d Fix token refresh race condition
-  ...
-  [feed to model? y/n] y
-  [output attached — type your message]
-
-pre> Summarize the recent changes and identify any risky commits
-```
-
-### 6. Quick shell commands with `!`
-
-```
-pre> !grep -r "TODO" src/
-pre> !docker ps
-pre> !python3 -m pytest tests/ -q
-```
-
-These execute immediately and print output — the model doesn't see them unless you use `/run`.
-
-### 7. Compose complex prompts with your editor
-
-```
-pre> /edit
-```
-
-This opens `$EDITOR` (vim, nvim, VS Code, etc.). Write a multi-line prompt, save, and quit. The text is attached to your next message.
-
-### 8. Check how much context you've used
-
-```
-pre> /context
-
-  Context Window
-  ─────────────────────────────
-  [████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 28%
-  Used:      ~9,100 tokens
-  Budget:    32,768 tokens
-  Remaining: ~23,668 tokens
-```
-
-### 9. Save and export your work
-
-```
-pre> /save analysis.md                  # Save last response to a file
-pre> /export ~/Desktop/full-session.md  # Export entire conversation
-pre> /rename "auth security review"     # Name the session for later
-```
-
-### 10. Resume later
-
-```bash
-pre-launch --sessions
-#   pre-12345  auth security review  (14 turns)
-#   pre-67890  (6 turns)  What is this project?
-
-pre-launch --resume pre-12345
-```
+Use `/project` to see detected project info and verify PRE.md is loaded.
 
 ---
 
-## Command Reference
+### Channels
 
-### Chat & Input
+Channels are named conversation threads scoped to a project. Each channel has its own message history and context.
 
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| *(just type)* | | Send a message to the model |
-| `!<command>` | | Execute a shell command directly (output not sent to model) |
-| `/edit` | | Open `$EDITOR` for composing multi-line prompts |
-| `/think` | | Toggle visibility of the model's `<think>` reasoning blocks |
+```
+/channel                 # List channels
+/channel refactor        # Switch to #refactor (creates if new)
+/channel debug-auth      # Separate thread for debugging
+/channel general         # Back to default
+/new                     # Fresh session in current channel
+```
 
-### Files & Context
+**Why channels?** Long conversations accumulate context. If you're deep into a refactoring discussion and need to debug something unrelated, switching channels gives you a clean context without losing your refactoring thread.
 
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `/file` | `<path>` | Attach a file to your next message (supports multiple) |
-| `/run` | `<command>` | Execute a command and optionally feed its output to the model |
-| `/cd` | `<path>` | Change working directory (model sees new file listing on next turn) |
-| `/ls` | `[path]` | List directory contents |
-| `/tree` | `[path]` | Show directory tree (depth 3, skips .git/node_modules/etc.) |
-
-### Session Management
-
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `/new` | | Start a fresh session (resets context) |
-| `/sessions` | | List all saved sessions with titles and turn counts |
-| `/resume` | `<id>` | Resume a previous session by ID |
-| `/rename` | `<name>` | Give the current session a human-readable name |
-| `/save` | `<path>` | Save the model's last response to a file |
-| `/export` | `[path]` | Export the full conversation to a markdown file |
-| `/rewind` | `[N]` | Remove the last N turns from the session (default: 1) |
-| `/summary` | | Ask the model to generate a bullet-point summary of the session |
-
-### Status & Diagnostics
-
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `/context` | | Visualize context window usage with a progress bar |
-| `/stats` | | Show detailed statistics: tokens, speed, timing, session duration |
-| `/status` | | Show current session state: model, server, CWD, settings |
-| `/help` | | Display all available commands |
-
-### Application
-
-| Command | Arguments | Description |
-|---------|-----------|-------------|
-| `/clear` | | Clear the screen |
-| `/quit` | | Exit PRE (also: `/exit`, Ctrl-C, Ctrl-D) |
-
-### Tool Calling (Automatic)
-
-The model can request tool execution during conversations. These are handled automatically:
-
-| Tool | Approval | Description |
-|------|----------|-------------|
-| `read_file` | Auto-approved | Read file contents (read-only) |
-| `list_dir` | Auto-approved | List directory contents (read-only) |
-| `bash` | Requires `y`/`n`/`a` | Execute a shell command (`a` = auto-approve for session) |
+Channels are scoped to the detected project. When you `/cd` into a different project, PRE switches to that project's `#general` channel.
 
 ---
 
-## Best Uses
+### Context Management
 
-### What PRE excels at
+PRE uses Gemma 4's 128K token context window. A few features help you stay within budget:
 
-PRE puts a near-state-of-the-art reasoning model at your fingertips with zero compromise on privacy. These are the use cases where it truly shines:
+**Context bar** — `/context` shows a visual progress bar of usage.
 
-**Deep code analysis and review** — Attach source files and get thorough, line-by-line analysis. The model's 397B parameter count gives it strong understanding of patterns across languages. Attach your auth module, your database layer, and your config — ask it to trace a request through the stack and find where things could break.
+**Auto-compaction** — When estimated tokens exceed 75% of the budget, older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
 
-**Security and vulnerability research** — Analyze binaries, review network configurations, audit access controls, examine suspicious logs. Nothing leaves your machine. No content policy prevents you from discussing exploit techniques in a defensive context.
+**Tool response cap** — Tool outputs are truncated to 8KB to prevent a single large file from consuming the entire context.
 
-**Private document analysis** — Legal contracts, medical records, financial reports, HR documents, board communications. Feed them to a model that cannot leak them because it physically cannot reach the internet.
+**Rewind** — `/rewind N` removes the last N turns to free context space.
 
-**Architecture and design reasoning** — Describe your constraints, attach your existing code, and get reasoned trade-off analysis. The model can hold complex multi-component systems in context and reason about their interactions.
-
-**Research and knowledge synthesis** — Ask questions that require connecting ideas across domains. The 397B parameter count encodes a deep knowledge base — ask it to compare distributed consensus algorithms, explain the implications of a new paper, or reason through a complex technical decision.
-
-**Extended thinking through hard problems** — Toggle `/think` to watch the model reason step-by-step through proofs, debugging sessions, or multi-factor decisions. The thinking tokens let it work through problems methodically before committing to an answer.
-
-**Drafting and technical writing** — First drafts of documentation, incident reports, design proposals, and technical blog posts. Iterate locally without uploading your proprietary context to a cloud service.
-
-### What PRE is not designed for
-
-**Real-time agentic workflows** — At 4–9 tok/s, the edit-compile-test cycle that tools like Claude Code excel at would be too slow. PRE is for thinking, not for rapid-fire tool execution.
-
-**High-throughput batch processing** — Processing thousands of documents at inference speed isn't practical. Use cloud batch APIs for scale.
-
-**Multi-user serving** — PRE runs one conversation at a time. It's a personal tool, not a server you share.
-
-**Tasks requiring very long output** — Generating 10,000+ token responses at 9 tok/s takes 18+ minutes. For bulk generation, cloud APIs are more practical.
+**Channels** — Use separate channels for different tasks to avoid context pollution.
 
 ---
 
-## How the Engine Works
+## Best Practices
 
-PRE inherits all of its inference performance from the [Flash-MoE](https://github.com/danveloper/flash-moe) engine — a pure C/Metal implementation built specifically for running large Mixture-of-Experts models on Apple Silicon. Here's what makes it fast:
+### Getting Good Results
 
-### The Problem
+1. **Be specific.** "Review auth.py for SQL injection" > "check my code"
+2. **Attach files first.** `/file src/main.py` then ask your question.
+3. **Use /edit for complex prompts.** Opens your $EDITOR for multi-line input.
+4. **Watch the thinking.** `/think` toggles the model's reasoning — useful for debugging and understanding its approach.
+5. **Use PRE.md.** A project config file saves you from re-explaining your stack every session.
 
-Qwen3.5-397B-A17B has 60 transformer layers. Each layer contains 512 experts at 4-bit quantization (~6.75 MB each). Only 4 experts activate per token, but the engine must load them from SSD, dequantize them, and run them through the GPU — 60 times per token, every token.
+### Managing Context
 
-### The Pipeline (4.3ms per layer)
+1. **Check /context regularly.** Know how much budget you've used.
+2. **Use channels for separate tasks.** Don't mix debugging and feature work.
+3. **Rewind noisy turns.** `/rewind` removes turns that added bulk without value.
+4. **Let auto-compaction work.** It kicks in at 75% and preserves recent context.
+
+### Tool Calling
+
+1. **Trust the permission model.** Read-only tools are auto-approved. Write tools ask once. Destructive tools ask every time.
+2. **Use 'a' for auto-approve.** When prompted for confirmation, answer `a` to auto-approve all confirm-once tools for the session.
+3. **Undo mistakes.** `/undo` reverts the last file_write or file_edit.
+4. **The model is agentic.** It will chain tool calls to accomplish multi-step tasks — read code, search for patterns, make edits, verify results.
+
+### Memory
+
+1. **Tell PRE what to remember.** "Remember that I prefer X" works.
+2. **Use project-scoped memory** for things specific to one codebase.
+3. **Review memories periodically.** `/memory` lists everything. `/forget` removes stale entries.
+4. **The model saves proactively.** It learns your preferences from corrections and confirmations.
+
+### Shell Integration
+
+1. **`!` for quick commands.** `!git status`, `!docker ps` — runs immediately, output not sent to model.
+2. **`/run` to feed output to model.** Runs the command and asks if you want the model to see it.
+3. **`bash` tool for model-driven commands.** The model calls `bash` autonomously when it needs to run something.
+
+---
+
+## Architecture
+
+### How PRE Works
 
 ```
-CMD3(prev) → CMD1: attention projections + delta-net  [GPU, 1.2ms]
-           → CMD2: output proj + residual + norm       [GPU, 0.6ms]
-           → CPU:  softmax + top-K expert routing       [0.003ms]
-           → I/O:  parallel pread K=4 experts from SSD  [2.4ms]
-           → CMD3: expert forward + combine + norm      [GPU, deferred]
+┌─────────────┐     HTTP/SSE      ┌─────────────────┐
+│   PRE CLI   │ ◄──────────────► │     Ollama       │
+│  (pre.m)    │                   │  localhost:11434  │
+│  4100 lines │                   │                   │
+│  Obj-C / C  │                   │  Gemma 4 26B-A4B  │
+└─────────────┘                   │  MoE, q4_K_M      │
+      │                           │  ~56 tok/s         │
+      ▼                           └───────────────────┘
+  ~/.pre/
+  ├── sessions/     # Conversation JSONL files
+  ├── history       # Input history (arrow-key recall)
+  ├── checkpoints/  # File backups for /undo
+  ├── memory/       # Global persistent memories
+  │   ├── index.md
+  │   └── *.md
+  └── projects/
+      └── {name}/
+          ├── memory/    # Project-scoped memories
+          └── channels/  # Channel metadata
 ```
 
-### Flash-MoE Optimizations
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application. It handles:
+- OpenAI-compatible HTTP/SSE client for Ollama
+- Streaming markdown renderer with ANSI formatting
+- Multi-format tool call parser (JSON, XML, bare)
+- 29 tool implementations with three-tier permissions
+- Persistent memory with per-project scoping
+- Channel-based conversation management
+- Project detection and PRE.md loading
+- Context compaction and token budget management
+- File checkpointing and undo
+- linenoise-based line editor with tab completion
 
-These are the specific techniques from the Flash-MoE project that make the 397B model viable on a laptop:
+**Ollama** serves the model. PRE connects as a standard OpenAI API client, sending the full conversation history with each request (Ollama is stateless).
 
-| Optimization | Impact | Description |
-|-------------|--------|-------------|
-| **FMA Dequant Kernel** | +12% tok/s | Rearranges 4-bit dequantization to use GPU fused multiply-add units: `fma(nibble, scale*x, bias*x)` instead of `(nibble*scale+bias)*x` |
-| **CMD1+CMD2 Fusion** | +7% tok/s | Merges attention projection and output projection into a single Metal command buffer, eliminating GPU synchronization overhead |
-| **Deferred GPU Expert Compute** | -0.8ms/layer | Expert forward pass runs on GPU asynchronously while CPU prepares the next layer |
-| **BLAS Delta-Net** | +64% attn speed | GatedDeltaNet 128x128 state matrix updates use Apple Accelerate BLAS instead of scalar code |
-| **Trust the OS Page Cache** | +38% vs custom cache | No custom LRU — macOS page cache manages expert data caching. Tested 58 alternatives; all were slower |
-| **Parallel Expert I/O** | ~4x I/O speed | 4 experts loaded simultaneously via GCD dispatch groups at interactive QoS |
-| **System Prompt Caching** | -2–4s/conversation | System prompt KV cache is snapshotted at startup and restored per request |
-
-These optimizations were discovered through **90+ experiments** documented in the [technical paper](paper/flash_moe.pdf). Many plausible ideas (LZ4 compression, temporal prediction, GPU LUT dequant, mmap, speculative decoding) were tested and discarded — the paper explains why.
-
-### Metal Compute Shaders (~1,200 lines)
-
-Every GPU operation uses hand-written Metal kernels — no frameworks, no generic GEMM:
-
-- 4-bit dequantized matrix-vector multiply (tiled, SIMD-reduced, FMA-optimized)
-- Fused SwiGLU activation
-- Two-pass RMS normalization (bfloat16 weight support)
-- Batched GPU attention (Q@K^T → softmax → scores@V)
-- GPU RoPE (fused with Q deinterleave and K normalization)
-- MoE combine + residual + sigmoid gate (single kernel)
-- GatedDeltaNet: conv1d, decay/beta, per-head RMS norm, z-gated output
-
-### Why Apple Silicon
-
-The engine is designed around Apple Silicon's **unified memory architecture**:
-
-- **No PCIe bottleneck** — GPU and CPU share the same physical memory at ~400 GB/s
-- **SSD as extended memory** — Apple's NVMe delivers 7–17 GB/s, fast enough to stream experts in real-time
-- **Page cache scales with RAM** — More unified memory means more of the 209 GB expert pool stays cached. This is why the M4 Max 128 GB system is 2x faster than the M3 Max 48 GB: more experts are already in RAM
+**Gemma 4 26B-A4B** is a Mixture-of-Experts model: 26B total parameters, 3.8B active per token, 128 experts with 8 active. At q4_K_M quantization (~17 GB), it runs at ~56 tok/s on M4 Max — fast enough for real-time agentic workflows.
 
 ---
 
 ## Configuration
 
-### System Prompt
+### Environment Variables
 
-The model's behavior is configured via `~/.flash-moe/system.md`, which is loaded and cached at server startup. Edit it to customize the model's persona, priorities, or knowledge about your projects.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PRE_PORT` | `11434` | Ollama server port |
+| `EDITOR` | `vi` | Editor for `/edit` command |
+
+### CLI Options
 
 ```bash
-$EDITOR ~/.flash-moe/system.md    # Edit, then restart the server
+pre-launch [options]
+  --port N          Override Ollama port
+  --max-tokens N    Max response tokens (default: 8192)
+  --show-think      Show reasoning blocks by default
+  --resume ID       Resume a previous session
+  --sessions        List saved sessions and exit
+  --dir PATH        Override working directory
 ```
 
-### Options
+### Data Location
 
-```bash
-pre-launch --show-think            # See <think> reasoning blocks
-pre-launch --max-tokens 16384     # Allow longer responses (default: 8192)
-pre-launch --port 9000            # Use a different server port
-PRE_PORT=9000 pre-launch          # Same, via environment variable
-pre-launch --dir /path/to/project # Override working directory
-```
-
-### Session Data
-
-All session data lives in `~/.flash-moe/`:
+All PRE data lives in `~/.pre/`:
 
 ```
-~/.flash-moe/
-├── system.md           # System prompt (editable)
-├── pre_history         # Input history (up-arrow recall)
-└── sessions/
-    ├── pre-12345.jsonl   # Conversation turns
-    ├── pre-12345.title   # Session name
-    └── ...
+~/.pre/
+├── sessions/           # Conversation JSONL (one per channel)
+├── history             # Readline history
+├── checkpoints/        # File backups (auto-cleaned)
+├── memory/
+│   ├── index.md        # Memory index
+│   └── *.md            # Individual memory files
+└── projects/
+    └── {project-id}/
+        ├── memory/     # Project-scoped memories
+        └── channels/   # Channel metadata
 ```
 
 ---
@@ -419,80 +520,50 @@ All session data lives in `~/.flash-moe/`:
 
 ```
 pre/
-├── install.sh              # Automated setup (download, extract, compile, install)
-├── system.md               # Default system prompt
-├── README.md
-├── LICENSE
-├── progress.png            # Performance benchmark chart
-├── results.tsv             # Detailed experiment log
+├── README.md               # This file
+├── system.md               # Model system prompt
 ├── engine/
-│   ├── infer.m             # Inference engine (~7,000 lines of C/Objective-C)
-│   ├── pre.m               # PRE CLI (~1,900 lines)
-│   ├── chat.m              # Lightweight chat client
-│   ├── shaders.metal       # Metal GPU kernels (~1,200 lines)
-│   ├── tokenizer.h         # Single-header BPE tokenizer
+│   ├── pre.m               # PRE CLI (single-file, ~4100 lines)
 │   ├── linenoise.c/h       # Terminal line editor
-│   ├── Makefile             # Build system (no external dependencies)
-│   ├── pre-launch           # Universal launcher script
-│   ├── extract_weights.py   # HF safetensors → model_weights.bin
-│   ├── export_tokenizer.py  # HF tokenizer → tokenizer.bin
-│   ├── repack_experts.py    # HF safetensors → packed_experts/
-│   └── expert_index.json    # Expert location manifest
-├── paper/
-│   └── flash_moe.pdf       # Technical paper (90+ experiments)
-└── docs/
-    └── *.md                 # Optimization research notes
+│   ├── Makefile             # Build: make pre
+│   └── pre-launch           # Universal launcher script
+├── docs/
+│   └── *.md                 # Research notes from Flash-MoE era
+└── benchmark_results/       # Performance benchmarks
 ```
-
-**Generated at runtime** (not committed to git):
-
-| File | Size | Description |
-|------|------|-------------|
-| `engine/model_weights.bin` | 5.5 GB | Non-expert transformer weights (mmap'd) |
-| `engine/model_weights.json` | 371 KB | Tensor offset manifest |
-| `engine/tokenizer.bin` | 7.8 MB | Pre-compiled BPE tokenizer |
-| `engine/vocab.bin` | 3.2 MB | Token vocabulary for decoding |
-| `packed_experts/layer_*.bin` | 209 GB total | 60 files, 512 experts each at 4-bit |
 
 ---
 
 ## Contributing
 
-PRE is built and maintained by **Christopher Bradford** — systems administrator, AI engineer, and the kind of person who thinks running a 400-billion-parameter model on a laptop is a reasonable thing to attempt.
+PRE is built and maintained by **Christopher Bradford** — systems administrator at Joby Aviation and AI engineer.
 
-This project is at an early stage and there's a lot of room to grow:
-
-- **Performance** — There are more optimizations to find. The technical paper documents 58 experiments; there are surely more waiting to be discovered. Speculative decoding, better expert prediction, GPU-side routing, 2-bit quantization with intact tool calling — all open problems.
-- **CLI features** — The PRE interface is functional but young. Better markdown rendering, syntax highlighting, image support, conversation branching, and more commands are all welcome.
-- **Hardware profiles** — If you have an M2/M3/M4 Ultra or a Mac Studio/Pro with different RAM configurations, benchmarks and tuning for your hardware would be valuable.
-- **Model support** — The engine is built for Qwen3.5-397B-A17B, but the architecture could support other large MoE models (Mixtral, DeepSeek, etc.) with weight repacking scripts.
-- **Documentation** — Better tutorials, video walkthroughs, and use-case guides.
+**Areas for contribution:**
+- **New tools** — Calendar integration, git operations, image analysis (Gemma 4 has vision)
+- **Smarter memory** — Auto-extraction of important facts, memory relevance ranking
+- **Better rendering** — Syntax highlighting in code blocks, image display
+- **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
+- **Documentation** — Tutorials, use-case guides, video walkthroughs
 
 **How to contribute:**
-
-1. Fork the repo and create a branch
-2. Make your changes
-3. Open a pull request with a clear description
-
-Or just open an issue to discuss ideas, report bugs, or share performance numbers from your hardware.
+1. Fork and create a branch
+2. Make changes
+3. Open a pull request
 
 **Contact:**
 - GitHub: [@sunkencity999](https://github.com/sunkencity999)
-- Issues: [github.com/sunkencity999/pre/issues](https://github.com/sunkencity999/pre/issues)
-
-If this project is useful to you, a star helps others find it.
 
 ---
 
 ## Acknowledgments
 
-- **Qwen Team** (Alibaba) for the remarkable Qwen3.5-397B-A17B model
-- **MLX Community** for the 4-bit quantized weight distribution
-- **Apple** for unified memory architecture and the Metal compute framework
-- **[Flash-MoE](https://github.com/danveloper/flash-moe)** by [@danveloper](https://github.com/danveloper) — the inference engine and research project behind the 90+ experiments that made running a 397B model on a laptop possible. PRE's entire inference pipeline is built on this work
+- **Google** for the Gemma 4 model family
+- **Ollama** for making local model serving effortless
+- **Apple** for unified memory architecture
+- The original **Flash-MoE** research that informed PRE's early design
 
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
 
-The Qwen3.5-397B-A17B model weights are subject to the [Qwen License Agreement](https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/LICENSE).
+The Gemma 4 model weights are subject to the [Gemma Terms of Use](https://ai.google.dev/gemma/terms).
