@@ -45,6 +45,17 @@ if ! ollama list 2>/dev/null | grep -q "pre-gemma4"; then
     fi
 fi
 
+# Pre-warm the model into GPU memory (avoids cold-start TTFT penalty)
+if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
+    echo "  Loading model into GPU..."
+    curl -sf http://localhost:${PORT}/api/chat -d '{"model":"pre-gemma4","messages":[],"keep_alive":"24h"}' >/dev/null 2>&1 || true
+    # Wait until loaded
+    for i in $(seq 1 30); do
+        if ollama ps 2>/dev/null | grep -q "pre-gemma4"; then break; fi
+        sleep 1
+    done
+fi
+
 echo "  Ollama running on port $PORT."
 
 if [ ! -x "$PRE_BIN" ]; then

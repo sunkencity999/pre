@@ -1,19 +1,18 @@
 #!/bin/bash
 # install.sh — Full setup for PRE (Personal Reasoning Engine)
 #
-# This script handles everything from model download to ready-to-run:
-#   1. Checks system requirements (Apple Silicon, RAM, disk space)
-#   2. Installs Python dependencies (numpy, safetensors, huggingface-hub)
-#   3. Downloads Qwen3.5-397B-A17B-4bit from HuggingFace (~214GB)
-#   4. Extracts non-expert weights → engine/model_weights.bin (5.5GB)
-#   5. Exports tokenizer → engine/tokenizer.bin + engine/vocab.bin
-#   6. Repacks expert weights → packed_experts/ (209GB)
-#   7. Compiles inference engine and PRE CLI
-#   8. Installs pre-launch command
-#   9. Sets up system prompt
+# This script handles everything from Ollama to ready-to-run:
+#   1. Checks system requirements (Apple Silicon, macOS, RAM, disk)
+#   2. Installs/verifies Ollama
+#   3. Pulls the base model (gemma4:26b-a4b-it-q4_K_M, ~17GB)
+#   4. Creates optimized custom model (pre-gemma4) from Modelfile
+#   5. Installs Xcode CLI tools if needed
+#   6. Compiles PRE CLI binary
+#   7. Installs pre-launch command to ~/.local/bin
+#   8. Sets up ~/.pre/ directories
 #
-# Run time: 30-90 minutes depending on internet speed and SSD performance.
-# Disk space required: ~430GB (214GB download cache + 214GB packed weights).
+# Run time: 5-20 minutes depending on internet speed.
+# Disk space required: ~17GB for model + negligible for binaries.
 
 set -e
 
@@ -27,6 +26,8 @@ RESET='\033[0m'
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$REPO_DIR/engine"
+BASE_MODEL="gemma4:26b-a4b-it-q4_K_M"
+CUSTOM_MODEL="pre-gemma4"
 
 step() { echo -e "\n${BOLD}${CYAN}=== $1 ===${RESET}\n"; }
 ok()   { echo -e "${GREEN}$1${RESET}"; }
@@ -34,43 +35,46 @@ warn() { echo -e "${YELLOW}$1${RESET}"; }
 fail() { echo -e "${RED}$1${RESET}"; exit 1; }
 
 # ============================================================================
-# Step 0: System requirements check
+# Step 0: System requirements
 # ============================================================================
 step "Checking system requirements"
 
-# Apple Silicon check
+# Apple Silicon
 ARCH=$(uname -m)
 if [ "$ARCH" != "arm64" ]; then
     fail "PRE requires Apple Silicon (arm64). Detected: $ARCH"
 fi
 ok "  Apple Silicon: $ARCH"
 
-# macOS check
+# macOS
 OS=$(uname -s)
 if [ "$OS" != "Darwin" ]; then
     fail "PRE requires macOS. Detected: $OS"
 fi
 MACOS_VER=$(sw_vers -productVersion)
+MACOS_MAJOR=$(echo "$MACOS_VER" | cut -d. -f1)
+if [ "$MACOS_MAJOR" -lt 14 ]; then
+    fail "PRE requires macOS 14 (Sonoma) or later. Detected: $MACOS_VER"
+fi
 ok "  macOS: $MACOS_VER"
 
-# RAM check
+# RAM
 RAM_BYTES=$(sysctl -n hw.memsize)
 RAM_GB=$((RAM_BYTES / 1073741824))
-if [ "$RAM_GB" -lt 36 ]; then
-    fail "PRE requires at least 48GB unified memory. Detected: ${RAM_GB}GB"
+if [ "$RAM_GB" -lt 16 ]; then
+    fail "PRE requires at least 16GB unified memory. Detected: ${RAM_GB}GB"
 fi
-if [ "$RAM_GB" -lt 48 ]; then
-    warn "  RAM: ${RAM_GB}GB — minimum viable. 48GB+ recommended for best performance."
+if [ "$RAM_GB" -lt 32 ]; then
+    warn "  RAM: ${RAM_GB}GB — functional, but 32GB+ recommended for full 262K context."
 else
     ok "  RAM: ${RAM_GB}GB unified memory"
 fi
 
-# Disk space check (need ~430GB total)
+# Disk space (~17GB for model, ~1GB headroom)
 AVAIL_KB=$(df -k "$REPO_DIR" | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1048576))
-if [ "$AVAIL_GB" -lt 250 ]; then
-    warn "  Disk: ${AVAIL_GB}GB available — you may need ~430GB total."
-    warn "  If the model is already downloaded, ~215GB is sufficient."
+if [ "$AVAIL_GB" -lt 20 ]; then
+    warn "  Disk: ${AVAIL_GB}GB available — need ~17GB for model download."
     echo -n "  Continue anyway? [y/N] "
     read -r ans
     if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then exit 1; fi
@@ -78,22 +82,7 @@ else
     ok "  Disk: ${AVAIL_GB}GB available"
 fi
 
-# Xcode / clang check
-if ! command -v clang &>/dev/null; then
-    warn "  Clang not found. Installing Xcode Command Line Tools..."
-    xcode-select --install 2>/dev/null || true
-    echo "  Please complete the Xcode installation and re-run this script."
-    exit 1
-fi
-ok "  Compiler: $(clang --version | head -1)"
-
-# Python check
-if ! command -v python3 &>/dev/null; then
-    fail "Python 3 is required. Install via: brew install python3"
-fi
-ok "  Python: $(python3 --version)"
-
-# GPU check
+# GPU info
 GPU_INFO=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -1 | sed 's/.*: //')
 if [ -n "$GPU_INFO" ]; then
     ok "  GPU: $GPU_INFO (Metal)"
@@ -103,136 +92,186 @@ echo ""
 ok "System requirements met."
 
 # ============================================================================
-# Step 1: Python dependencies
+# Step 1: Ollama
 # ============================================================================
-step "Installing Python dependencies"
+step "Checking Ollama"
 
-pip3 install --quiet numpy safetensors huggingface-hub 2>&1 | tail -5
-ok "  Python packages installed."
-
-# ============================================================================
-# Step 2: Download model from HuggingFace
-# ============================================================================
-step "Downloading Qwen3.5-397B-A17B-4bit"
-
-MODEL_REPO="mlx-community/Qwen3.5-397B-A17B-4bit"
-MODEL_DIR="$HOME/.cache/huggingface/hub/models--mlx-community--Qwen3.5-397B-A17B-4bit"
-
-# Check if model is already downloaded
-if [ -d "$MODEL_DIR" ]; then
-    # Find the snapshot directory
-    SNAPSHOT_DIR=$(find "$MODEL_DIR/snapshots" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
-    if [ -n "$SNAPSHOT_DIR" ] && [ -f "$SNAPSHOT_DIR/model.safetensors.index.json" ]; then
-        ok "  Model already downloaded at $SNAPSHOT_DIR"
+if command -v ollama &>/dev/null; then
+    OLLAMA_VER=$(ollama --version 2>&1 | head -1)
+    ok "  Ollama installed: $OLLAMA_VER"
+else
+    echo "  Ollama is not installed."
+    if command -v brew &>/dev/null; then
+        echo -n "  Install Ollama via Homebrew? [Y/n] "
+        read -r ans
+        if [ "$ans" = "n" ] || [ "$ans" = "N" ]; then
+            echo ""
+            echo "  Install Ollama manually:"
+            echo "    brew install ollama"
+            echo "    — or —"
+            echo "    Download from https://ollama.com/download"
+            exit 1
+        fi
+        echo "  Installing Ollama..."
+        brew install ollama
+        ok "  Ollama installed."
     else
-        warn "  Partial download detected. Resuming..."
-        python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download('$MODEL_REPO', local_dir=None)
-" 2>&1 | tail -5
-        SNAPSHOT_DIR=$(find "$MODEL_DIR/snapshots" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+        echo ""
+        echo "  Install Ollama:"
+        echo "    Download from https://ollama.com/download"
+        echo "    — or —"
+        echo "    Install Homebrew first: /bin/bash -c \"\$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+        echo "    Then: brew install ollama"
+        exit 1
+    fi
+fi
+
+# Ensure Ollama is running
+PORT="${PRE_PORT:-11434}"
+if ! curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
+    echo "  Starting Ollama..."
+    ollama serve >/dev/null 2>&1 &
+    sleep 3
+    if ! curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
+        warn "  Could not start Ollama automatically."
+        echo "  Please start Ollama.app or run 'ollama serve' in another terminal, then re-run this script."
+        exit 1
+    fi
+fi
+ok "  Ollama running on port $PORT."
+
+# ============================================================================
+# Step 2: Pull base model
+# ============================================================================
+step "Pulling base model ($BASE_MODEL)"
+
+if ollama list 2>/dev/null | grep -q "gemma4.*26b-a4b-it-q4_K_M"; then
+    ok "  Base model already available."
+else
+    echo "  Downloading ~17GB model. This may take a while..."
+    echo "  (Download is resumable — safe to interrupt and re-run)"
+    ollama pull "$BASE_MODEL" || fail "Failed to pull $BASE_MODEL"
+    ok "  Base model downloaded."
+fi
+
+# ============================================================================
+# Step 3: Create custom model from Modelfile
+# ============================================================================
+step "Creating optimized model ($CUSTOM_MODEL)"
+
+if ollama list 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
+    ok "  Custom model already exists."
+    echo -n "  Recreate from Modelfile? [y/N] "
+    read -r ans
+    if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+        ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
+        ok "  Custom model recreated."
     fi
 else
-    echo "  Downloading ~214GB model. This will take a while..."
-    echo "  (Download is resumable — safe to interrupt and re-run)"
-    python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download('$MODEL_REPO', local_dir=None)
-" 2>&1 | tail -5
-    SNAPSHOT_DIR=$(find "$MODEL_DIR/snapshots" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
-fi
-
-if [ -z "$SNAPSHOT_DIR" ] || [ ! -f "$SNAPSHOT_DIR/model.safetensors.index.json" ]; then
-    fail "Model download failed. Check your internet connection and try again."
-fi
-ok "  Model ready: $SNAPSHOT_DIR"
-
-# ============================================================================
-# Step 3: Extract non-expert weights
-# ============================================================================
-step "Extracting non-expert weights"
-
-if [ -f "$ENGINE_DIR/model_weights.bin" ] && [ -f "$ENGINE_DIR/model_weights.json" ]; then
-    ok "  model_weights.bin already exists — skipping."
-else
-    python3 "$ENGINE_DIR/extract_weights.py" --model "$SNAPSHOT_DIR" --output "$ENGINE_DIR/"
-    ok "  Done: engine/model_weights.bin ($(du -sh "$ENGINE_DIR/model_weights.bin" | cut -f1))"
+    if [ ! -f "$ENGINE_DIR/Modelfile" ]; then
+        fail "Modelfile not found at $ENGINE_DIR/Modelfile"
+    fi
+    ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
+    ok "  Custom model created (262K context, optimized batch size)."
 fi
 
 # ============================================================================
-# Step 4: Export tokenizer
+# Step 4: Xcode Command Line Tools
 # ============================================================================
-step "Exporting tokenizer"
+step "Checking build tools"
 
-if [ -f "$ENGINE_DIR/tokenizer.bin" ]; then
-    ok "  tokenizer.bin already exists — skipping."
-else
-    python3 "$ENGINE_DIR/export_tokenizer.py" "$SNAPSHOT_DIR/tokenizer.json" "$ENGINE_DIR/tokenizer.bin"
-    ok "  Done: engine/tokenizer.bin"
+if ! command -v clang &>/dev/null; then
+    warn "  Clang not found. Installing Xcode Command Line Tools..."
+    xcode-select --install 2>/dev/null || true
+    echo "  Please complete the Xcode installation and re-run this script."
+    exit 1
 fi
+ok "  Compiler: $(clang --version | head -1)"
 
-# Export vocab.bin if missing (needed for token decoding in server)
-if [ ! -f "$ENGINE_DIR/vocab.bin" ]; then
-    warn "  vocab.bin not found — will be generated on first server start."
-fi
-
-# ============================================================================
-# Step 5: Repack expert weights
-# ============================================================================
-step "Repacking expert weights (209GB — this takes 30-60 minutes)"
-
-PACKED_DIR="$REPO_DIR/packed_experts"
-if [ -d "$PACKED_DIR" ] && [ -f "$PACKED_DIR/layer_59.bin" ]; then
-    ok "  packed_experts/ already exists — skipping."
-else
-    cd "$REPO_DIR"
-    python3 "$ENGINE_DIR/repack_experts.py" --index "$ENGINE_DIR/expert_index.json"
-    ok "  Done: packed_experts/ ($(du -sh "$PACKED_DIR" | cut -f1))"
+# Check for Metal framework (should always be present on Apple Silicon macOS)
+if ! xcrun --sdk macosx --show-sdk-path &>/dev/null; then
+    warn "  macOS SDK not found. You may need to run: xcode-select --install"
 fi
 
 # ============================================================================
-# Step 6: Compile binaries
+# Step 5: Build PRE
 # ============================================================================
-step "Compiling inference engine and PRE"
+step "Building PRE"
 
 cd "$ENGINE_DIR"
 make clean 2>/dev/null || true
-make all 2>&1 | tail -3
-ok "  Built: infer ($(du -sh infer | cut -f1)) + pre ($(du -sh pre | cut -f1))"
+make pre 2>&1 | tail -3
+if [ ! -x "$ENGINE_DIR/pre" ]; then
+    fail "Build failed — 'pre' binary not found."
+fi
+ok "  Built: pre ($(du -sh pre | cut -f1))"
 
 # ============================================================================
-# Step 7: Install pre-launch command
+# Step 6: Install pre-launch command
 # ============================================================================
 step "Installing pre-launch command"
 
+chmod +x "$ENGINE_DIR/pre-launch"
 make install 2>&1
+
 # Ensure ~/.local/bin is in PATH
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     SHELL_RC=""
     if [ -f "$HOME/.zshrc" ]; then
         SHELL_RC="$HOME/.zshrc"
-    elif [ -f "$HOME/.bashrc" ]; then
+    elif [ -f "$HOME/.bash_profile" ]; then
         SHELL_RC="$HOME/.bash_profile"
+    elif [ -f "$HOME/.bashrc" ]; then
+        SHELL_RC="$HOME/.bashrc"
     fi
     if [ -n "$SHELL_RC" ]; then
         if ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
             ok "  Added ~/.local/bin to PATH in $SHELL_RC"
+            warn "  Run 'source $SHELL_RC' or open a new terminal to use pre-launch."
         fi
+    else
+        warn "  Add to your shell profile: export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
 fi
 
 # ============================================================================
-# Step 8: Set up system prompt
+# Step 7: Set up ~/.pre/ directories
 # ============================================================================
-step "Setting up system prompt"
+step "Setting up PRE data directories"
 
-mkdir -p "$HOME/.flash-moe/sessions"
-if [ ! -f "$HOME/.flash-moe/system.md" ]; then
-    cp "$REPO_DIR/system.md" "$HOME/.flash-moe/system.md"
-    ok "  Installed system prompt at ~/.flash-moe/system.md"
-else
-    ok "  System prompt already exists — keeping existing."
+mkdir -p "$HOME/.pre/sessions"
+mkdir -p "$HOME/.pre/memory"
+ok "  Created ~/.pre/sessions/"
+ok "  Created ~/.pre/memory/"
+
+# Migrate from old Flash-MoE layout if present
+if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
+    if [ -f "$HOME/.flash-moe/pre_history" ]; then
+        cp "$HOME/.flash-moe/pre_history" "$HOME/.pre/pre_history" 2>/dev/null || true
+        ok "  Migrated command history from ~/.flash-moe/"
+    fi
+    touch "$HOME/.pre/.migrated"
+fi
+
+# ============================================================================
+# Step 8: Pre-warm the model
+# ============================================================================
+step "Pre-warming model into GPU memory"
+
+echo "  Loading $CUSTOM_MODEL into GPU (this takes 10-30 seconds)..."
+curl -sf "http://localhost:${PORT}/api/chat" -d "{\"model\":\"$CUSTOM_MODEL\",\"messages\":[],\"keep_alive\":\"24h\"}" >/dev/null 2>&1 || true
+
+for i in $(seq 1 30); do
+    if ollama ps 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
+        ok "  Model loaded into GPU memory."
+        break
+    fi
+    sleep 1
+done
+
+if ! ollama ps 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
+    warn "  Model may not be fully loaded yet — it will load on first launch."
 fi
 
 # ============================================================================
@@ -243,18 +282,21 @@ echo -e "${BOLD}${GREEN}╔═════════════════�
 echo -e "${BOLD}${GREEN}║${RESET}${BOLD}  PRE installation complete!                              ${GREEN}║${RESET}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  ${BOLD}Quick start:${RESET}"
-echo -e "    ${CYAN}pre-launch${RESET}                  Launch from any directory"
-echo -e "    ${CYAN}pre-launch --show-think${RESET}     Launch with visible reasoning"
+echo -e "  ${BOLD}Launch:${RESET}"
+echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE from any directory"
+echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
 echo ""
-echo -e "  ${BOLD}Or manually:${RESET}"
-echo -e "    ${DIM}cd $ENGINE_DIR${RESET}"
-echo -e "    ${DIM}./infer --serve 8000  ${RESET}${DIM}# Terminal 1: start server${RESET}"
-echo -e "    ${DIM}./pre                 ${RESET}${DIM}# Terminal 2: start PRE${RESET}"
+echo -e "  ${BOLD}Connections (optional):${RESET}"
+echo -e "    Type ${BOLD}/connections${RESET} inside PRE to set up:"
+echo -e "    • ${DIM}Brave Search  — web search${RESET}"
+echo -e "    • ${DIM}Google        — Gmail, Drive, Docs${RESET}"
+echo -e "    • ${DIM}GitHub        — repos, issues, PRs${RESET}"
+echo -e "    • ${DIM}Wolfram Alpha — computation${RESET}"
 echo ""
-echo -e "  ${BOLD}System prompt:${RESET} ~/.flash-moe/system.md (edit to customize)"
-echo -e "  ${BOLD}Sessions:${RESET}      ~/.flash-moe/sessions/"
-echo -e "  ${BOLD}History:${RESET}       ~/.flash-moe/pre_history"
+echo -e "  ${BOLD}Data:${RESET}"
+echo -e "    ${DIM}~/.pre/sessions/${RESET}    Session history"
+echo -e "    ${DIM}~/.pre/memory/${RESET}      Persistent memory"
+echo -e "    ${DIM}~/.pre/pre_history${RESET}  Command history"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""

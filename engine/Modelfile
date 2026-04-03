@@ -1,7 +1,8 @@
 FROM gemma4:26b-a4b-it-q4_K_M
 
-# Match model's native context window
-PARAMETER num_ctx 262144
+# Default context — kept small for fast startup. PRE sends num_ctx
+# per-request and scales up dynamically as conversations grow.
+PARAMETER num_ctx 8192
 
 # Larger batch size for faster prompt evaluation (prefill)
 PARAMETER num_batch 512

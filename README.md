@@ -1,10 +1,66 @@
 # PRE — Personal Reasoning Engine
 
-> A fully local agentic assistant. No cloud. No API keys. No data leaves your machine.
+> A fully local agentic assistant that actually works. No cloud. No API keys. No data leaves your machine.
 
-PRE is a tool-calling, memory-equipped AI agent that runs entirely on your Mac. Powered by **Google Gemma 4 26B-A4B** (a Mixture-of-Experts model with 3.8B active parameters) via [Ollama](https://ollama.ai), PRE delivers **~70 tokens/second** on Apple Silicon with up to 35 integrated tools, persistent memory, project detection, and channel-based conversations.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 262K context, 35 integrated tools, persistent memory, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
+
+---
+
+## Why This Works (When Other Local Agents Don't)
+
+Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, connect a few tools, hope for the best. The result is sluggish, fragile, and useful mainly as a novelty. PRE takes the opposite approach — it is a **model-specific, platform-specific, vertically integrated agent** — and that specificity is what makes it actually usable for real work.
+
+### The Right Model for Agency
+
+**Gemma 4 26B-A4B** is a Mixture-of-Experts (MoE) architecture: 26 billion total parameters, but only **3.8 billion active per token** (128 experts, 8 active per forward pass). This is the key to the entire system. MoE means:
+
+- **Speed without sacrifice.** You get the knowledge and reasoning quality of a 26B-parameter model at the computational cost of a ~4B model. On Apple Silicon with q4_K_M quantization (~17 GB on disk), this translates to **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
+
+- **Context without collapse.** Gemma 4's native 262K token context window is not a marketing number — PRE actually uses it. Long agentic workflows (read 20 files, search a codebase, edit several, run tests, iterate) consume tens of thousands of tokens. Models that top out at 8K or 32K choke on the second tool call. 262K means PRE can hold an entire debugging session, a full codebase exploration, or a multi-step refactoring in a single coherent conversation.
+
+- **Strong instruction following.** MoE models with dedicated routing learn to follow structured tool-call formats reliably. Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable: the model calls tools incorrectly and the whole loop breaks down.
+
+- **Native multimodal input.** Gemma 4 accepts images natively. PRE supports Ctrl+V image paste — screenshot a UI bug, paste it in, and ask the model to analyze it. No separate vision model, no preprocessing pipeline, no base64 workaround. It just works because the model was trained for it.
+
+### Platform-Specific Engineering
+
+PRE doesn't abstract away the hardware — it leans into it. Every layer of the stack is optimized for the specific reality of running a 26B MoE model on Apple Silicon via Ollama:
+
+**Raw socket streaming, not buffered I/O.** Most LLM clients use `fgets()` or equivalent stdio-buffered reads to consume server-sent events. This adds latency — sometimes hundreds of milliseconds per token — because the C runtime waits to fill its internal buffer before returning data. PRE uses raw `recv()` on the TCP socket with a 64KB manual ring buffer and `memchr()`-based newline scanning. Every NDJSON chunk from Ollama is parsed and rendered the instant it arrives. The difference is visceral: tokens appear one at a time as the model generates them, not in jerky batches.
+
+**Dynamic context window scaling.** Setting `num_ctx=262144` at model load forces Ollama to pre-allocate a KV cache for 262K tokens — gigabytes of memory that takes minutes to initialize and wastes capacity when your conversation is only 2K tokens. PRE solves this with **dynamic per-request context sizing**: the Modelfile sets a small default (`num_ctx=8192`) for fast startup, and PRE sends `num_ctx` as a per-request option, doubling from 8K → 16K → 32K → ... → 262K as the conversation actually grows. First messages get sub-second TTFT. Long sessions get the full 262K when they need it.
+
+**KV cache prefix reuse.** Ollama caches the KV state of previously processed tokens. If the prefix of a new request matches a previous one, those tokens don't need re-processing — only the new tokens go through the model. PRE exploits this by always sending the system prompt as the first `role:system` message in the messages array, identically formatted every turn. After the first exchange, the system prompt (tool descriptions, project context, memories) is essentially free — the KV cache already has it. This is why multi-turn conversations maintain fast TTFT even with a large system prompt.
+
+**Server-reported token metrics.** Client-side timing (start a clock, measure when tokens arrive) includes network latency, JSON parsing overhead, and rendering time. It systematically underreports performance. PRE extracts `eval_duration`, `prompt_eval_duration`, `eval_count`, and `prompt_eval_count` from Ollama's final `done:true` NDJSON message — these are the server's own measurements of time spent in the model, giving you ground-truth tok/s and TTFT numbers.
+
+**Model pre-warming.** Cold-starting a model — loading weights from disk into GPU memory — can take 30+ seconds and causes terrible TTFT on the first request. PRE's launcher script (`pre-launch`) sends a zero-message warmup request with `keep_alive: "24h"` before starting the CLI. By the time you see the prompt, the model is already in GPU memory and the KV cache is primed.
+
+**Compact prompt engineering.** The system prompt is where most local agents waste their context budget — verbose tool descriptions, lengthy instructions, boilerplate. PRE compresses all 35 tool definitions into a **function-signature format** (`bash(command) read_file(path) glob(pattern,path?)...`) instead of numbered lists with multi-line descriptions. The entire tool catalog fits in ~800 tokens. This leaves more room for actual conversation and means fewer tokens to prefill on every turn (directly improving TTFT through the KV cache reuse described above).
+
+**Whitespace-tolerant JSON parsing.** Different APIs (Ollama, Google, GitHub) format their JSON differently — some minified, some pretty-printed. A naive `strstr(json, "\"id\":\"")` fails when the server sends `"id" : "value"` with spaces around the colon. PRE's `json_find_key()` helper scans for the key string, then skips arbitrary whitespace before matching the colon. This eliminated an entire class of parsing failures that plagued early versions.
+
+### What Makes It an Agent, Not a Chatbot
+
+The difference between a chatbot and an agent is the **tool-call loop**. A chatbot generates text. An agent generates text, decides it needs more information or needs to take an action, calls a tool, reads the result, decides what to do next, and repeats until the task is done. This requires:
+
+1. **Reliable tool calling** — the model must produce valid JSON tool calls consistently
+2. **Fast execution** — each tool call adds a round-trip; if each one takes 10 seconds, a 5-step task takes a minute of waiting
+3. **Sufficient context** — the conversation must hold the system prompt, tool definitions, all previous turns, tool results, and still have room for the model to reason
+4. **Autonomy with safety** — most actions should just execute; only genuinely dangerous ones should ask
+
+PRE delivers all four. The model produces well-formed `<tool_call>` JSON. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 262K context holds extended multi-step sessions. And the permission model is designed for power users: **32 of 35 tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
+
+This means PRE can do things like:
+
+- Read a stack trace, search the codebase for the relevant function, read the file, identify the bug, edit the fix, run the tests, and report the result — all from a single prompt
+- Search your Gmail for a thread, summarize it, draft a reply, and save it — without you touching a browser
+- Inspect network connections, check disk usage, review running processes, and generate a system health report
+- Navigate your codebase, understand the architecture, and make coordinated edits across multiple files
+
+These aren't demos. These are workflows that complete in under a minute because every layer of the stack was built to make the loop fast.
 
 ---
 
@@ -32,6 +88,12 @@ The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**
 ## Quick Start
 
 ```bash
+# Full automated install (checks requirements, installs Ollama, pulls model, builds PRE)
+cd pre
+./install.sh
+
+# Or manual setup:
+
 # 1. Install Ollama (if not already installed)
 brew install ollama
 
@@ -71,7 +133,7 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Read and modify your codebase** — The model reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-**Run commands autonomously** — Bash execution with a three-tier permission model. Read-only tools auto-approve; writes confirm once; destructive operations confirm every time.
+**Run commands autonomously** — Bash execution with a streamlined permission model. 32 of 35 tools auto-execute; only genuinely destructive operations ask for confirmation.
 
 **Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts.
 
@@ -96,22 +158,38 @@ PRE is not a chatbot — it's a local agent with deep system access.
 | **macOS** | 14.0+ (Sonoma or later) |
 | **Chip** | Apple Silicon (M1 or later) |
 | **RAM** | 16 GB minimum, 32+ GB recommended |
+| **Disk** | ~17 GB for model download |
 | **Ollama** | [ollama.ai](https://ollama.ai) or `brew install ollama` |
 | **Xcode CLI** | `xcode-select --install` |
 
 ### Install
 
+The easiest path is the automated installer:
+
+```bash
+git clone https://github.com/sunkencity999/pre.git
+cd pre
+./install.sh
+```
+
+This checks system requirements, installs Ollama if needed, pulls the base model, creates the optimized `pre-gemma4` model from the Modelfile, builds the PRE binary, installs `pre-launch` to your PATH, sets up data directories, and pre-warms the model into GPU memory.
+
+Or install manually:
+
 ```bash
 # Pull the base model (Gemma 4 26B-A4B, MoE, ~17 GB)
 ollama pull gemma4:26b-a4b-it-q4_K_M
 
-# Clone and build
-git clone https://github.com/sunkencity999/pre.git
+# Create the optimized model
 cd pre/engine
+ollama create pre-gemma4 -f Modelfile
+
+# Build PRE
 make pre
 
 # Optional: add to PATH
-ln -sf "$(pwd)/pre-launch" ~/.local/bin/pre-launch
+make install
+# or: ln -sf "$(pwd)/pre-launch" ~/.local/bin/pre-launch
 ```
 
 ### Launch
@@ -122,7 +200,7 @@ pre-launch --dir /path/to/project  # Override working directory
 pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
-The launcher checks that Ollama is running (starts it if not), creates the optimized `pre-gemma4` model from the Modelfile if needed (sets `num_ctx 262144`, `num_batch 512`), and launches the PRE binary.
+The launcher checks that Ollama is running (starts it if not), creates `pre-gemma4` from the Modelfile if needed, pre-warms the model into GPU memory for fast TTFT, and launches the PRE binary.
 
 ---
 
@@ -403,13 +481,15 @@ Google OAuth uses a local HTTP callback server — no data leaves your machine e
 
 ### Context Management
 
-PRE uses Gemma 4's full 262K token context window. A few features help you stay within budget:
+PRE dynamically manages Gemma 4's 262K token context window. The context budget scales with your conversation — small allocations for quick exchanges, full 262K for deep multi-step sessions.
+
+**Dynamic context scaling** — PRE starts each session with an 8K context window and doubles it automatically (8K → 16K → 32K → ... → 262K) as the conversation grows. This means fast startup and sub-second TTFT on early turns, with no hard ceiling as the session deepens.
 
 **Context bar** — Shown after every response (color-coded: grey → yellow at 75% → red at 90%). Also available via `/context`.
 
 **Auto-compaction** — When estimated tokens exceed 75% of the budget, older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
 
-**Server-reported tokens** — PRE uses Ollama's native API which reports exact prompt and generation token counts, giving you accurate context usage instead of estimates.
+**Server-reported tokens** — PRE uses Ollama's native API which reports exact prompt and generation token counts from the server, giving you ground-truth context usage instead of client-side estimates.
 
 **Tool response cap** — Tool outputs are truncated to 8KB to prevent a single large file from consuming the entire context.
 
@@ -484,25 +564,43 @@ PRE uses Gemma 4's full 262K token context window. A few features help you stay 
           └── channels/  # Channel metadata
 ```
 
-**PRE CLI** (`pre.m`) is a single-file Objective-C/C application. It handles:
-- Ollama native API client with raw `recv()` NDJSON streaming (no stdio buffering)
-- System prompt as `role:system` message for KV cache prefix reuse across turns
+### Optimization Stack
+
+PRE's performance comes from a stack of reinforcing optimizations, not any single trick:
+
+| Layer | Optimization | Effect |
+|-------|-------------|--------|
+| **Model selection** | Gemma 4 26B-A4B MoE — 3.8B active params of 26B total | 26B quality at ~4B speed |
+| **Quantization** | q4_K_M (~17 GB) — sweet spot of quality vs. memory | Fits comfortably in unified memory |
+| **Context allocation** | Dynamic per-request `num_ctx` (8K → 262K) | Sub-second startup, scales on demand |
+| **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
+| **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
+| **Prompt compression** | Function-signature tool format (~800 tokens for 35 tools) | More room for conversation, faster prefill |
+| **Model pre-warming** | `keep_alive: "24h"` + warmup request at launch | No cold-start penalty |
+| **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth performance numbers |
+| **Auto-compaction** | Summarize old turns at 75% context usage | Extends effective session length |
+| **Tool response cap** | 8KB limit per tool result | Prevents context blowout from large files |
+
+### The PRE Binary
+
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~6000 lines). It handles:
+- Ollama native API client with raw `recv()` NDJSON streaming
+- Dynamic context window sizing with per-request `num_ctx`
+- System prompt as `role:system` message for KV cache prefix reuse
 - Streaming markdown renderer with ANSI formatting
 - Multi-format tool call parser (JSON, XML, bare)
-- Up to 35 tool implementations with three-tier permissions
+- Up to 35 tool implementations with two-tier permissions
 - OAuth 2.0 flow with local HTTP callback for Google APIs
 - Connection management for external services (Brave, GitHub, Google, Wolfram)
 - Persistent memory with per-project scoping
 - Channel-based conversation management
 - Project detection and PRE.md loading
-- Context compaction and token budget management (262K window)
+- Context compaction and token budget management (up to 262K)
 - File checkpointing and undo
 - Ctrl+V image paste for multimodal queries (via AppKit)
 - linenoise-based line editor with tab completion and ANSI-aware cursor
 
-**Ollama** serves the model via a custom Modelfile (`pre-gemma4`) with tuned `num_ctx`, `num_batch`, and `keep_alive` for optimal performance. PRE uses the native `/api/chat` endpoint with server-reported token counts.
-
-**Gemma 4 26B-A4B** is a Mixture-of-Experts model: 26B total parameters, 3.8B active per token, 128 experts with 8 active. At q4_K_M quantization (~17 GB), it runs at ~70 tok/s on M4 Max with 262K context — fast enough for real-time agentic workflows.
+**Ollama** serves the model via a custom Modelfile (`pre-gemma4`) with tuned parameters and a small default context. PRE uses the native `/api/chat` endpoint — not the OpenAI-compatible layer — for access to server-reported metrics, native multimodal support, and streaming NDJSON.
 
 ---
 
@@ -552,6 +650,7 @@ All PRE data lives in `~/.pre/`:
 ```
 pre/
 ├── README.md               # This file
+├── install.sh              # Automated installer
 ├── system.md               # Model system prompt reference
 ├── engine/
 │   ├── pre.m               # PRE CLI (single-file, ~6000 lines)
@@ -571,7 +670,7 @@ pre/
 PRE is built and maintained by **Christopher Bradford** — systems administrator at Joby Aviation and AI engineer.
 
 **Areas for contribution:**
-- **New tools** — Calendar integration, git operations, Slack, linear/Jira
+- **New tools** — Calendar integration, git operations, Slack, Linear/Jira
 - **Smarter memory** — Auto-extraction of important facts, memory relevance ranking
 - **Better rendering** — Syntax highlighting in code blocks, image display in terminal
 - **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
@@ -592,7 +691,7 @@ PRE is built and maintained by **Christopher Bradford** — systems administrato
 
 - **Google** for the Gemma 4 model family
 - **Ollama** for making local model serving effortless
-- **Apple** for unified memory architecture
+- **Apple** for unified memory architecture that makes this possible
 - The original **Flash-MoE** research that informed PRE's early design
 
 ## License

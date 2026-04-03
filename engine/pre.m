@@ -50,7 +50,7 @@
 #define PROJECTS_DIR    ".pre/projects"
 #define CONNECTIONS_FILE ".pre/connections.json"
 #define MAX_CHANNELS    64
-#define MAX_CONNECTIONS 8
+#define MAX_CONNECTIONS 16
 
 // ANSI escape codes
 #define ANSI_RESET      "\033[0m"
@@ -543,6 +543,10 @@ static Connection g_connections[MAX_CONNECTIONS];
 static int g_connections_count = 0;
 static int g_connections_loaded = 0;
 
+// Forward declarations for connection helpers
+static Connection *get_connection(const char *name);
+static void save_connections(void);
+
 static const char *connections_path(void) {
     static char path[PATH_MAX];
     const char *home = getenv("HOME") ?: "/tmp";
@@ -654,6 +658,58 @@ static void load_connections(void) {
             }
         }
     }
+
+    // Load additional Google accounts (google_work, google_personal, etc.)
+    // Scan for any "google_*_refresh_token" keys in the JSON
+    const char *scan = buf;
+    while ((scan = strstr(scan, "\"google_")) != NULL) {
+        scan++; // skip opening quote
+        const char *end = strchr(scan, '"');
+        if (!end) break;
+        // Extract field name
+        char field_name[128];
+        size_t flen = end - scan;
+        if (flen >= sizeof(field_name)) { scan = end; continue; }
+        memcpy(field_name, scan, flen);
+        field_name[flen] = 0;
+        scan = end + 1;
+
+        // Only care about refresh_token fields for additional accounts
+        char *suffix = strstr(field_name, "_refresh_token");
+        if (!suffix) continue;
+        *suffix = 0; // field_name is now e.g. "google_work"
+
+        // Skip the default "google" — already loaded above
+        if (strcmp(field_name, "google") == 0) continue;
+        // Skip if already loaded
+        if (get_connection(field_name)) continue;
+        // Must not exceed limit
+        if (g_connections_count >= MAX_CONNECTIONS) break;
+
+        // Create a new connection slot
+        const char *short_label = field_name + 7; // skip "google_"
+        Connection *c = &g_connections[g_connections_count++];
+        memset(c, 0, sizeof(*c));
+        strlcpy(c->name, field_name, sizeof(c->name));
+        snprintf(c->label, sizeof(c->label), "Google (%s)", short_label);
+        c->is_oauth = 1;
+
+        // Load its OAuth fields
+        char fld[64];
+        snprintf(fld, sizeof(fld), "%s_client_id", c->name);
+        json_extract_str(buf, fld, c->client_id, sizeof(c->client_id));
+        snprintf(fld, sizeof(fld), "%s_client_secret", c->name);
+        json_extract_str(buf, fld, c->client_secret, sizeof(c->client_secret));
+        snprintf(fld, sizeof(fld), "%s_access_token", c->name);
+        json_extract_str(buf, fld, c->access_token, sizeof(c->access_token));
+        snprintf(fld, sizeof(fld), "%s_refresh_token", c->name);
+        json_extract_str(buf, fld, c->refresh_token, sizeof(c->refresh_token));
+        snprintf(fld, sizeof(fld), "%s_token_expiry", c->name);
+        char exp_s[32];
+        if (json_extract_str(buf, fld, exp_s, sizeof(exp_s)))
+            c->token_expiry = atol(exp_s);
+        if (c->refresh_token[0]) c->active = 1;
+    }
 }
 
 static void save_connections(void) {
@@ -698,9 +754,59 @@ static Connection *get_connection(const char *name) {
     return NULL;
 }
 
+// Resolve a Google connection by optional account label.
+// "account" param from tool call: NULL → default "google", "work" → "google_work", etc.
+// Also accepts full names like "google_work" directly.
+static Connection *get_google_connection(const char *account) {
+    if (!account || !account[0]) return get_connection("google");
+    // Try exact match first (e.g. "google_work")
+    Connection *c = get_connection(account);
+    if (c && c->is_oauth) return c;
+    // Try prefixed (e.g. "work" → "google_work")
+    char full[64];
+    snprintf(full, sizeof(full), "google_%s", account);
+    c = get_connection(full);
+    if (c && c->is_oauth) return c;
+    // Fall back to default
+    return get_connection("google");
+}
+
+// Add a new Google account connection slot and return it
+static Connection *add_google_account(const char *label) {
+    if (g_connections_count >= MAX_CONNECTIONS) return NULL;
+    Connection *c = &g_connections[g_connections_count++];
+    memset(c, 0, sizeof(*c));
+    snprintf(c->name, sizeof(c->name), "google_%s", label);
+    snprintf(c->label, sizeof(c->label), "Google (%s)", label);
+    c->is_oauth = 1;
+    return c;
+}
+
+// List all active Google account names (for tool descriptions)
+static int list_google_accounts(char *buf, size_t bufsz) {
+    int off = 0;
+    for (int i = 0; i < g_connections_count; i++) {
+        Connection *c = &g_connections[i];
+        if (!c->active || !c->is_oauth) continue;
+        if (strncmp(c->name, "google", 6) != 0) continue;
+        if (off > 0 && off < (int)bufsz - 2) buf[off++] = ',';
+        const char *short_name = (strcmp(c->name, "google") == 0) ? "default" : c->name + 7;
+        int n = snprintf(buf + off, bufsz - off, "%s", short_name);
+        if (n > 0) off += n;
+    }
+    buf[off] = 0;
+    return off;
+}
+
 // ============================================================================
 // OAuth2 helpers
 // ============================================================================
+
+// Built-in Google OAuth credentials — users don't need their own Cloud project.
+// Google documents that client secrets for "installed applications" (desktop/native)
+// are not treated as confidential. Users just sign in via browser.
+#define PRE_GOOGLE_CLIENT_ID "1062005591474-bj9c932m52vrvh5cl8fr02j1dti99jdh.apps.googleusercontent.com"
+#define PRE_GOOGLE_CLIENT_SECRET "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"
 
 #define GOOGLE_AUTH_URL "https://accounts.google.com/o/oauth2/v2/auth"
 #define GOOGLE_TOKEN_URL "https://oauth2.googleapis.com/token"
@@ -1678,42 +1784,19 @@ static char *build_context_preamble(void) {
             datebuf);
     }
 
-    // Tool instructions
+    // Tool instructions — kept compact to minimize prompt tokens
     plen += snprintf(preamble + plen, cap - plen,
-        "You have tools to interact with the local system. To use a tool, output EXACTLY this format:\n\n"
-        "<tool_call>\n"
-        "{\"name\": \"TOOL_NAME\", \"arguments\": {\"KEY\": \"VALUE\"}}\n"
-        "</tool_call>\n\n"
-        "Available tools:\n"
-        "1. bash - Run a shell command. Args: command\n"
-        "2. read_file - Read a file. Args: path\n"
-        "3. list_dir - List directory contents. Args: path\n"
-        "4. glob - Find files by pattern. Args: pattern, path (optional)\n"
-        "5. grep - Search file contents. Args: pattern, path (optional), include (optional glob)\n"
-        "6. file_write - Write/create a file. Args: path, content\n"
-        "7. file_edit - Edit a file (find & replace). Args: path, old_string, new_string\n"
-        "8. web_fetch - Fetch a URL. Args: url\n"
-        "9. system_info - Get system information. No args.\n"
-        "10. process_list - List running processes. Args: filter (optional)\n"
-        "11. process_kill - Kill a process. Args: pid\n"
-        "12. clipboard_read - Read clipboard. No args.\n"
-        "13. clipboard_write - Write to clipboard. Args: content\n"
-        "14. open_app - Open file/app/URL with macOS 'open'. Args: target\n"
-        "15. notify - Show macOS notification. Args: title, message\n"
-        "16. memory_save - Save a persistent memory. Args: name, type (user/feedback/project/reference), description, content, scope (optional: 'project' or 'global', default global)\n"
-        "17. memory_search - Search saved memories. Args: query (optional, omit to list all)\n"
-        "18. memory_list - List all saved memories. No args.\n"
-        "19. memory_delete - Delete a memory by name. Args: query\n"
-        "20. screenshot - Capture screen. Args: region (optional: 'full', 'window', or 'x,y,w,h')\n"
-        "21. window_list - List all open windows with positions. No args.\n"
-        "22. window_focus - Bring an app to front. Args: app\n"
-        "23. display_info - Display/GPU information. No args.\n"
-        "24. net_info - Network interfaces, IPs, DNS. No args.\n"
-        "25. net_connections - Active network connections. Args: filter (optional: 'listening', 'established', or port number)\n"
-        "26. service_status - List or search launchd services. Args: service (optional)\n"
-        "27. disk_usage - Disk/volume usage. Args: path (optional)\n"
-        "28. hardware_info - Detailed hardware/thermal/battery info. No args.\n"
-        "29. applescript - Run AppleScript for deep macOS automation. Args: script\n");
+        "To use a tool: <tool_call>\n{\"name\":\"TOOL\",\"arguments\":{...}}\n</tool_call>\n"
+        "After calling, STOP and wait for <tool_response>.\n\n"
+        "Tools:\n"
+        "bash(command) read_file(path) list_dir(path) glob(pattern,path?) grep(pattern,path?,include?) "
+        "file_write(path,content) file_edit(path,old_string,new_string) web_fetch(url) "
+        "system_info() process_list(filter?) process_kill(pid) "
+        "clipboard_read() clipboard_write(content) open_app(target) notify(title,message) "
+        "memory_save(name,type,description,content,scope?) memory_search(query?) memory_list() memory_delete(query) "
+        "screenshot(region?) window_list() window_focus(app) display_info() "
+        "net_info() net_connections(filter?) service_status(service?) disk_usage(path?) "
+        "hardware_info() applescript(script)\n");
 
     // Conditionally advertise connected services
     if (!g_connections_loaded) load_connections();
@@ -1721,44 +1804,27 @@ static char *build_context_preamble(void) {
     Connection *gh = get_connection("github");
     Connection *goog = get_connection("google");
     Connection *wolf = get_connection("wolfram");
-    int ext_num = 30;
     if (brave && brave->active)
         plen += snprintf(preamble + plen, cap - plen,
-            "%d. web_search - Search the web via Brave Search. Args: query, count (optional, default 5)\n", ext_num++);
+            "web_search(query,count?) ");
     if (gh && gh->active)
         plen += snprintf(preamble + plen, cap - plen,
-            "%d. github - GitHub API. Args: action (search_repos/list_issues/read_issue/list_prs/user), repo (owner/name), query, number, state\n", ext_num++);
+            "github(action:search_repos|list_issues|read_issue|list_prs|user,repo?,query?,number?,state?) ");
     if (goog && goog->active) {
         plen += snprintf(preamble + plen, cap - plen,
-            "%d. gmail - Gmail API. Args: action (search/read/send/draft/trash/labels/profile), query (for search), id (for read/trash), to/subject/body (for send/draft), max_results (optional)\n", ext_num++);
-        plen += snprintf(preamble + plen, cap - plen,
-            "%d. gdrive - Google Drive. Args: action (list/search/download/upload/mkdir/share/delete), id, path, name, folder_id, query, email, role, count\n", ext_num++);
-        plen += snprintf(preamble + plen, cap - plen,
-            "%d. gdocs - Google Docs. Args: action (create/read/append), id (for read/append), title (for create), content\n", ext_num++);
+            "gmail(action:search|read|send|draft|trash|labels|profile,query?,id?,to?,subject?,body?,cc?,bcc?,max_results?,account?) "
+            "gdrive(action:list|search|download|upload|mkdir|share|delete,id?,path?,name?,folder_id?,query?,email?,role?,count?,account?) "
+            "gdocs(action:create|read|append,id?,title?,content?,account?) ");
     }
     if (wolf && wolf->active)
         plen += snprintf(preamble + plen, cap - plen,
-            "%d. wolfram - Query Wolfram Alpha for computation, math, science, data. Args: query\n", ext_num++);
+            "wolfram(query) ");
+    plen += snprintf(preamble + plen, cap - plen, "\n");
 
     plen += snprintf(preamble + plen, cap - plen,
-        "\n"
-        "Example — edit a file:\n"
-        "<tool_call>\n"
-        "{\"name\": \"file_edit\", \"arguments\": {\"path\": \"src/main.py\", \"old_string\": \"def old_func():\\n    pass\", \"new_string\": \"def new_func():\\n    return 42\"}}\n"
-        "</tool_call>\n\n"
-        "Example — save a memory:\n"
-        "<tool_call>\n"
-        "{\"name\": \"memory_save\", \"arguments\": {\"name\": \"User prefers concise output\", \"type\": \"feedback\", \"description\": \"User wants terse responses\", \"content\": \"User prefers short, direct answers without trailing summaries.\"}}\n"
-        "</tool_call>\n\n"
-        "RULES:\n"
-        "- ALWAYS include JSON with \"name\" and \"arguments\" inside <tool_call> tags.\n"
-        "- NEVER output empty <tool_call></tool_call>.\n"
-        "- After a tool call, STOP and wait for <tool_response>.\n"
-        "- file_edit old_string must match exactly once in the file.\n"
-        "- Paths are relative to working directory unless absolute.\n"
-        "- Save memories proactively when you learn the user's preferences, project context, or workflow patterns.\n"
-        "- Memory types: user (about the person), feedback (how to work), project (current work), reference (where info lives).\n"
-        "- Use scope 'project' for project-specific memories, 'global' for cross-project knowledge.\n");
+        "memory_save types: user|feedback|project|reference. scope: project|global.\n"
+        "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
+        "Save memories proactively for user prefs, project context, corrections.\n\n");
 
     // Tell the model about connection-dependent tools (even if not active)
     int has_any = (brave && brave->active) || (gh && gh->active) || (goog && goog->active) || (wolf && wolf->active);
@@ -1781,6 +1847,20 @@ static char *build_context_preamble(void) {
         if (!wolf || !wolf->active)
             plen += snprintf(preamble + plen, cap - plen,
                 "- wolfram tool is available if the user runs /connections add wolfram.\n");
+    }
+
+    // Tell the model about available Google accounts for multi-account support
+    char accounts[256];
+    int acct_count = 0;
+    for (int i = 0; i < g_connections_count; i++) {
+        if (g_connections[i].active && g_connections[i].is_oauth &&
+            strncmp(g_connections[i].name, "google", 6) == 0)
+            acct_count++;
+    }
+    if (acct_count > 1 && list_google_accounts(accounts, sizeof(accounts))) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "Google accounts: %s. Use account param to target a specific account (e.g. account:\"work\").\n",
+            accounts);
     }
 
     plen += snprintf(preamble + plen, cap - plen, "\n");
@@ -1968,10 +2048,16 @@ static int send_request(const char *user_message, int max_tokens, const char *se
     char *body = malloc(body_cap);
     int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"stream\":true,\"keep_alive\":\"24h\"", g_model);
 
-    // Performance options
+    // Dynamic context window: start small for fast startup, grow as conversation does.
+    // Estimate tokens used so far + headroom for the reply. Round up to next 8K block.
+    int estimated = g.total_tokens_in + g.total_tokens_out + max_tokens + 4096;
+    int num_ctx = 8192; // minimum
+    while (num_ctx < estimated && num_ctx < MAX_CONTEXT) num_ctx *= 2;
+    if (num_ctx > MAX_CONTEXT) num_ctx = MAX_CONTEXT;
+
     body_len += snprintf(body + body_len, body_cap - body_len,
-        ",\"options\":{\"num_ctx\":%d,\"num_batch\":512,\"num_predict\":%d}",
-        MAX_CONTEXT, max_tokens);
+        ",\"options\":{\"num_predict\":%d,\"num_ctx\":%d}",
+        max_tokens, num_ctx);
 
     // Messages array — starts with system message for tool/context instructions
     // Using role:system in messages array (not top-level "system" field) for
@@ -2297,6 +2383,7 @@ static char *stream_response(int sock) {
 
     // Server-reported stats from the final "done":true message
     int server_prompt_tokens = 0, server_eval_tokens = 0;
+    double server_eval_duration = 0, server_prompt_duration = 0;
 
     // Decode a JSON string value starting at p into buf, return length
     // Handles \n \t \" \\ and \uXXXX (BMP codepoints, ASCII subset)
@@ -2393,12 +2480,17 @@ static char *stream_response(int sock) {
         // Parse Ollama native NDJSON: {"message":{"content":"...","thinking":"..."},"done":bool}
         // Check for done
         if (strstr(line, "\"done\":true")) {
-            // Extract server-reported token counts
+            // Extract server-reported token counts and durations
             char eval_str[32] = {0}, prompt_str[32] = {0};
+            char eval_dur[32] = {0}, prompt_dur[32] = {0};
             json_extract_str(line, "eval_count", eval_str, sizeof(eval_str));
             json_extract_str(line, "prompt_eval_count", prompt_str, sizeof(prompt_str));
+            json_extract_str(line, "eval_duration", eval_dur, sizeof(eval_dur));
+            json_extract_str(line, "prompt_eval_duration", prompt_dur, sizeof(prompt_dur));
             if (eval_str[0]) server_eval_tokens = atoi(eval_str);
             if (prompt_str[0]) server_prompt_tokens = atoi(prompt_str);
+            if (eval_dur[0]) server_eval_duration = strtod(eval_dur, NULL) / 1e9;
+            if (prompt_dur[0]) server_prompt_duration = strtod(prompt_dur, NULL) / 1e9;
             break;
         }
 
@@ -2479,20 +2571,36 @@ static char *stream_response(int sock) {
 
     printf(ANSI_RESET);
 
-    // Stats — prefer server-reported counts when available
+    // Stats — use server-reported timing for accurate tok/s
     double t_end = now_ms();
-    double gen_time = t_first > 0 ? t_end - t_first : 0;
     int reported_tokens = server_eval_tokens > 0 ? server_eval_tokens : tokens;
-    int gen_tokens = reported_tokens > 1 ? reported_tokens - 1 : reported_tokens;
-    double tok_s = (gen_tokens > 0 && gen_time > 0) ? gen_tokens * 1000.0 / gen_time : 0;
-    double ttft = t_first > 0 ? t_first - t_start : t_end - t_start;
+
+    // Server-reported eval rate is the ground truth — no client overhead
+    double tok_s;
+    if (server_eval_duration > 0 && server_eval_tokens > 0)
+        tok_s = server_eval_tokens / server_eval_duration;
+    else {
+        double gen_time = t_first > 0 ? t_end - t_first : 0;
+        int gen_tokens = reported_tokens > 1 ? reported_tokens - 1 : reported_tokens;
+        tok_s = (gen_tokens > 0 && gen_time > 0) ? gen_tokens * 1000.0 / gen_time : 0;
+    }
+
+    // TTFT: server prompt eval duration if available, else client-measured
+    double ttft;
+    if (server_prompt_duration > 0)
+        ttft = server_prompt_duration * 1000.0; // convert to ms
+    else
+        ttft = t_first > 0 ? t_first - t_start : t_end - t_start;
+
+    double gen_time_ms = server_eval_duration > 0 ? server_eval_duration * 1000.0 :
+                         (t_first > 0 ? t_end - t_first : 0);
 
     g.last_token_count = reported_tokens;
     g.last_tok_s = tok_s;
     g.last_ttft_ms = ttft;
     g.total_tokens_out += reported_tokens;
     if (server_prompt_tokens > 0) g.total_tokens_in = server_prompt_tokens;
-    g.cumulative_gen_ms += gen_time;
+    g.cumulative_gen_ms += gen_time_ms;
 
     printf("\n\n");
     if (tokens > 0) {
@@ -3305,7 +3413,8 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
     } else if (strcmp(name, "gmail") == 0) {
         const char *action = tool_call_get(tc, "action");
         if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
-        Connection *c = get_connection("google");
+        const char *account = tool_call_get(tc, "account");
+        Connection *c = get_google_connection(account);
         if (!c || !c->active) {
             out_len = snprintf(output, output_sz,
                 "Error: Google not configured. Run /connections add google");
@@ -3572,7 +3681,8 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
     } else if (strcmp(name, "gdrive") == 0) {
         const char *action = tool_call_get(tc, "action");
         if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
-        Connection *c = get_connection("google");
+        const char *account = tool_call_get(tc, "account");
+        Connection *c = get_google_connection(account);
         if (!c || !c->active) {
             out_len = snprintf(output, output_sz, "Error: Google not configured. Run /connections add google");
             return out_len;
@@ -3739,7 +3849,8 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
     } else if (strcmp(name, "gdocs") == 0) {
         const char *action = tool_call_get(tc, "action");
         if (!action) { out_len = snprintf(output, output_sz, "Error: no action provided"); return out_len; }
-        Connection *c = get_connection("google");
+        const char *account = tool_call_get(tc, "account");
+        Connection *c = get_google_connection(account);
         if (!c || !c->active) {
             out_len = snprintf(output, output_sz, "Error: Google not configured. Run /connections add google");
             return out_len;
@@ -5389,18 +5500,26 @@ static void connections_show_status(void) {
     for (int i = 0; i < g_connections_count; i++) {
         Connection *c = &g_connections[i];
         if (c->active) {
-            // Mask key: show first 4 and last 4 chars
-            char masked[32];
-            int klen = (int)strlen(c->key);
-            if (klen > 12) {
-                snprintf(masked, sizeof(masked), "%.4s····%.4s", c->key, c->key + klen - 4);
+            if (c->is_oauth && strncmp(c->name, "google", 6) == 0) {
+                // Show OAuth status for Google accounts
+                printf("  " ANSI_GREEN "●" ANSI_RESET " %-20s " ANSI_DIM "authorized" ANSI_RESET "\n",
+                       c->label);
             } else {
-                snprintf(masked, sizeof(masked), "****");
+                // Mask key: show first 4 and last 4 chars
+                char masked[32];
+                int klen = (int)strlen(c->key);
+                if (klen > 12) {
+                    snprintf(masked, sizeof(masked), "%.4s····%.4s", c->key, c->key + klen - 4);
+                } else {
+                    snprintf(masked, sizeof(masked), "****");
+                }
+                printf("  " ANSI_GREEN "●" ANSI_RESET " %-20s " ANSI_DIM "%s" ANSI_RESET "\n",
+                       c->label, masked);
             }
-            printf("  " ANSI_GREEN "●" ANSI_RESET " %-20s " ANSI_DIM "%s" ANSI_RESET "\n",
-                   c->label, masked);
             any_active = 1;
         } else {
+            // Don't show unconfigured additional google account slots
+            if (strncmp(c->name, "google_", 7) == 0) continue;
             printf("  " ANSI_DIM "○ %-20s not configured" ANSI_RESET "\n", c->label);
         }
     }
@@ -5408,6 +5527,7 @@ static void connections_show_status(void) {
         printf("\n  " ANSI_DIM "No connections configured. Run " ANSI_RESET
                "/connections setup" ANSI_DIM " to add them." ANSI_RESET "\n");
     }
+    printf("  " ANSI_DIM "Add more Google accounts: /connections add google <label>" ANSI_RESET "\n");
     printf("\n");
 }
 
@@ -5431,7 +5551,7 @@ static int connection_test(Connection *c) {
             "curl -sf -o /dev/null -w '%%{http_code}' "
             "'https://api.wolframalpha.com/v2/query?input=1%%2B1&appid=%s&output=json' 2>/dev/null",
             c->key);
-    } else if (strcmp(c->name, "google") == 0) {
+    } else if (strncmp(c->name, "google", 6) == 0 && c->is_oauth) {
         if (!oauth_ensure_token(c)) return 0;
         snprintf(cmd, sizeof(cmd),
             "curl -sf -o /dev/null -w '%%{http_code}' "
@@ -5455,49 +5575,60 @@ static int connection_test(Connection *c) {
 // OAuth2 browser-based setup flow for Google
 static void connections_setup_google(Connection *c) {
     printf("\n" ANSI_BOLD "  Setting up: %s" ANSI_RESET "\n", c->label);
-    printf(ANSI_DIM "  Full access: Gmail, Google Drive, Google Docs via OAuth2" ANSI_RESET "\n\n");
+    printf(ANSI_DIM "  Gmail, Google Drive, Google Docs via browser sign-in" ANSI_RESET "\n\n");
 
-    printf("  " ANSI_BOLD "Step 1:" ANSI_RESET " Create OAuth credentials:\n");
-    printf("  1. Go to " ANSI_CYAN "https://console.cloud.google.com/apis/credentials" ANSI_RESET "\n");
-    printf("  2. Create a project (or select existing)\n");
-    printf("  3. Enable " ANSI_BOLD "Gmail API" ANSI_RESET ", " ANSI_BOLD "Google Drive API" ANSI_RESET ", and " ANSI_BOLD "Google Docs API" ANSI_RESET " in Library\n");
-    printf("  4. Configure OAuth consent screen (External, add your email as test user)\n");
-    printf("  5. Create credentials → OAuth client ID → Desktop app\n");
-    printf("  6. Copy the Client ID and Client Secret below\n\n");
+    // Use built-in credentials unless user has already provided custom ones
+    if (!c->client_id[0]) {
+        printf("  " ANSI_BOLD "[1]" ANSI_RESET " Sign in with Google (recommended)\n");
+        printf("  " ANSI_BOLD "[2]" ANSI_RESET " Use my own OAuth credentials (advanced)\n");
+        printf("  " ANSI_DIM "[s]" ANSI_RESET " Skip\n\n  > ");
+        fflush(stdout);
+        char choice[16];
+        if (!fgets(choice, sizeof(choice), stdin)) return;
+        if (choice[0] == 's' || choice[0] == 'S') {
+            printf(ANSI_DIM "  Skipped." ANSI_RESET "\n");
+            return;
+        }
+        if (choice[0] == '2') {
+            // Advanced: user provides their own Cloud project credentials
+            printf("\n  " ANSI_BOLD "Custom OAuth setup:" ANSI_RESET "\n");
+            printf("  1. Go to " ANSI_CYAN "https://console.cloud.google.com/apis/credentials" ANSI_RESET "\n");
+            printf("  2. Create a project (or select existing)\n");
+            printf("  3. Enable " ANSI_BOLD "Gmail API" ANSI_RESET ", " ANSI_BOLD "Google Drive API" ANSI_RESET ", " ANSI_BOLD "Google Docs API" ANSI_RESET "\n");
+            printf("  4. Configure OAuth consent screen (add your email as test user)\n");
+            printf("  5. Create credentials → OAuth client ID → Desktop app\n\n");
 
-    printf("  " ANSI_BOLD "Client ID" ANSI_RESET " (or 'skip' / 'remove'): ");
-    fflush(stdout);
-    char cid[256];
-    if (!fgets(cid, sizeof(cid), stdin)) return;
-    int len = (int)strlen(cid);
-    while (len > 0 && (cid[len-1] == '\n' || cid[len-1] == '\r')) cid[--len] = 0;
+            printf("  " ANSI_BOLD "Client ID" ANSI_RESET " (or 'back'): ");
+            fflush(stdout);
+            char cid[256];
+            if (!fgets(cid, sizeof(cid), stdin)) return;
+            int len = (int)strlen(cid);
+            while (len > 0 && (cid[len-1] == '\n' || cid[len-1] == '\r')) cid[--len] = 0;
+            if (len == 0 || strcasecmp(cid, "back") == 0) {
+                printf(ANSI_DIM "  Skipped." ANSI_RESET "\n");
+                return;
+            }
 
-    if (len == 0 || strcasecmp(cid, "skip") == 0) {
-        printf(ANSI_DIM "  Skipped." ANSI_RESET "\n");
-        return;
+            printf("  " ANSI_BOLD "Client Secret" ANSI_RESET ": ");
+            fflush(stdout);
+            char cs[128];
+            if (!fgets(cs, sizeof(cs), stdin)) return;
+            len = (int)strlen(cs);
+            while (len > 0 && (cs[len-1] == '\n' || cs[len-1] == '\r')) cs[--len] = 0;
+            if (len == 0) { printf(ANSI_DIM "  Skipped." ANSI_RESET "\n"); return; }
+
+            strlcpy(c->client_id, cid, sizeof(c->client_id));
+            strlcpy(c->client_secret, cs, sizeof(c->client_secret));
+        } else {
+            // Default: use built-in PRE credentials
+            strlcpy(c->client_id, PRE_GOOGLE_CLIENT_ID, sizeof(c->client_id));
+            strlcpy(c->client_secret, PRE_GOOGLE_CLIENT_SECRET, sizeof(c->client_secret));
+        }
     }
-    if (strcasecmp(cid, "remove") == 0) {
-        c->client_id[0] = c->client_secret[0] = c->access_token[0] = c->refresh_token[0] = 0;
-        c->active = 0; c->token_expiry = 0;
-        save_connections();
-        printf(ANSI_GREEN "  Removed." ANSI_RESET "\n");
-        return;
-    }
 
-    printf("  " ANSI_BOLD "Client Secret" ANSI_RESET ": ");
-    fflush(stdout);
-    char cs[128];
-    if (!fgets(cs, sizeof(cs), stdin)) return;
-    len = (int)strlen(cs);
-    while (len > 0 && (cs[len-1] == '\n' || cs[len-1] == '\r')) cs[--len] = 0;
-    if (len == 0) { printf(ANSI_DIM "  Skipped." ANSI_RESET "\n"); return; }
-
-    strlcpy(c->client_id, cid, sizeof(c->client_id));
-    strlcpy(c->client_secret, cs, sizeof(c->client_secret));
-
-    // Step 2: OAuth authorization via browser
+    // OAuth authorization via browser
     int port = 18492; // fixed port for redirect URI
-    printf("\n  " ANSI_BOLD "Step 2:" ANSI_RESET " Authorizing in your browser...\n");
+    printf("  Opening your browser to sign in with Google...\n");
 
     char auth_url[2048];
     snprintf(auth_url, sizeof(auth_url),
@@ -5514,18 +5645,17 @@ static void connections_setup_google(Connection *c) {
     snprintf(open_cmd, sizeof(open_cmd), "open '%s'", auth_url);
     system(open_cmd);
 
-    printf(ANSI_DIM "  Waiting for authorization (browser should open)..." ANSI_RESET "\n");
-    printf(ANSI_DIM "  If it didn't open, visit:" ANSI_RESET "\n");
+    printf(ANSI_DIM "  Waiting for authorization..." ANSI_RESET "\n");
+    printf(ANSI_DIM "  If the browser didn't open, visit:" ANSI_RESET "\n");
     printf(ANSI_CYAN "  %s" ANSI_RESET "\n\n", auth_url);
 
     char code[512] = {0};
     if (!oauth_listen_for_code(port, code, sizeof(code)) || !code[0]) {
         printf(ANSI_RED "  ✗ Authorization failed or timed out." ANSI_RESET "\n");
-        c->client_id[0] = c->client_secret[0] = 0;
         return;
     }
 
-    // Step 3: Exchange code for tokens
+    // Exchange code for tokens
     int codelen = (int)strlen(code);
     printf(ANSI_DIM "  Code received (%d chars): %.8s...%s" ANSI_RESET "\n",
            codelen, code, codelen > 12 ? code + codelen - 4 : "");
@@ -5533,11 +5663,28 @@ static void connections_setup_google(Connection *c) {
     fflush(stdout);
 
     if (oauth_exchange_code(c, code, port)) {
+        // Fetch the email address for this account
+        char email_cmd[2048];
+        snprintf(email_cmd, sizeof(email_cmd),
+            "curl -s -H 'Authorization: Bearer %s' "
+            "'https://gmail.googleapis.com/gmail/v1/users/me/profile' 2>/dev/null",
+            c->access_token);
+        FILE *ep = popen(email_cmd, "r");
+        char email_resp[2048] = {0};
+        if (ep) {
+            fread(email_resp, 1, sizeof(email_resp) - 1, ep);
+            pclose(ep);
+        }
+        char email[128] = {0};
+        json_extract_str(email_resp, "emailAddress", email, sizeof(email));
+
         save_connections();
-        printf("\r" ANSI_GREEN "  ● Google connected! Gmail, Drive, Docs ready. " ANSI_RESET "\n");
+        if (email[0])
+            printf("\r" ANSI_GREEN "  ● Connected: %s                              " ANSI_RESET "\n", email);
+        else
+            printf("\r" ANSI_GREEN "  ● Google connected! Gmail, Drive, Docs ready. " ANSI_RESET "\n");
     } else {
         printf("\r" ANSI_RED "  ✗ Token exchange failed.                     " ANSI_RESET "\n");
-        c->client_id[0] = c->client_secret[0] = 0;
         c->active = 0;
     }
 }
@@ -5637,7 +5784,8 @@ static void cmd_connections(const char *args) {
         printf(ANSI_DIM "  Usage:" ANSI_RESET "\n");
         printf("    /connections setup              Run full setup wizard\n");
         printf("    /connections add <service>      Configure one service\n");
-        printf("    /connections remove <service>   Remove a service key\n");
+        printf("    /connections add google <label> Add another Google account\n");
+        printf("    /connections remove <service>   Remove a service\n");
         printf("    /connections test               Test all connections\n\n");
         printf(ANSI_DIM "  Services: brave_search, github, google, wolfram" ANSI_RESET "\n\n");
         return;
@@ -5673,14 +5821,45 @@ static void cmd_connections(const char *args) {
         return;
     }
 
-    // /connections add <service>
+    // /connections add <service> [label]
+    // e.g. /connections add google        → default Google account
+    //      /connections add google work   → additional Google account named "work"
     if (strncasecmp(args, "add ", 4) == 0) {
         const char *svc = args + 4;
         while (*svc == ' ') svc++;
+
+        // Check for "google <label>" pattern for multi-account
+        if (strncasecmp(svc, "google ", 7) == 0) {
+            const char *label = svc + 7;
+            while (*label == ' ') label++;
+            if (*label) {
+                // Check if this account already exists
+                char full_name[64];
+                snprintf(full_name, sizeof(full_name), "google_%s", label);
+                Connection *c = get_connection(full_name);
+                if (c && c->active) {
+                    printf(ANSI_YELLOW "  Google account '%s' already connected." ANSI_RESET "\n", label);
+                    printf("  Use " ANSI_BOLD "/connections remove %s" ANSI_RESET " first to re-authorize.\n\n", full_name);
+                    return;
+                }
+                if (!c) {
+                    c = add_google_account(label);
+                    if (!c) {
+                        printf(ANSI_RED "  Too many connections (max %d)." ANSI_RESET "\n\n", MAX_CONNECTIONS);
+                        return;
+                    }
+                }
+                connections_setup_google(c);
+                printf("\n");
+                return;
+            }
+        }
+
         Connection *c = get_connection(svc);
         if (!c) {
             printf(ANSI_RED "  Unknown service: %s" ANSI_RESET "\n", svc);
-            printf(ANSI_DIM "  Available: brave_search, github, google, wolfram" ANSI_RESET "\n\n");
+            printf(ANSI_DIM "  Available: brave_search, github, google, wolfram" ANSI_RESET "\n");
+            printf(ANSI_DIM "  Multi-account: /connections add google <label>" ANSI_RESET "\n\n");
             return;
         }
         connections_setup_service(c);
@@ -5694,8 +5873,19 @@ static void cmd_connections(const char *args) {
         while (*svc == ' ') svc++;
         Connection *c = get_connection(svc);
         if (!c) {
+            // Try google_<label> pattern
+            char full_name[64];
+            snprintf(full_name, sizeof(full_name), "google_%s", svc);
+            c = get_connection(full_name);
+        }
+        if (!c) {
             printf(ANSI_RED "  Unknown service: %s" ANSI_RESET "\n\n", svc);
             return;
+        }
+        if (c->is_oauth) {
+            c->client_id[0] = c->client_secret[0] = 0;
+            c->access_token[0] = c->refresh_token[0] = 0;
+            c->token_expiry = 0;
         }
         c->key[0] = 0;
         c->active = 0;
