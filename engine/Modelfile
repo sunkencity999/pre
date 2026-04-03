@@ -1,0 +1,12 @@
+FROM gemma4:26b-a4b-it-q4_K_M
+
+# Match model's native context window
+PARAMETER num_ctx 262144
+
+# Larger batch size for faster prompt evaluation (prefill)
+PARAMETER num_batch 512
+
+# Temperature — match upstream default
+PARAMETER temperature 1.0
+PARAMETER top_k 64
+PARAMETER top_p 0.95

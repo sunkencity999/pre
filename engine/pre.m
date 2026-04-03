@@ -73,7 +73,7 @@
 // ============================================================================
 
 // Approximate context window budget for the model (tokens)
-#define MAX_CONTEXT     131072
+#define MAX_CONTEXT     262144
 
 typedef struct {
     int port;
@@ -101,13 +101,13 @@ typedef struct {
 
     // Feature toggles
     int show_thinking;
-    int auto_approve_tools;   // 'a' during tool confirm
+    int _reserved_approve;    // unused, kept for struct compat
 
     // File checkpoints for undo
     #define MAX_CHECKPOINTS 64
     struct { char path[PATH_MAX]; char backup[PATH_MAX]; } checkpoints[MAX_CHECKPOINTS];
     int checkpoint_count;
-    int open_app_approved;  // track first-time approval for open_app
+    int _reserved_open;     // unused, kept for struct compat
 
     // Project detection
     char project_root[PATH_MAX];  // detected project root (e.g. git root)
@@ -128,7 +128,7 @@ static PreState g = {
 };
 
 // Model to request from Ollama
-static const char *g_model = "gemma4:26b-a4b-it-q4_K_M";
+static const char *g_model = "pre-gemma4";
 
 // ============================================================================
 // ToolCall struct and helpers
@@ -163,23 +163,12 @@ static const char *tool_call_get(const ToolCall *tc, const char *key) {
 typedef enum { PERM_AUTO, PERM_CONFIRM_ONCE, PERM_CONFIRM_ALWAYS } PermLevel;
 
 static PermLevel tool_permission(const char *name) {
-    if (strcmp(name, "read_file") == 0 || strcmp(name, "list_dir") == 0 ||
-        strcmp(name, "glob") == 0 || strcmp(name, "grep") == 0 ||
-        strcmp(name, "clipboard_read") == 0 || strcmp(name, "system_info") == 0 ||
-        strcmp(name, "process_list") == 0 || strcmp(name, "memory_search") == 0 ||
-        strcmp(name, "memory_list") == 0 || strcmp(name, "memory_save") == 0 ||
-        strcmp(name, "window_list") == 0 || strcmp(name, "display_info") == 0 ||
-        strcmp(name, "net_info") == 0 || strcmp(name, "net_connections") == 0 ||
-        strcmp(name, "service_status") == 0 || strcmp(name, "disk_usage") == 0 ||
-        strcmp(name, "hardware_info") == 0) return PERM_AUTO;
-    if (strcmp(name, "file_write") == 0 || strcmp(name, "file_edit") == 0 ||
-        strcmp(name, "clipboard_write") == 0 || strcmp(name, "web_fetch") == 0 ||
-        strcmp(name, "notify") == 0 || strcmp(name, "memory_delete") == 0 ||
-        strcmp(name, "screenshot") == 0 || strcmp(name, "window_focus") == 0 ||
-        strcmp(name, "web_search") == 0 || strcmp(name, "github") == 0 ||
-        strcmp(name, "wolfram") == 0 || strcmp(name, "gmail") == 0 ||
-        strcmp(name, "gdrive") == 0 || strcmp(name, "gdocs") == 0) return PERM_CONFIRM_ONCE;
-    return PERM_CONFIRM_ALWAYS; // bash, process_kill, open_app (first time)
+    // Destructive operations that permanently delete data — always confirm
+    if (strcmp(name, "process_kill") == 0 ||
+        strcmp(name, "memory_delete") == 0 ||
+        strcmp(name, "applescript") == 0) return PERM_CONFIRM_ALWAYS;
+    // Everything else auto-approves — PRE is a power-user tool
+    return PERM_AUTO;
 }
 
 // Pending file attachment(s) — prepended to next message
@@ -409,7 +398,7 @@ static void channel_init(const char *name) {
     g.session_start_ms = now_ms();
     free(g.last_response); g.last_response = NULL;
     g.session_title[0] = 0;
-    g.auto_approve_tools = 0;
+    g._reserved_approve = 0;
 }
 
 // List channels for current project (or global)
@@ -1799,16 +1788,15 @@ static char *build_context_preamble(void) {
     return preamble;
 }
 
-// Build the full message: context preamble (first turn) + attachment + user input
+// Build the user message content: attachment (if any) + user input
+// System preamble is now sent separately as a "system" role message
 static char *build_message(const char *input, int is_first_turn) {
-    char *preamble = is_first_turn ? build_context_preamble() : NULL;
-    size_t plen = preamble ? strlen(preamble) : 0;
+    (void)is_first_turn; // system prompt handled in send_request now
     size_t alen = g_pending_attach ? strlen(g_pending_attach) : 0;
     size_t ilen = strlen(input);
 
-    char *msg = malloc(plen + alen + ilen + 8);
+    char *msg = malloc(alen + ilen + 8);
     size_t off = 0;
-    if (preamble) { memcpy(msg + off, preamble, plen); off += plen; free(preamble); }
     if (g_pending_attach) {
         memcpy(msg + off, g_pending_attach, alen); off += alen;
         msg[off++] = '\n'; msg[off++] = '\n';
@@ -1972,83 +1960,97 @@ static int send_request(const char *user_message, int max_tokens, const char *se
         return -1;
     }
 
-    // Build full conversation history from session file
-    // Each line in the JSONL is: {"role":"...","content":"..."}
+    // Build request body for Ollama native /api/chat
     char session_path[1024];
     snprintf(session_path, sizeof(session_path), "%s/%s.jsonl", g.sessions_dir, session_id);
 
-    // Start with generous capacity; grow if needed
     size_t body_cap = 1024 * 1024; // 1MB initial
     char *body = malloc(body_cap);
-    int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"messages\":[", g_model);
+    int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"stream\":true,\"keep_alive\":\"24h\"", g_model);
 
-    // Replay session history
+    // Performance options
+    body_len += snprintf(body + body_len, body_cap - body_len,
+        ",\"options\":{\"num_ctx\":%d,\"num_batch\":512,\"num_predict\":%d}",
+        MAX_CONTEXT, max_tokens);
+
+    // Messages array — starts with system message for tool/context instructions
+    // Using role:system in messages array (not top-level "system" field) for
+    // reliable instruction following with Gemma 4 and Ollama KV cache reuse
+    body_len += snprintf(body + body_len, body_cap - body_len, ",\"messages\":[");
+
+    char *sys_prompt = build_context_preamble();
+    if (sys_prompt) {
+        char *sys_esc = json_escape_alloc(sys_prompt);
+        free(sys_prompt);
+        if (sys_esc) {
+            size_t slen = strlen(sys_esc);
+            if ((size_t)body_len + slen + 64 > body_cap) {
+                body_cap = body_len + slen + 4096;
+                body = realloc(body, body_cap);
+            }
+            body_len += snprintf(body + body_len, body_cap - body_len,
+                "{\"role\":\"system\",\"content\":\"%s\"}", sys_esc);
+            free(sys_esc);
+        }
+    }
+
+    // Replay session history (system message is always first, so always comma-prefix)
     FILE *sf = fopen(session_path, "r");
     if (sf) {
         char sline[MAX_RESPONSE];
-        int first_msg = 1;
         while (fgets(sline, sizeof(sline), sf)) {
-            // Each line is already a JSON object with role+content
-            // Strip trailing newline
             int sl = (int)strlen(sline);
             while (sl > 0 && (sline[sl-1] == '\n' || sline[sl-1] == '\r')) sline[--sl] = 0;
             if (sl == 0) continue;
 
-            // Ensure capacity
             if ((int)(body_len + sl + 10) > (int)body_cap - 100) {
                 body_cap *= 2;
                 body = realloc(body, body_cap);
             }
 
-            if (!first_msg) body[body_len++] = ',';
+            body[body_len++] = ',';
             memcpy(body + body_len, sline, sl);
             body_len += sl;
-            first_msg = 0;
         }
         fclose(sf);
     }
 
-    // Append the new user message (multimodal if image is pending)
+    // Append the new user message
     char *escaped = json_escape_alloc(user_message);
     if (!escaped) { free(body); close(sock); return -1; }
     size_t elen = strlen(escaped);
     size_t img_len = g_pending_image ? strlen(g_pending_image) : 0;
 
-    // Ensure capacity for the new message (image b64 can be large)
     size_t need = body_len + elen + img_len + 512;
     if (need > body_cap) {
         body_cap = need + 4096;
         body = realloc(body, body_cap);
     }
 
-    const char *comma = (body_len > 50 ? "," : "");
-
     if (g_pending_image) {
-        // Multimodal: content is an array with text + image_url
+        // Ollama native multimodal: images as base64 array at message level
         body_len += snprintf(body + body_len, body_cap - body_len,
-            "%s{\"role\":\"user\",\"content\":["
-            "{\"type\":\"text\",\"text\":\"%s\"},"
-            "{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,%s\"}}"
-            "]}],\"max_tokens\":%d,\"stream\":true}",
-            comma, escaped, g_pending_image, max_tokens);
+            ",{\"role\":\"user\",\"content\":\"%s\",\"images\":[\"%s\"]}",
+            escaped, g_pending_image);
         free(g_pending_image);
         g_pending_image = NULL;
     } else {
-        // Plain text message
         body_len += snprintf(body + body_len, body_cap - body_len,
-            "%s{\"role\":\"user\",\"content\":\"%s\"}],\"max_tokens\":%d,\"stream\":true}",
-            comma, escaped, max_tokens);
+            ",{\"role\":\"user\",\"content\":\"%s\"}",
+            escaped);
     }
     free(escaped);
+
+    // Close messages array and request body
+    body_len += snprintf(body + body_len, body_cap - body_len, "]}");
 
     size_t req_cap = body_len + 256;
     char *request = malloc(req_cap);
     int req_len = snprintf(request, req_cap,
-        "POST /v1/chat/completions HTTP/1.1\r\n"
+        "POST /api/chat HTTP/1.1\r\n"
         "Host: localhost:%d\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: %d\r\n"
-        "Connection: close\r\n"
         "\r\n"
         "%s",
         g.port, body_len, body);
@@ -2275,11 +2277,8 @@ static void md_print(const char *text) {
 // ============================================================================
 
 static char *stream_response(int sock) {
-    FILE *stream = fdopen(sock, "r");
-    if (!stream) { close(sock); return NULL; }
-
     int header_done = 0, in_think = 0, tokens = 0;
-    int had_thinking = 0;  // track if we showed any thinking output
+    int had_thinking = 0;
     double t_start = now_ms(), t_first = 0;
     md_reset();
 
@@ -2291,76 +2290,122 @@ static char *stream_response(int sock) {
     int spin_idx = 0;
     int spinning = 1;
 
-    char line[65536];
+    // Raw recv buffer — avoids stdio buffering latency on SSE/NDJSON chunks
+    char recvbuf[65536];
+    int rb_len = 0;  // valid bytes in recvbuf
+    int rb_pos = 0;  // current scan position
 
-    // Use select() for spinner animation during prefill wait
-    int fd = fileno(stream);
-    while (1) {
-        if (spinning) {
+    // Server-reported stats from the final "done":true message
+    int server_prompt_tokens = 0, server_eval_tokens = 0;
+
+    // Decode a JSON string value starting at p into buf, return length
+    // Handles \n \t \" \\ and \uXXXX (BMP codepoints, ASCII subset)
+    #define DECODE_JSON_STR(p, buf, bufsz) ({ \
+        int _di = 0; \
+        for (int _i = 0; (p)[_i] && (p)[_i] != '"' && _di < (bufsz)-1; _i++) { \
+            if ((p)[_i] == '\\' && (p)[_i+1]) { \
+                _i++; \
+                if ((p)[_i] == 'u' && (p)[_i+1] && (p)[_i+2] && (p)[_i+3] && (p)[_i+4]) { \
+                    char _hex[5] = {(p)[_i+1],(p)[_i+2],(p)[_i+3],(p)[_i+4],0}; \
+                    unsigned int _cp = (unsigned int)strtol(_hex, NULL, 16); \
+                    _i += 4; \
+                    if (_cp < 0x80) { \
+                        (buf)[_di++] = (char)_cp; \
+                    } else if (_cp < 0x800) { \
+                        (buf)[_di++] = (char)(0xC0 | (_cp >> 6)); \
+                        if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
+                    } else { \
+                        (buf)[_di++] = (char)(0xE0 | (_cp >> 12)); \
+                        if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | ((_cp >> 6) & 0x3F)); \
+                        if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
+                    } \
+                } else { \
+                    switch ((p)[_i]) { \
+                        case 'n': (buf)[_di++]='\n'; break; \
+                        case 't': (buf)[_di++]='\t'; break; \
+                        case '"': (buf)[_di++]='"'; break; \
+                        case '\\': (buf)[_di++]='\\'; break; \
+                        default: (buf)[_di++]=(p)[_i]; break; \
+                    } \
+                } \
+            } else (buf)[_di++] = (p)[_i]; \
+        } \
+        (buf)[_di] = 0; \
+        _di; \
+    })
+
+    int done = 0;
+    while (!done) {
+        // Extract next newline-delimited line from recv buffer
+        char *nl = NULL;
+        while (!(nl = memchr(recvbuf + rb_pos, '\n', rb_len - rb_pos))) {
+            // Need more data — compact buffer first
+            if (rb_pos > 0) {
+                memmove(recvbuf, recvbuf + rb_pos, rb_len - rb_pos);
+                rb_len -= rb_pos;
+                rb_pos = 0;
+            }
+
+            // Use select() for spinner animation during prefill
             fd_set fds;
             FD_ZERO(&fds);
-            FD_SET(fd, &fds);
-            struct timeval tv = {0, 120000}; // 120ms timeout for spinner
-            int ready = select(fd + 1, &fds, NULL, NULL, &tv);
+            FD_SET(sock, &fds);
+            struct timeval tv = {0, spinning ? 120000 : 500000};
+            int ready = select(sock + 1, &fds, NULL, NULL, &tv);
             if (ready <= 0) {
-                // Timeout — animate spinner
-                printf("\r  " ANSI_DIM "[reasoning %s]" ANSI_RESET "  ", spin[spin_idx % 10]);
-                fflush(stdout);
-                spin_idx++;
+                if (spinning) {
+                    printf("\r  " ANSI_DIM "[reasoning %s]" ANSI_RESET "  ", spin[spin_idx % 10]);
+                    fflush(stdout);
+                    spin_idx++;
+                }
                 continue;
             }
+
+            ssize_t n = recv(sock, recvbuf + rb_len, sizeof(recvbuf) - rb_len - 1, 0);
+            if (n <= 0) { done = 1; break; }
+            rb_len += (int)n;
         }
+        if (done) break;
 
-        if (!fgets(line, sizeof(line), stream)) break;
+        // We have a complete line from rb_pos to nl
+        *nl = 0;
+        char *line = recvbuf + rb_pos;
+        rb_pos = (int)(nl - recvbuf) + 1;
 
+        // Skip HTTP headers
         if (!header_done) {
-            if (strcmp(line, "\r\n") == 0 || strcmp(line, "\n") == 0) header_done = 1;
+            if (line[0] == '\r' || line[0] == 0) header_done = 1;
             continue;
         }
-        if (strncmp(line, "data: ", 6) != 0) continue;
-        if (strncmp(line + 6, "[DONE]", 6) == 0) break;
 
-        // Decode a JSON string value starting at p into buf, return length
-        // Handles \n \t \" \\ and \uXXXX (BMP codepoints, ASCII subset)
-        #define DECODE_JSON_STR(p, buf, bufsz) ({ \
-            int _di = 0; \
-            for (int _i = 0; (p)[_i] && (p)[_i] != '"' && _di < (bufsz)-1; _i++) { \
-                if ((p)[_i] == '\\' && (p)[_i+1]) { \
-                    _i++; \
-                    if ((p)[_i] == 'u' && (p)[_i+1] && (p)[_i+2] && (p)[_i+3] && (p)[_i+4]) { \
-                        /* Parse 4 hex digits */ \
-                        char _hex[5] = {(p)[_i+1],(p)[_i+2],(p)[_i+3],(p)[_i+4],0}; \
-                        unsigned int _cp = (unsigned int)strtol(_hex, NULL, 16); \
-                        _i += 4; \
-                        if (_cp < 0x80) { \
-                            (buf)[_di++] = (char)_cp; \
-                        } else if (_cp < 0x800) { \
-                            (buf)[_di++] = (char)(0xC0 | (_cp >> 6)); \
-                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
-                        } else { \
-                            (buf)[_di++] = (char)(0xE0 | (_cp >> 12)); \
-                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | ((_cp >> 6) & 0x3F)); \
-                            if (_di < (bufsz)-1) (buf)[_di++] = (char)(0x80 | (_cp & 0x3F)); \
-                        } \
-                    } else { \
-                        switch ((p)[_i]) { \
-                            case 'n': (buf)[_di++]='\n'; break; \
-                            case 't': (buf)[_di++]='\t'; break; \
-                            case '"': (buf)[_di++]='"'; break; \
-                            case '\\': (buf)[_di++]='\\'; break; \
-                            default: (buf)[_di++]=(p)[_i]; break; \
-                        } \
-                    } \
-                } else (buf)[_di++] = (p)[_i]; \
-            } \
-            (buf)[_di] = 0; \
-            _di; \
-        })
+        // Skip chunked transfer encoding size lines (hex digits only)
+        if (line[0] == 0) continue;
+        int is_chunk_size = 1;
+        for (int ci = 0; line[ci] && line[ci] != '\r'; ci++) {
+            if (!((line[ci] >= '0' && line[ci] <= '9') ||
+                  (line[ci] >= 'a' && line[ci] <= 'f') ||
+                  (line[ci] >= 'A' && line[ci] <= 'F'))) {
+                is_chunk_size = 0; break;
+            }
+        }
+        if (is_chunk_size && line[0] != '{') continue;
 
-        // Check for reasoning field (Gemma 4 / Ollama thinking)
-        char *rk = strstr(line + 6, "\"reasoning\":\"");
+        // Parse Ollama native NDJSON: {"message":{"content":"...","thinking":"..."},"done":bool}
+        // Check for done
+        if (strstr(line, "\"done\":true")) {
+            // Extract server-reported token counts
+            char eval_str[32] = {0}, prompt_str[32] = {0};
+            json_extract_str(line, "eval_count", eval_str, sizeof(eval_str));
+            json_extract_str(line, "prompt_eval_count", prompt_str, sizeof(prompt_str));
+            if (eval_str[0]) server_eval_tokens = atoi(eval_str);
+            if (prompt_str[0]) server_prompt_tokens = atoi(prompt_str);
+            break;
+        }
+
+        // Check for thinking field (Ollama native: "thinking":"...")
+        char *rk = strstr(line, "\"thinking\":\"");
         if (rk) {
-            rk += 13;
+            rk += 12;
             char rdecoded[4096]; int rdi = DECODE_JSON_STR(rk, rdecoded, 4096);
             if (rdi > 0) {
                 if (spinning) { printf("\r\033[K"); fflush(stdout); spinning = 0; }
@@ -2368,18 +2413,13 @@ static char *stream_response(int sock) {
                 if (!t_first) t_first = now_ms();
                 if (g.show_thinking) {
                     if (!had_thinking) {
-                        // Thinking header with blank line before
                         printf("\n" ANSI_DIM "  ┌─ thinking ");
                         for (int d = 0; d < 36; d++) printf("─");
                         printf("\n  │ ");
                     }
-                    // Print thinking text — keep DIM active, re-apply after each newline
                     for (int ri = 0; ri < rdi; ri++) {
-                        if (rdecoded[ri] == '\n') {
-                            printf("\n  │ ");
-                        } else {
-                            putchar(rdecoded[ri]);
-                        }
+                        if (rdecoded[ri] == '\n') printf("\n  │ ");
+                        else putchar(rdecoded[ri]);
                     }
                     fflush(stdout);
                 }
@@ -2389,22 +2429,17 @@ static char *stream_response(int sock) {
         }
 
         // Check for content field
-        char *ck = strstr(line + 6, "\"content\":\"");
+        char *ck = strstr(line, "\"content\":\"");
         if (!ck) continue;
         ck += 11;
 
         char decoded[4096]; int di = DECODE_JSON_STR(ck, decoded, 4096);
         if (!di) continue;
 
-        // If we were in reasoning-field thinking, content means thinking is done
+        // If we were thinking, content means thinking is done
         if (in_think && had_thinking) in_think = 0;
 
-        // Clear spinner on first real token
-        if (spinning) {
-            printf("\r\033[K");
-            fflush(stdout);
-            spinning = 0;
-        }
+        if (spinning) { printf("\r\033[K"); fflush(stdout); spinning = 0; }
 
         // Handle Qwen-style <think> tags in content (backwards compat)
         if (strstr(decoded, "<think>")) { in_think = 1; had_thinking = 1; }
@@ -2413,14 +2448,12 @@ static char *stream_response(int sock) {
         if (!t_first) t_first = now_ms();
 
         if (!in_think && resp_len + di < MAX_RESPONSE - 1) {
-            // Transition from thinking to response
             if (had_thinking && resp_len == 0 && g.show_thinking) {
                 printf("\n  └");
                 for (int d = 0; d < 48; d++) printf("─");
                 printf(ANSI_RESET "\n\n");
                 md_reset();
             } else if (had_thinking && resp_len == 0 && !g.show_thinking) {
-                // Hidden thinking finished — just add a newline
                 printf("\n");
             }
             memcpy(response + resp_len, decoded, di);
@@ -2442,21 +2475,23 @@ static char *stream_response(int sock) {
         }
         fflush(stdout);
     }
-    fclose(stream);
+    close(sock);
 
     printf(ANSI_RESET);
 
-    // Stats
+    // Stats — prefer server-reported counts when available
     double t_end = now_ms();
     double gen_time = t_first > 0 ? t_end - t_first : 0;
-    int gen_tokens = tokens > 1 ? tokens - 1 : tokens;
+    int reported_tokens = server_eval_tokens > 0 ? server_eval_tokens : tokens;
+    int gen_tokens = reported_tokens > 1 ? reported_tokens - 1 : reported_tokens;
     double tok_s = (gen_tokens > 0 && gen_time > 0) ? gen_tokens * 1000.0 / gen_time : 0;
     double ttft = t_first > 0 ? t_first - t_start : t_end - t_start;
 
-    g.last_token_count = tokens;
+    g.last_token_count = reported_tokens;
     g.last_tok_s = tok_s;
     g.last_ttft_ms = ttft;
-    g.total_tokens_out += tokens;
+    g.total_tokens_out += reported_tokens;
+    if (server_prompt_tokens > 0) g.total_tokens_in = server_prompt_tokens;
     g.cumulative_gen_ms += gen_time;
 
     printf("\n\n");
@@ -2618,9 +2653,13 @@ static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
                 }
                 tc->argc++;
             }
-            if (tc->argc > 0) return 1;
+            // Tool call is valid if we have a name (args may be empty for no-arg tools)
+            if (tc->name[0]) return 1;
         }
     }
+
+    // If we found a name via JSON but no arguments block, still valid (no-arg tool)
+    if (nk && tc->name[0]) return 1;
 
     // === Fallback: Qwen XML-style format ===
     if (tc->name[0] == 0) {
@@ -2705,36 +2744,20 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
     const char *name = tc->name;
 
     // --- Permission check ---
+    // Only destructive operations (process_kill, memory_delete, applescript) require confirmation
     PermLevel perm = tool_permission(name);
-
-    // Special case: open_app is confirm first time only
-    if (strcmp(name, "open_app") == 0 && g.open_app_approved) perm = PERM_AUTO;
 
     if (perm == PERM_CONFIRM_ALWAYS) {
         const char *detail = tool_call_get(tc, "command");
         if (!detail) detail = tool_call_get(tc, "pid");
-        if (!detail) detail = tool_call_get(tc, "target");
+        if (!detail) detail = tool_call_get(tc, "script");
+        if (!detail) detail = tool_call_get(tc, "query");
         if (!detail) detail = name;
         printf(ANSI_YELLOW "  [%s: %s]" ANSI_RESET "\n", name, detail);
         printf(ANSI_DIM "  [execute? y/n] " ANSI_RESET);
         fflush(stdout);
         int ch = getchar(); while (getchar() != '\n');
         if (ch != 'y' && ch != 'Y') {
-            printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
-            return -1;
-        }
-        if (strcmp(name, "open_app") == 0) g.open_app_approved = 1;
-    } else if (perm == PERM_CONFIRM_ONCE && !g.auto_approve_tools) {
-        const char *detail = tool_call_get(tc, "path");
-        if (!detail) detail = tool_call_get(tc, "url");
-        if (!detail) detail = tool_call_get(tc, "title");
-        if (!detail) detail = name;
-        printf(ANSI_YELLOW "  [%s: %s]" ANSI_RESET "\n", name, detail);
-        printf(ANSI_DIM "  [allow? y/n/a(lways)] " ANSI_RESET);
-        fflush(stdout);
-        int ch = getchar(); while (getchar() != '\n');
-        if (ch == 'a' || ch == 'A') { g.auto_approve_tools = 1; }
-        else if (ch != 'y' && ch != 'Y') {
             printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
             return -1;
         }
@@ -4293,7 +4316,7 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
 }
 
 static char *handle_tool_calls(char *response) {
-    g.auto_approve_tools = 0;
+    g._reserved_approve = 0;
     int loop_turns = 0;
 
     while (response && strstr(response, "<tool_call>")) {
@@ -5835,7 +5858,7 @@ static char *hints_cb(const char *buf, int *color, int *bold) {
 int main(int argc, char **argv) {
     @autoreleasepool {
         // Defaults
-        g.port = 8000;
+        g.port = 11434;
         g.max_tokens = 8192;
         getcwd(g.cwd, sizeof(g.cwd));
         const char *resume_id = NULL;

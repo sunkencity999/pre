@@ -31,10 +31,18 @@ if ! curl -sf http://localhost:${PORT}/v1/models >/dev/null 2>&1; then
 fi
 
 # Verify the model is available
-if ! ollama list 2>/dev/null | grep -q "gemma4:26b-a4b-it-q4_K_M"; then
-    echo "Error: gemma4:26b-a4b-it-q4_K_M not found"
-    echo "Run: ollama pull gemma4:26b-a4b-it-q4_K_M"
-    exit 1
+if ! ollama list 2>/dev/null | grep -q "pre-gemma4"; then
+    echo "  Custom model not found. Creating from Modelfile..."
+    if [ -f "$PRE_DIR/Modelfile" ]; then
+        ollama create pre-gemma4 -f "$PRE_DIR/Modelfile" || {
+            echo "Error: Failed to create pre-gemma4 model"
+            exit 1
+        }
+    else
+        echo "Error: pre-gemma4 not found and no Modelfile at $PRE_DIR/Modelfile"
+        echo "Run: cd $PRE_DIR && ollama create pre-gemma4 -f Modelfile"
+        exit 1
+    fi
 fi
 
 echo "  Ollama running on port $PORT."

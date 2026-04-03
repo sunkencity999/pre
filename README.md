@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant. No cloud. No API keys. No data leaves your machine.
 
-PRE is a tool-calling, memory-equipped AI agent that runs entirely on your Mac. Powered by **Google Gemma 4 26B-A4B** (a Mixture-of-Experts model with 3.8B active parameters) via [Ollama](https://ollama.ai), PRE delivers **~56 tokens/second** on Apple Silicon with 29 integrated tools, persistent memory, project detection, and channel-based conversations.
+PRE is a tool-calling, memory-equipped AI agent that runs entirely on your Mac. Powered by **Google Gemma 4 26B-A4B** (a Mixture-of-Experts model with 3.8B active parameters) via [Ollama](https://ollama.ai), PRE delivers **~70 tokens/second** on Apple Silicon with up to 35 integrated tools, persistent memory, project detection, and channel-based conversations.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -35,7 +35,7 @@ The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**
 # 1. Install Ollama (if not already installed)
 brew install ollama
 
-# 2. Pull the model (~17 GB)
+# 2. Pull the base model (~17 GB)
 ollama pull gemma4:26b-a4b-it-q4_K_M
 
 # 3. Clone and build PRE
@@ -43,7 +43,7 @@ git clone https://github.com/sunkencity999/pre.git
 cd pre/engine
 make pre
 
-# 4. Launch
+# 4. Launch (auto-creates optimized model on first run)
 ./pre-launch
 ```
 
@@ -79,7 +79,11 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Deep system inspection** — Network interfaces, running processes, disk usage, hardware info, window management, screenshots, and arbitrary AppleScript automation.
 
-**Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Nothing phones home.
+**Connect to external services** — Optional integrations with Brave Search, GitHub, Google (Gmail, Drive, Docs), and Wolfram Alpha via `/connections`. OAuth 2.0 for Google, API keys for the rest. Tokens stored locally.
+
+**Paste images for analysis** — Ctrl+V pastes clipboard images directly into the prompt. Gemma 4 is multimodal — it can analyze screenshots, diagrams, photos, and more.
+
+**Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Connection-dependent tools make API calls to their respective services; all other tools are fully local.
 
 ---
 
@@ -98,7 +102,7 @@ PRE is not a chatbot — it's a local agent with deep system access.
 ### Install
 
 ```bash
-# Pull the model (Gemma 4 26B-A4B, MoE, ~17 GB)
+# Pull the base model (Gemma 4 26B-A4B, MoE, ~17 GB)
 ollama pull gemma4:26b-a4b-it-q4_K_M
 
 # Clone and build
@@ -118,7 +122,7 @@ pre-launch --dir /path/to/project  # Override working directory
 pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
-The launcher checks that Ollama is running (starts it if not), verifies the model is pulled, and launches the PRE binary.
+The launcher checks that Ollama is running (starts it if not), creates the optimized `pre-gemma4` model from the Modelfile if needed (sets `num_ctx 262144`, `num_batch 512`), and launches the PRE binary.
 
 ---
 
@@ -178,7 +182,7 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 | Command | Description |
 |---------|-------------|
 | `/help` | Command overview |
-| `/help tools` | All 29 tools with permission levels |
+| `/help tools` | All 35 tools with permission levels |
 | `/help memory` | Memory system guide |
 | `/help channels` | Channel system guide |
 | `/help projects` | Project detection & PRE.md |
@@ -189,81 +193,87 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 
 ### Tools
 
-PRE has 29 built-in tools the model can call autonomously. Each has a permission level:
+PRE has 29 built-in tools plus up to 6 connection-dependent tools (35 total) that the model can call autonomously. PRE is designed for power users — nearly all tools auto-execute without confirmation:
 
-#### File & Code (auto-approved)
+- **Auto** — executes immediately, no confirmation needed (32 of 35 tools)
+- **Confirm always** — asks every time (only 3 tools: `process_kill`, `memory_delete`, `applescript`)
 
-| Tool | Description |
-|------|-------------|
-| `read_file` | Read file contents |
-| `list_dir` | List directory |
-| `glob` | Find files by pattern |
-| `grep` | Search file contents (regex) |
+#### File & Code
 
-#### File Modification (confirm once)
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 1 | `read_file` | `path` | Read file contents |
+| 2 | `list_dir` | `path` | List directory contents |
+| 3 | `glob` | `pattern`, `path`? | Find files by glob pattern |
+| 4 | `grep` | `pattern`, `path`?, `include`? | Search file contents (regex) |
+| 5 | `file_write` | `path`, `content` | Create or overwrite a file (checkpointed, `/undo`-able) |
+| 6 | `file_edit` | `path`, `old_string`, `new_string` | Find-and-replace in a file (checkpointed, `/undo`-able) |
 
-| Tool | Description |
-|------|-------------|
-| `file_write` | Create or overwrite a file (checkpointed) |
-| `file_edit` | Find-and-replace in a file (checkpointed) |
+#### Shell & Process
 
-#### Shell (confirm always)
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 7 | `bash` | `command` | Execute a shell command |
+| 8 | `process_list` | `filter`? | List running processes |
+| 9 | `process_kill` | `pid` | Send SIGTERM to a process *(confirm always)* |
 
-| Tool | Description |
-|------|-------------|
-| `bash` | Execute a shell command |
+#### System Inspection
 
-#### System Inspection (auto-approved)
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 10 | `system_info` | *(none)* | CPU, memory, disk, battery overview |
+| 11 | `hardware_info` | *(none)* | Detailed hardware, thermal sensors, GPU info |
+| 12 | `disk_usage` | `path`? | Volume and directory usage |
+| 13 | `display_info` | *(none)* | Display resolution and GPU details |
 
-| Tool | Description |
-|------|-------------|
-| `system_info` | CPU, memory, disk, battery |
-| `hardware_info` | Detailed hardware, thermal, GPU |
-| `process_list` | Running processes (with optional filter) |
-| `disk_usage` | Volume and directory usage |
-| `display_info` | Display and GPU details |
+#### Network
 
-#### Network (auto-approved)
-
-| Tool | Description |
-|------|-------------|
-| `net_info` | Interfaces, IPs, DNS, routes |
-| `net_connections` | TCP connections (listening/established/port) |
-| `service_status` | launchd service listing |
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 14 | `net_info` | *(none)* | Interfaces, IPs, DNS, routes |
+| 15 | `net_connections` | `filter`? | TCP connections (listening/established/port) |
+| 16 | `service_status` | `service`? | List or search launchd services |
 
 #### Desktop Integration
 
-| Tool | Permission | Description |
-|------|-----------|-------------|
-| `screenshot` | Confirm once | Capture screen (full/window/region) |
-| `window_list` | Auto | List open windows with positions |
-| `window_focus` | Confirm once | Bring an app to front |
-| `clipboard_read` | Auto | Read clipboard |
-| `clipboard_write` | Confirm once | Write to clipboard |
-| `open_app` | Confirm first | Open files/apps/URLs via macOS `open` |
-| `notify` | Confirm once | macOS notification |
-| `applescript` | Confirm always | Run arbitrary AppleScript |
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 17 | `screenshot` | `region`? | Capture screen (full/window/region/x,y,w,h) |
+| 18 | `window_list` | *(none)* | List open windows with positions |
+| 19 | `window_focus` | `app` | Bring an app to front |
+| 20 | `clipboard_read` | *(none)* | Read clipboard contents |
+| 21 | `clipboard_write` | `content` | Write to clipboard |
+| 22 | `open_app` | `target` | Open files/apps/URLs via macOS `open` |
+| 23 | `notify` | `title`, `message` | Show a macOS notification |
+| 24 | `applescript` | `script` | Run arbitrary AppleScript *(confirm always)* |
 
 #### Web
 
-| Tool | Permission | Description |
-|------|-----------|-------------|
-| `web_fetch` | Confirm once | Fetch a URL (HTML→text conversion) |
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 25 | `web_fetch` | `url` | Fetch a URL (HTML→text conversion) |
 
 #### Memory
 
-| Tool | Permission | Description |
-|------|-----------|-------------|
-| `memory_save` | Auto | Save a persistent memory (global or project-scoped) |
-| `memory_search` | Auto | Search saved memories |
-| `memory_list` | Auto | List all memories |
-| `memory_delete` | Confirm once | Delete a memory |
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 26 | `memory_save` | `name`, `type`, `description`, `content`, `scope`? | Save a persistent memory (global or project-scoped) |
+| 27 | `memory_search` | `query`? | Search saved memories |
+| 28 | `memory_list` | *(none)* | List all memories |
+| 29 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
 
-#### Process Control
+#### Connection-Dependent Tools
 
-| Tool | Permission | Description |
-|------|-----------|-------------|
-| `process_kill` | Confirm always | Send SIGTERM to a process |
+These tools require external API keys or OAuth setup via `/connections`. Run `/connections` to configure.
+
+| # | Tool | Connection | Args | Description |
+|---|------|------------|------|-------------|
+| 30 | `web_search` | Brave Search | `query`, `count`? | Web search via Brave Search API |
+| 31 | `github` | GitHub | `action`, `repo`?, `query`?, `number`?, `state`? | GitHub API (search repos, issues, PRs, user info) |
+| 32 | `gmail` | Google | `action`, `query`?, `id`?, `to`?, `subject`?, `body`?, `cc`?, `bcc`?, `max_results`? | Gmail (search, read, send, draft, trash, labels, profile) |
+| 33 | `gdrive` | Google | `action`, `id`?, `path`?, `name`?, `folder_id`?, `query`?, `email`?, `role`?, `count`? | Google Drive (list, search, download, upload, mkdir, share, delete) |
+| 34 | `gdocs` | Google | `action`, `id`?, `title`?, `content`? | Google Docs (create, read, append) |
+| 35 | `wolfram` | Wolfram Alpha | `query` | Computation, math, science, data queries |
 
 ---
 
@@ -376,13 +386,30 @@ Channels are scoped to the detected project. When you `/cd` into a different pro
 
 ---
 
+### Connections
+
+PRE can integrate with external services via API keys and OAuth. Run `/connections` to see available integrations, or `/connections add <service>` to set one up.
+
+| Service | Auth Type | Tools Unlocked |
+|---------|-----------|----------------|
+| **Brave Search** | API key | `web_search` |
+| **GitHub** | Personal access token | `github` |
+| **Google** | OAuth 2.0 | `gmail`, `gdrive`, `gdocs` |
+| **Wolfram Alpha** | API key | `wolfram` |
+
+Google OAuth uses a local HTTP callback server — no data leaves your machine except for the API calls themselves. Tokens are stored locally and refreshed automatically.
+
+---
+
 ### Context Management
 
-PRE uses Gemma 4's 128K token context window. A few features help you stay within budget:
+PRE uses Gemma 4's full 262K token context window. A few features help you stay within budget:
 
-**Context bar** — `/context` shows a visual progress bar of usage.
+**Context bar** — Shown after every response (color-coded: grey → yellow at 75% → red at 90%). Also available via `/context`.
 
 **Auto-compaction** — When estimated tokens exceed 75% of the budget, older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
+
+**Server-reported tokens** — PRE uses Ollama's native API which reports exact prompt and generation token counts, giving you accurate context usage instead of estimates.
 
 **Tool response cap** — Tool outputs are truncated to 8KB to prevent a single large file from consuming the entire context.
 
@@ -411,10 +438,9 @@ PRE uses Gemma 4's 128K token context window. A few features help you stay withi
 
 ### Tool Calling
 
-1. **Trust the permission model.** Read-only tools are auto-approved. Write tools ask once. Destructive tools ask every time.
-2. **Use 'a' for auto-approve.** When prompted for confirmation, answer `a` to auto-approve all confirm-once tools for the session.
-3. **Undo mistakes.** `/undo` reverts the last file_write or file_edit.
-4. **The model is agentic.** It will chain tool calls to accomplish multi-step tasks — read code, search for patterns, make edits, verify results.
+1. **Almost everything auto-executes.** 32 of 35 tools run without confirmation. Only `process_kill`, `memory_delete`, and `applescript` prompt before executing.
+2. **Undo mistakes.** `/undo` reverts the last `file_write` or `file_edit`.
+3. **The model is agentic.** It will chain tool calls to accomplish multi-step tasks — read code, search for patterns, make edits, run commands, check results.
 
 ### Memory
 
@@ -436,18 +462,19 @@ PRE uses Gemma 4's 128K token context window. A few features help you stay withi
 ### How PRE Works
 
 ```
-┌─────────────┐     HTTP/SSE      ┌─────────────────┐
-│   PRE CLI   │ ◄──────────────► │     Ollama       │
-│  (pre.m)    │                   │  localhost:11434  │
-│  4100 lines │                   │                   │
-│  Obj-C / C  │                   │  Gemma 4 26B-A4B  │
-└─────────────┘                   │  MoE, q4_K_M      │
-      │                           │  ~56 tok/s         │
-      ▼                           └───────────────────┘
+┌─────────────┐    Ollama Native    ┌─────────────────┐
+│   PRE CLI   │  ◄─ /api/chat ──►  │     Ollama       │
+│  (pre.m)    │   raw recv() NDJSON │  localhost:11434  │
+│  ~6000 lines│                     │                   │
+│  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
+└─────────────┘                     │  MoE, q4_K_M      │
+      │                             │  ~70 tok/s         │
+      ▼                             └───────────────────┘
   ~/.pre/
   ├── sessions/     # Conversation JSONL files
   ├── history       # Input history (arrow-key recall)
   ├── checkpoints/  # File backups for /undo
+  ├── connections/  # API keys and OAuth tokens
   ├── memory/       # Global persistent memories
   │   ├── index.md
   │   └── *.md
@@ -458,20 +485,24 @@ PRE uses Gemma 4's 128K token context window. A few features help you stay withi
 ```
 
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application. It handles:
-- OpenAI-compatible HTTP/SSE client for Ollama
+- Ollama native API client with raw `recv()` NDJSON streaming (no stdio buffering)
+- System prompt as `role:system` message for KV cache prefix reuse across turns
 - Streaming markdown renderer with ANSI formatting
 - Multi-format tool call parser (JSON, XML, bare)
-- 29 tool implementations with three-tier permissions
+- Up to 35 tool implementations with three-tier permissions
+- OAuth 2.0 flow with local HTTP callback for Google APIs
+- Connection management for external services (Brave, GitHub, Google, Wolfram)
 - Persistent memory with per-project scoping
 - Channel-based conversation management
 - Project detection and PRE.md loading
-- Context compaction and token budget management
+- Context compaction and token budget management (262K window)
 - File checkpointing and undo
-- linenoise-based line editor with tab completion
+- Ctrl+V image paste for multimodal queries (via AppKit)
+- linenoise-based line editor with tab completion and ANSI-aware cursor
 
-**Ollama** serves the model. PRE connects as a standard OpenAI API client, sending the full conversation history with each request (Ollama is stateless).
+**Ollama** serves the model via a custom Modelfile (`pre-gemma4`) with tuned `num_ctx`, `num_batch`, and `keep_alive` for optimal performance. PRE uses the native `/api/chat` endpoint with server-reported token counts.
 
-**Gemma 4 26B-A4B** is a Mixture-of-Experts model: 26B total parameters, 3.8B active per token, 128 experts with 8 active. At q4_K_M quantization (~17 GB), it runs at ~56 tok/s on M4 Max — fast enough for real-time agentic workflows.
+**Gemma 4 26B-A4B** is a Mixture-of-Experts model: 26B total parameters, 3.8B active per token, 128 experts with 8 active. At q4_K_M quantization (~17 GB), it runs at ~70 tok/s on M4 Max with 262K context — fast enough for real-time agentic workflows.
 
 ---
 
@@ -521,11 +552,12 @@ All PRE data lives in `~/.pre/`:
 ```
 pre/
 ├── README.md               # This file
-├── system.md               # Model system prompt
+├── system.md               # Model system prompt reference
 ├── engine/
-│   ├── pre.m               # PRE CLI (single-file, ~4100 lines)
-│   ├── linenoise.c/h       # Terminal line editor
+│   ├── pre.m               # PRE CLI (single-file, ~6000 lines)
+│   ├── linenoise.c/h       # Terminal line editor (patched: Ctrl+V, ANSI-aware)
 │   ├── Makefile             # Build: make pre
+│   ├── Modelfile            # Ollama model config (pre-gemma4)
 │   └── pre-launch           # Universal launcher script
 ├── docs/
 │   └── *.md                 # Research notes from Flash-MoE era
@@ -539,10 +571,11 @@ pre/
 PRE is built and maintained by **Christopher Bradford** — systems administrator at Joby Aviation and AI engineer.
 
 **Areas for contribution:**
-- **New tools** — Calendar integration, git operations, image analysis (Gemma 4 has vision)
+- **New tools** — Calendar integration, git operations, Slack, linear/Jira
 - **Smarter memory** — Auto-extraction of important facts, memory relevance ranking
-- **Better rendering** — Syntax highlighting in code blocks, image display
+- **Better rendering** — Syntax highlighting in code blocks, image display in terminal
 - **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
+- **New connections** — Slack, Discord, Notion, Linear, and other service integrations
 - **Documentation** — Tutorials, use-case guides, video walkthroughs
 
 **How to contribute:**
