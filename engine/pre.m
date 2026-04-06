@@ -3688,7 +3688,7 @@ static char *build_context_preamble(void) {
         "3. One tool call per turn. STOP after each call and wait for the result.\n"
         "4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n"
         "5. For reports with images: web_search first, then image_generate for each image, then artifact last.\n"
-        "6. In HTML artifacts: load CDN scripts in <head>. Aim for ~3000-4000 tokens.\n"
+        "6. In HTML artifacts: load CDN scripts in <head>.\n"
         "7. For long reports: use append_to to add sections to an existing artifact.\n");
 
     if (g_comfyui_installed) {
@@ -3697,6 +3697,21 @@ static char *build_context_preamble(void) {
             "ALWAYS call it when images are requested. NEVER use Unsplash or external URLs instead. "
             "After generating, use the returned path in artifacts: <img src='file:///path/from/tool'>\n");
     }
+
+    // Report quality guidance — prevents generic filler content
+    plen += snprintf(preamble + plen, cap - plen,
+        "\nREPORT QUALITY STANDARDS:\n"
+        "When creating reports or documents:\n"
+        "- USE SPECIFIC DATA from your web_search results: names, dates, numbers, quotes. "
+        "Never write vague summaries like 'showed incredible promise' or 'significant progress.'\n"
+        "- INCLUDE EVERY SECTION the user requested. Check their prompt and ensure nothing is missing.\n"
+        "- CHARTS must use REAL DATA from research, not arbitrary placeholder numbers. "
+        "Label axes meaningfully. Include all chart types the user requested.\n"
+        "- Each section needs 2-3 substantive paragraphs minimum with specific facts.\n"
+        "- For multi-section reports: create the header/CSS + first 2 sections in the initial artifact, "
+        "then use append_to for remaining sections. This produces richer content.\n"
+        "- End with pdf_export if the user requested PDF output — do not forget this step.\n"
+        "- Validate your HTML: matching quotes on attributes, no duplicate CSS keywords.\n");
 
     plen += snprintf(preamble + plen, cap - plen, "\n");
 
