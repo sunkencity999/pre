@@ -11,6 +11,7 @@
 
 #import <Foundation/Foundation.h>
 #import <AppKit/AppKit.h>
+#import <WebKit/WebKit.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,8 @@
 #include <errno.h>
 #include <glob.h>
 #include <signal.h>
+#include <sys/wait.h>
+#include <mach-o/dyld.h>
 #include "linenoise.h"
 
 // ============================================================================
@@ -51,6 +54,8 @@
 #define CONNECTIONS_FILE ".pre/connections.json"
 #define MAX_CHANNELS    64
 #define MAX_CONNECTIONS 16
+#define CRON_FILE       ".pre/cron.json"
+#define MAX_CRON_JOBS   32
 
 // ANSI escape codes
 #define ANSI_RESET      "\033[0m"
@@ -122,13 +127,96 @@ typedef struct {
 
 static PreState g = {
     .port = 11434,
-    .max_tokens = 8192,
+    .max_tokens = 16384,
     .show_thinking = 1,
     .turn_count = 0,
 };
 
 // Model to request from Ollama
 static const char *g_model = "pre-gemma4";
+
+// Path to our own executable (for exec-based subprocess launching)
+static char g_exe_path[PATH_MAX];
+
+// Agent identity
+static char g_agent_name[128] = "PRE";  // default, overridden by identity file
+
+static const char *identity_path(void) {
+    static char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/.pre/identity.json", getenv("HOME") ?: "/tmp");
+    return path;
+}
+
+static void load_identity(void) {
+    FILE *f = fopen(identity_path(), "r");
+    if (!f) return;
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    // Extract "name" field
+    const char *p = strstr(buf, "\"name\"");
+    if (!p) return;
+    p = strchr(p, ':');
+    if (!p) return;
+    p++;
+    while (*p == ' ' || *p == '"') p++;
+    int i = 0;
+    while (*p && *p != '"' && i < (int)sizeof(g_agent_name) - 1)
+        g_agent_name[i++] = *p++;
+    g_agent_name[i] = 0;
+}
+
+static void save_identity(const char *name) {
+    strlcpy(g_agent_name, name, sizeof(g_agent_name));
+    FILE *f = fopen(identity_path(), "w");
+    if (!f) return;
+    fprintf(f, "{\"name\":\"%s\"}\n", name);
+    fclose(f);
+    chmod(identity_path(), 0600);
+}
+
+// Telegram bot subprocess
+static pid_t g_telegram_pid = 0;
+
+// Unload model from GPU on exit
+static void ollama_unload(void) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s --max-time 5 -X POST -H 'Content-Type: application/json' "
+        "-d '{\"model\":\"%s\",\"keep_alive\":\"0\"}' "
+        "'http://127.0.0.1:%d/api/chat' >/dev/null 2>&1",
+        g_model, g.port);
+    system(cmd);
+}
+
+static void stop_telegram(void) {
+    if (g_telegram_pid > 0) {
+        kill(g_telegram_pid, SIGTERM);
+        // Wait briefly, then force kill if still alive
+        for (int i = 0; i < 10; i++) {
+            int status;
+            pid_t r = waitpid(g_telegram_pid, &status, WNOHANG);
+            if (r != 0) { g_telegram_pid = 0; return; }
+            usleep(200000); // 200ms
+        }
+        // Still alive after 2s — force kill
+        kill(g_telegram_pid, SIGKILL);
+        waitpid(g_telegram_pid, NULL, 0);
+        g_telegram_pid = 0;
+    }
+}
+
+static void start_telegram(void); // defined after connection infrastructure
+
+static void handle_exit_signal(int sig) {
+    (void)sig;
+    printf("\n" ANSI_DIM "Stopping services..." ANSI_RESET "\n");
+    stop_telegram();
+    ollama_unload();
+    printf(ANSI_DIM "Goodbye." ANSI_RESET "\n");
+    _exit(0);
+}
 
 // ============================================================================
 // ToolCall struct and helpers
@@ -176,6 +264,9 @@ static char *g_pending_attach = NULL;
 
 // Pending image attachment — base64 PNG, sent as multimodal content
 static char *g_pending_image = NULL;
+
+// Native tool calls from Ollama's structured response (set by stream_response, consumed by handle_tool_calls)
+static char *g_native_tool_calls = NULL;  // raw JSON array string: [{"id":"...","function":{"name":"...","arguments":{...}}}]
 
 // ============================================================================
 // Utilities
@@ -266,6 +357,563 @@ static void init_pre_dirs(void) {
     mkdir(path, 0755);
     snprintf(path, sizeof(path), "%s/.pre/checkpoints", home);
     mkdir(path, 0755);
+    snprintf(path, sizeof(path), "%s/.pre/artifacts", home);
+    mkdir(path, 0755);
+}
+
+// ============================================================================
+// Artifact system — visual pop-outs for HTML, markdown, CSV, etc.
+// ============================================================================
+
+// Session artifact tracking
+#define MAX_SESSION_ARTIFACTS 64
+static struct {
+    char path[PATH_MAX];
+    char title[128];
+    char type[16];
+} g_artifacts[MAX_SESSION_ARTIFACTS];
+static int g_artifact_count = 0;
+
+// Minimal markdown → HTML converter
+static char *markdown_to_html(const char *md) {
+    size_t cap = strlen(md) * 3 + 4096;
+    char *html = malloc(cap);
+    if (!html) return NULL;
+    size_t pos = 0;
+
+    #define HCAT(s) do { \
+        size_t _l = strlen(s); \
+        if (pos + _l < cap) { memcpy(html + pos, s, _l); pos += _l; } \
+    } while(0)
+
+    // Dark-mode HTML wrapper
+    HCAT("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+         "<style>"
+         "body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',Helvetica,sans-serif;"
+         "background:#1a1a2e;color:#e0e0e0;max-width:800px;margin:40px auto;padding:0 20px;"
+         "line-height:1.6;font-size:15px}"
+         "h1,h2,h3,h4{color:#00d4ff;margin-top:1.5em}"
+         "h1{border-bottom:1px solid #333;padding-bottom:8px}"
+         "a{color:#64b5f6;text-decoration:none}"
+         "a:hover{text-decoration:underline}"
+         "code{background:#2a2a3e;padding:2px 6px;border-radius:3px;font-size:0.9em;"
+         "font-family:'SF Mono',Menlo,monospace}"
+         "pre{background:#0d0d1a;border:1px solid #333;border-radius:6px;padding:16px;"
+         "overflow-x:auto}"
+         "pre code{background:none;padding:0}"
+         "blockquote{border-left:3px solid #00d4ff;margin-left:0;padding-left:16px;color:#aaa}"
+         "table{border-collapse:collapse;width:100%}"
+         "th,td{border:1px solid #333;padding:8px;text-align:left}"
+         "th{background:#2a2a3e}"
+         "hr{border:none;border-top:1px solid #333}"
+         "ul,ol{padding-left:24px}"
+         "li{margin:4px 0}"
+         ".artifact-badge{background:#00d4ff;color:#1a1a2e;padding:2px 8px;border-radius:3px;"
+         "font-size:0.75em;font-weight:600;float:right}"
+         "</style></head><body>"
+         "<span class='artifact-badge'>PRE Artifact</span>");
+
+    const char *p = md;
+    int in_code_block = 0;
+    int in_list = 0;
+
+    while (*p) {
+        // Find end of current line
+        const char *eol = strchr(p, '\n');
+        if (!eol) eol = p + strlen(p);
+        size_t line_len = (size_t)(eol - p);
+        char line[4096];
+        if (line_len >= sizeof(line)) line_len = sizeof(line) - 1;
+        memcpy(line, p, line_len);
+        line[line_len] = 0;
+
+        // Code blocks (```)
+        if (strncmp(line, "```", 3) == 0) {
+            if (in_code_block) {
+                HCAT("</code></pre>");
+                in_code_block = 0;
+            } else {
+                if (in_list) { HCAT("</ul>"); in_list = 0; }
+                HCAT("<pre><code>");
+                in_code_block = 1;
+            }
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        if (in_code_block) {
+            // HTML-escape inside code blocks
+            for (size_t i = 0; i < line_len; i++) {
+                if (line[i] == '<') HCAT("&lt;");
+                else if (line[i] == '>') HCAT("&gt;");
+                else if (line[i] == '&') HCAT("&amp;");
+                else { html[pos++] = line[i]; }
+            }
+            HCAT("\n");
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Close list if this line isn't a list item
+        if (in_list && line[0] != '-' && line[0] != '*' &&
+            !(line[0] >= '0' && line[0] <= '9' && strchr(line, '.'))) {
+            HCAT("</ul>");
+            in_list = 0;
+        }
+
+        // Empty line
+        if (line_len == 0) {
+            HCAT("<br>");
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Horizontal rule
+        if ((strncmp(line, "---", 3) == 0 || strncmp(line, "***", 3) == 0) && line_len <= 5) {
+            HCAT("<hr>");
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Headers
+        int hlevel = 0;
+        const char *htext = line;
+        while (*htext == '#' && hlevel < 6) { hlevel++; htext++; }
+        if (hlevel > 0 && (*htext == ' ' || *htext == 0)) {
+            while (*htext == ' ') htext++;
+            char tag[8];
+            snprintf(tag, sizeof(tag), "<h%d>", hlevel);
+            HCAT(tag);
+            HCAT(htext);
+            snprintf(tag, sizeof(tag), "</h%d>", hlevel);
+            HCAT(tag);
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Blockquote
+        if (line[0] == '>' && (line[1] == ' ' || line[1] == 0)) {
+            HCAT("<blockquote>");
+            HCAT(line + (line[1] == ' ' ? 2 : 1));
+            HCAT("</blockquote>");
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Unordered list
+        if ((line[0] == '-' || line[0] == '*') && line[1] == ' ') {
+            if (!in_list) { HCAT("<ul>"); in_list = 1; }
+            HCAT("<li>");
+            HCAT(line + 2);
+            HCAT("</li>");
+            p = (*eol) ? eol + 1 : eol;
+            continue;
+        }
+
+        // Ordered list (1. 2. etc)
+        if (line[0] >= '0' && line[0] <= '9') {
+            const char *dot = strchr(line, '.');
+            if (dot && dot < line + 4 && dot[1] == ' ') {
+                if (!in_list) { HCAT("<ul>"); in_list = 1; }
+                HCAT("<li>");
+                HCAT(dot + 2);
+                HCAT("</li>");
+                p = (*eol) ? eol + 1 : eol;
+                continue;
+            }
+        }
+
+        // Regular paragraph — apply inline formatting
+        HCAT("<p>");
+        const char *lp = line;
+        while (*lp) {
+            // Bold **text**
+            if (lp[0] == '*' && lp[1] == '*') {
+                const char *end = strstr(lp + 2, "**");
+                if (end) {
+                    HCAT("<strong>");
+                    size_t slen = (size_t)(end - lp - 2);
+                    if (pos + slen < cap) { memcpy(html + pos, lp + 2, slen); pos += slen; }
+                    HCAT("</strong>");
+                    lp = end + 2;
+                    continue;
+                }
+            }
+            // Italic *text*
+            if (lp[0] == '*' && lp[1] != '*') {
+                const char *end = strchr(lp + 1, '*');
+                if (end && end != lp + 1) {
+                    HCAT("<em>");
+                    size_t slen = (size_t)(end - lp - 1);
+                    if (pos + slen < cap) { memcpy(html + pos, lp + 1, slen); pos += slen; }
+                    HCAT("</em>");
+                    lp = end + 1;
+                    continue;
+                }
+            }
+            // Inline code `text`
+            if (lp[0] == '`') {
+                const char *end = strchr(lp + 1, '`');
+                if (end) {
+                    HCAT("<code>");
+                    size_t slen = (size_t)(end - lp - 1);
+                    if (pos + slen < cap) { memcpy(html + pos, lp + 1, slen); pos += slen; }
+                    HCAT("</code>");
+                    lp = end + 1;
+                    continue;
+                }
+            }
+            // Link [text](url)
+            if (lp[0] == '[') {
+                const char *cb = strchr(lp, ']');
+                if (cb && cb[1] == '(') {
+                    const char *cp = strchr(cb + 2, ')');
+                    if (cp) {
+                        HCAT("<a href='");
+                        size_t ulen = (size_t)(cp - cb - 2);
+                        if (pos + ulen < cap) { memcpy(html + pos, cb + 2, ulen); pos += ulen; }
+                        HCAT("'>");
+                        size_t tlen = (size_t)(cb - lp - 1);
+                        if (pos + tlen < cap) { memcpy(html + pos, lp + 1, tlen); pos += tlen; }
+                        HCAT("</a>");
+                        lp = cp + 1;
+                        continue;
+                    }
+                }
+            }
+            // HTML escape
+            if (*lp == '<') { HCAT("&lt;"); lp++; }
+            else if (*lp == '>') { HCAT("&gt;"); lp++; }
+            else if (*lp == '&') { HCAT("&amp;"); lp++; }
+            else { html[pos++] = *lp++; }
+        }
+        HCAT("</p>");
+        p = (*eol) ? eol + 1 : eol;
+    }
+
+    if (in_list) HCAT("</ul>");
+    if (in_code_block) HCAT("</code></pre>");
+    HCAT("</body></html>");
+    html[pos] = 0;
+
+    #undef HCAT
+    return html;
+}
+
+// Show artifact in a native WebKit pop-out window.
+// Uses fork+exec to get a clean process — WebKit's XPC backend doesn't
+// survive fork() in a multithreaded process.
+static void show_artifact_window(const char *filepath, const char *title) {
+    pid_t pid = fork();
+    if (pid < 0) return;  // fork failed
+    if (pid > 0) return;  // parent returns immediately
+
+    // Child: exec ourselves with --artifact flag for a clean process
+    execl(g_exe_path, g_exe_path, "--artifact", filepath, title, NULL);
+    // If exec fails, fall back to opening in default browser
+    execl("/usr/bin/open", "open", filepath, NULL);
+    _exit(1);
+}
+
+// Entry point for --artifact mode: creates a native WebKit pop-out window
+static int artifact_window_main(const char *filepath, const char *title) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+        // Window dimensions
+        NSRect frame = NSMakeRect(100, 100, 900, 700);
+        NSWindow *window = [[NSWindow alloc]
+            initWithContentRect:frame
+            styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                      NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable)
+            backing:NSBackingStoreBuffered
+            defer:NO];
+
+        NSString *winTitle = [NSString stringWithFormat:@"PRE — %s", title];
+        [window setTitle:winTitle];
+        [window setLevel:NSFloatingWindowLevel];
+        [window setBackgroundColor:[NSColor colorWithRed:0.1 green:0.1 blue:0.18 alpha:1.0]];
+
+        // WebKit view
+        WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+        WKWebpagePreferences *pagePrefs = [[WKWebpagePreferences alloc] init];
+        pagePrefs.allowsContentJavaScript = YES;
+        config.defaultWebpagePreferences = pagePrefs;
+        WKWebView *webView = [[WKWebView alloc] initWithFrame:window.contentView.bounds
+                                                configuration:config];
+        webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+        [window.contentView addSubview:webView];
+
+        // Load the HTML file — read content and use loadHTMLString so external
+        // resources (CDN scripts, stylesheets) are not blocked by file:// security
+        NSString *filePath = [NSString stringWithUTF8String:filepath];
+        NSError *readErr = nil;
+        NSString *htmlContent = [NSString stringWithContentsOfFile:filePath
+                                        encoding:NSUTF8StringEncoding
+                                        error:&readErr];
+        if (htmlContent) {
+            // Use an HTTPS base URL so external resource loading works
+            NSURL *baseURL = [NSURL URLWithString:@"https://localhost/"];
+            [webView loadHTMLString:htmlContent baseURL:baseURL];
+        } else {
+            // Fallback: try file URL anyway
+            NSURL *fileURL = [NSURL fileURLWithPath:filePath];
+            [webView loadFileURL:fileURL
+                allowingReadAccessToURL:[fileURL URLByDeletingLastPathComponent]];
+        }
+
+        [window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+
+        // Run until window is closed
+        [[NSNotificationCenter defaultCenter]
+            addObserverForName:NSWindowWillCloseNotification
+            object:window queue:nil
+            usingBlock:^(NSNotification *note __attribute__((unused))) {
+                [NSApp terminate:nil];
+            }];
+
+        [NSApp run];
+    }
+    return 0;
+}
+
+// Wrap non-HTML content types in a styled HTML page for WebKit rendering
+static char *wrap_content_as_html(const char *content, const char *type, const char *title) {
+    size_t clen = strlen(content);
+    size_t cap = clen * 3 + 4096;
+    char *html = malloc(cap);
+    if (!html) return NULL;
+
+    const char *style =
+        "body{font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;"
+        "background:#1a1a2e;color:#e0e0e0;margin:0;padding:24px;line-height:1.6}"
+        "h1{color:#00d4ff;font-size:1.3em;margin:0 0 16px 0;padding-bottom:8px;"
+        "border-bottom:1px solid #333}"
+        "pre{background:#0d0d1a;border:1px solid #333;border-radius:8px;padding:16px;"
+        "overflow-x:auto;font-family:'SF Mono',Menlo,monospace;font-size:13px;line-height:1.5}"
+        "table{border-collapse:collapse;width:100%}"
+        "th,td{border:1px solid #333;padding:8px 12px;text-align:left}"
+        "th{background:#2a2a3e;color:#00d4ff;font-weight:600}"
+        "tr:nth-child(even){background:#1f1f33}"
+        ".badge{background:#00d4ff;color:#1a1a2e;padding:2px 8px;border-radius:3px;"
+        "font-size:0.7em;font-weight:700;margin-left:8px}";
+
+    if (strcmp(type, "csv") == 0) {
+        // Render CSV as a styled table
+        int pos = snprintf(html, cap,
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<style>%s</style></head><body>"
+            "<h1>%s <span class='badge'>CSV</span></h1><table>", style, title);
+
+        const char *p = content;
+        int row = 0;
+        while (*p) {
+            const char *eol = strchr(p, '\n');
+            if (!eol) eol = p + strlen(p);
+            pos += snprintf(html + pos, cap - pos, "<tr>");
+            const char *cell = p;
+            const char *tag = (row == 0) ? "th" : "td";
+            while (cell < eol) {
+                const char *comma = cell;
+                while (comma < eol && *comma != ',') comma++;
+                pos += snprintf(html + pos, cap - pos, "<%s>", tag);
+                size_t cellen = (size_t)(comma - cell);
+                if ((size_t)pos + cellen < cap) { memcpy(html + pos, cell, cellen); pos += cellen; }
+                pos += snprintf(html + pos, cap - pos, "</%s>", tag);
+                cell = (comma < eol) ? comma + 1 : eol;
+            }
+            pos += snprintf(html + pos, cap - pos, "</tr>");
+            p = (*eol) ? eol + 1 : eol;
+            row++;
+        }
+        pos += snprintf(html + pos, cap - pos, "</table></body></html>");
+        html[pos] = 0;
+
+    } else if (strcmp(type, "json") == 0) {
+        snprintf(html, cap,
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<style>%s .key{color:#64b5f6} .str{color:#81c784} .num{color:#ffb74d} "
+            ".bool{color:#ce93d8} .null{color:#888}</style></head><body>"
+            "<h1>%s <span class='badge'>JSON</span></h1>"
+            "<pre id='json'></pre>"
+            "<script>"
+            "try{const d=JSON.parse(document.getElementById('json').textContent=%s);"
+            "document.getElementById('json').innerHTML=JSON.stringify(d,null,2)"
+            ".replace(/\"([^\"]+)\":/g,'<span class=key>\"$1\"</span>:')"
+            ".replace(/: \"([^\"]*)\"/g,': <span class=str>\"$1\"</span>')"
+            ".replace(/: (\\d+)/g,': <span class=num>$1</span>')"
+            ".replace(/: (true|false)/g,': <span class=bool>$1</span>')"
+            ".replace(/: (null)/g,': <span class=null>$1</span>')"
+            "}catch(e){}</script></body></html>",
+            style, title, content);
+
+    } else if (strcmp(type, "svg") == 0) {
+        snprintf(html, cap,
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<style>%s svg{max-width:100%%;height:auto}</style></head><body>"
+            "<h1>%s <span class='badge'>SVG</span></h1>%s</body></html>",
+            style, title, content);
+
+    } else {
+        // code / text — show in a pre block
+        // HTML-escape the content
+        size_t elen = 0;
+        char *escaped = malloc(clen * 5 + 1);
+        if (escaped) {
+            for (size_t i = 0; i < clen; i++) {
+                if (content[i] == '<') { memcpy(escaped + elen, "&lt;", 4); elen += 4; }
+                else if (content[i] == '>') { memcpy(escaped + elen, "&gt;", 4); elen += 4; }
+                else if (content[i] == '&') { memcpy(escaped + elen, "&amp;", 5); elen += 5; }
+                else escaped[elen++] = content[i];
+            }
+            escaped[elen] = 0;
+            snprintf(html, cap,
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>%s</style></head><body>"
+                "<h1>%s <span class='badge'>%s</span></h1><pre>%s</pre></body></html>",
+                style, title, type, escaped);
+            free(escaped);
+        } else {
+            snprintf(html, cap,
+                "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>%s</style></head><body><pre>%s</pre></body></html>",
+                style, content);
+        }
+    }
+    return html;
+}
+
+// Create artifact: writes to ~/.pre/artifacts/, opens in native pop-out window
+static int execute_artifact(const char *title, const char *content, const char *type,
+                            char *output, size_t output_sz) {
+    const char *home = getenv("HOME");
+    if (!home) return snprintf(output, output_sz, "Error: HOME not set");
+    if (!title || !title[0]) return snprintf(output, output_sz, "Error: title required");
+    if (!content) return snprintf(output, output_sz, "Error: content required");
+    if (!type) type = "text";
+
+    // Create date directory
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char date_dir[PATH_MAX];
+    snprintf(date_dir, sizeof(date_dir), "%s/.pre/artifacts/%04d-%02d-%02d",
+             home, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+    mkdir(date_dir, 0755);
+
+    // Sanitize title for filename
+    char safe_title[128];
+    int si = 0;
+    for (int i = 0; title[i] && si < (int)sizeof(safe_title) - 1; i++) {
+        char c = title[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_')
+            safe_title[si++] = c;
+        else if (c == ' ')
+            safe_title[si++] = '_';
+    }
+    safe_title[si] = 0;
+    if (!safe_title[0]) strlcpy(safe_title, "artifact", sizeof(safe_title));
+
+    // All artifacts become HTML for the WebKit viewer
+    char filepath[PATH_MAX];
+    snprintf(filepath, sizeof(filepath), "%s/%s.html", date_dir, safe_title);
+
+    // Generate HTML content based on type
+    FILE *f = fopen(filepath, "w");
+    if (!f) return snprintf(output, output_sz, "Error: cannot create %s", filepath);
+
+    if (strcmp(type, "html") == 0) {
+        // HTML: wrap bare fragments, pass through full documents
+        if (!strstr(content, "<html") && !strstr(content, "<!DOCTYPE")) {
+            fprintf(f, "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                "<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+                "background:#1a1a2e;color:#e0e0e0;margin:0;padding:24px;line-height:1.6}"
+                "a{color:#64b5f6}code{background:#2a2a3e;padding:2px 6px;border-radius:3px}"
+                "pre{background:#0d0d1a;border:1px solid #333;border-radius:6px;padding:16px}"
+                "</style></head><body>%s</body></html>", content);
+        } else {
+            fputs(content, f);
+        }
+    } else if (strcmp(type, "markdown") == 0 || strcmp(type, "md") == 0) {
+        char *html = markdown_to_html(content);
+        if (html) { fputs(html, f); free(html); }
+        else fputs(content, f);
+    } else {
+        // csv, json, svg, code, text — wrap in styled HTML
+        char *html = wrap_content_as_html(content, type, title);
+        if (html) { fputs(html, f); free(html); }
+        else fputs(content, f);
+    }
+    fclose(f);
+
+    // Also save raw content for non-HTML types
+    if (strcmp(type, "html") != 0 && strcmp(type, "markdown") != 0 && strcmp(type, "md") != 0) {
+        const char *raw_ext = "txt";
+        if (strcmp(type, "csv") == 0) raw_ext = "csv";
+        else if (strcmp(type, "json") == 0) raw_ext = "json";
+        else if (strcmp(type, "svg") == 0) raw_ext = "svg";
+        char raw_path[PATH_MAX];
+        snprintf(raw_path, sizeof(raw_path), "%s/%s.%s", date_dir, safe_title, raw_ext);
+        FILE *rf = fopen(raw_path, "w");
+        if (rf) { fputs(content, rf); fclose(rf); }
+    }
+
+    // Track in session
+    if (g_artifact_count < MAX_SESSION_ARTIFACTS) {
+        strlcpy(g_artifacts[g_artifact_count].path, filepath,
+                sizeof(g_artifacts[g_artifact_count].path));
+        strlcpy(g_artifacts[g_artifact_count].title, title,
+                sizeof(g_artifacts[g_artifact_count].title));
+        strlcpy(g_artifacts[g_artifact_count].type, type,
+                sizeof(g_artifacts[g_artifact_count].type));
+        g_artifact_count++;
+    }
+
+    // Verify file was written and check for truncation
+    struct stat art_st;
+    int truncated = 0;
+    if (stat(filepath, &art_st) == 0) {
+        printf(ANSI_DIM "  [artifact: %lld bytes written]" ANSI_RESET "\n", (long long)art_st.st_size);
+
+        // Detect truncated artifacts
+        size_t content_len = strlen(content);
+        if (strcmp(type, "html") == 0) {
+            // HTML artifacts should have closing tags and reasonable size
+            if (content_len < 200 && (strstr(content, "<html") || strstr(content, "<!DOCTYPE"))) {
+                truncated = 1; // Full doc declared but tiny content
+            } else if (content_len > 50 && !strstr(content, "</html") &&
+                       (strstr(content, "<html") || strstr(content, "<!DOCTYPE"))) {
+                truncated = 2; // Has opening but no closing
+            }
+        }
+    }
+
+    if (truncated) {
+        printf(ANSI_YELLOW "  [warning: artifact content appears truncated (%zu bytes)]" ANSI_RESET "\n",
+               strlen(content));
+        return snprintf(output, output_sz,
+            "ERROR: Artifact content was truncated — only %zu bytes received, missing </html> closing tag. "
+            "This usually means double quotes in HTML attributes broke the JSON string. "
+            "Please retry: use SINGLE QUOTES for all HTML attributes (e.g. <div class='foo'> not <div class=\"foo\">), "
+            "and ensure the content is complete with proper closing tags.",
+            strlen(content));
+    }
+
+    // Open in native pop-out window
+    show_artifact_window(filepath, title);
+
+    // Print clickable artifact link using OSC 8 terminal hyperlinks
+    printf(ANSI_CYAN "  ◆ Artifact: %s" ANSI_RESET "\n", title);
+    printf("    \033]8;;file://%s\033\\", filepath);  // OSC 8 open
+    printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET, filepath);
+    printf("\033]8;;\033\\\n");  // OSC 8 close
+    return snprintf(output, output_sz, "Artifact created and displayed in pop-out window: \"%s\"\n"
+                    "Saved at: %s\n"
+                    "The user can see the pop-out window and can click the link in terminal to reopen it.",
+                    title, filepath);
 }
 
 static int checkpoint_file(const char *path) {
@@ -547,6 +1195,249 @@ static int g_connections_loaded = 0;
 static Connection *get_connection(const char *name);
 static void save_connections(void);
 
+// ============================================================================
+// Cron registry — recurring scheduled tasks
+// ============================================================================
+
+// Forward declarations for functions used by cron_check_and_run
+static int json_extract_str(const char *json, const char *key, char *dst, size_t dsz);
+static void session_save_turn(const char *session_id, const char *role, const char *content);
+static void session_save_assistant_with_tool_calls(const char *session_id, const char *content,
+                                                    const char *tool_calls_json);
+static int send_request(const char *user_message, int max_tokens, const char *session_id);
+static char *stream_response(int sock, int num_predict);
+static char *handle_tool_calls(char *response);
+
+typedef struct {
+    char id[16];            // short unique id (hex)
+    char schedule[64];      // 5-field cron: min hour dom month dow
+    char prompt[1024];      // prompt to send to model when triggered
+    char description[256];  // human-readable description
+    int  enabled;           // 1 = active, 0 = disabled
+    long created_at;        // unix timestamp
+    long last_run_at;       // unix timestamp of last execution
+    int  run_count;         // total executions
+} CronJob;
+
+static CronJob g_cron_jobs[MAX_CRON_JOBS];
+static int g_cron_count = 0;
+static double g_cron_last_check_ms = 0;
+
+static const char *cron_path(void) {
+    static char path[PATH_MAX];
+    const char *home = getenv("HOME") ?: "/tmp";
+    snprintf(path, sizeof(path), "%s/%s", home, CRON_FILE);
+    return path;
+}
+
+static void cron_generate_id(char *buf, size_t bufsz) {
+    unsigned int r;
+    arc4random_buf(&r, sizeof(r));
+    snprintf(buf, bufsz, "%08x", r);
+}
+
+// Save cron jobs to disk as JSON array
+static void cron_save(void) {
+    FILE *f = fopen(cron_path(), "w");
+    if (!f) return;
+    fprintf(f, "[\n");
+    for (int i = 0; i < g_cron_count; i++) {
+        CronJob *j = &g_cron_jobs[i];
+        char *esc_prompt = json_escape_alloc(j->prompt);
+        char *esc_desc = json_escape_alloc(j->description);
+        fprintf(f, "%s{\"id\":\"%s\",\"schedule\":\"%s\",\"prompt\":\"%s\","
+                   "\"description\":\"%s\",\"enabled\":%s,"
+                   "\"created_at\":%ld,\"last_run_at\":%ld,\"run_count\":%d}",
+                i > 0 ? ",\n" : "", j->id, j->schedule,
+                esc_prompt ? esc_prompt : j->prompt,
+                esc_desc ? esc_desc : j->description,
+                j->enabled ? "true" : "false",
+                j->created_at, j->last_run_at, j->run_count);
+        free(esc_prompt);
+        free(esc_desc);
+    }
+    fprintf(f, "\n]\n");
+    fclose(f);
+}
+
+// Load cron jobs from disk
+static void cron_load(void) {
+    g_cron_count = 0;
+    FILE *f = fopen(cron_path(), "r");
+    if (!f) return;
+
+    // Read entire file
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    if (sz <= 2 || sz > 65536) { fclose(f); return; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc(sz + 1);
+    fread(buf, 1, sz, f);
+    buf[sz] = 0;
+    fclose(f);
+
+    // Simple parsing: find each {..."id":"..."...} object
+    const char *p = buf;
+    while (g_cron_count < MAX_CRON_JOBS) {
+        const char *obj = strchr(p, '{');
+        if (!obj) break;
+        const char *obj_end = strchr(obj, '}');
+        if (!obj_end) break;
+
+        CronJob *j = &g_cron_jobs[g_cron_count];
+        memset(j, 0, sizeof(CronJob));
+
+        char tmp[2048];
+        if (json_extract_str(obj, "id", tmp, sizeof(tmp))) strlcpy(j->id, tmp, sizeof(j->id));
+        if (json_extract_str(obj, "schedule", tmp, sizeof(tmp))) strlcpy(j->schedule, tmp, sizeof(j->schedule));
+        if (json_extract_str(obj, "prompt", tmp, sizeof(tmp))) strlcpy(j->prompt, tmp, sizeof(j->prompt));
+        if (json_extract_str(obj, "description", tmp, sizeof(tmp))) strlcpy(j->description, tmp, sizeof(j->description));
+
+        // Parse boolean/number fields
+        if (strstr(obj, "\"enabled\":true")) j->enabled = 1;
+        else if (strstr(obj, "\"enabled\":false")) j->enabled = 0;
+        else j->enabled = 1; // default enabled
+
+        char numtmp[32];
+        if (json_extract_str(obj, "created_at", numtmp, sizeof(numtmp))) j->created_at = atol(numtmp);
+        if (json_extract_str(obj, "last_run_at", numtmp, sizeof(numtmp))) j->last_run_at = atol(numtmp);
+        if (json_extract_str(obj, "run_count", numtmp, sizeof(numtmp))) j->run_count = atoi(numtmp);
+
+        if (j->id[0] && j->schedule[0] && j->prompt[0]) {
+            g_cron_count++;
+        }
+        p = obj_end + 1;
+    }
+    free(buf);
+}
+
+// Parse a 5-field cron expression and check if it matches the given time.
+// Fields: minute hour day-of-month month day-of-week
+// Supports: numbers, *, */N (step), comma-separated lists, ranges (N-M)
+static int cron_field_matches(const char *field, int value, int min_val, int max_val) {
+    (void)min_val; (void)max_val;
+    if (strcmp(field, "*") == 0) return 1;
+
+    // */N step
+    if (field[0] == '*' && field[1] == '/') {
+        int step = atoi(field + 2);
+        return step > 0 && (value % step) == 0;
+    }
+
+    // Comma-separated: "1,5,10"
+    char buf[64];
+    strlcpy(buf, field, sizeof(buf));
+    char *tok = strtok(buf, ",");
+    while (tok) {
+        // Range: "1-5"
+        char *dash = strchr(tok, '-');
+        if (dash) {
+            int lo = atoi(tok), hi = atoi(dash + 1);
+            if (value >= lo && value <= hi) return 1;
+        } else {
+            if (atoi(tok) == value) return 1;
+        }
+        tok = strtok(NULL, ",");
+    }
+    return 0;
+}
+
+static int cron_matches_now(const char *schedule) {
+    // Parse 5 fields
+    char buf[64];
+    strlcpy(buf, schedule, sizeof(buf));
+
+    char *fields[5] = {NULL};
+    char *p = buf;
+    for (int i = 0; i < 5 && *p; i++) {
+        while (*p == ' ') p++;
+        fields[i] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = 0;
+    }
+    if (!fields[0] || !fields[1] || !fields[2] || !fields[3] || !fields[4])
+        return 0;
+
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+
+    return cron_field_matches(fields[0], tm->tm_min, 0, 59) &&
+           cron_field_matches(fields[1], tm->tm_hour, 0, 23) &&
+           cron_field_matches(fields[2], tm->tm_mday, 1, 31) &&
+           cron_field_matches(fields[3], tm->tm_mon + 1, 1, 12) &&
+           cron_field_matches(fields[4], tm->tm_wday, 0, 6);
+}
+
+// Check all cron jobs and execute any that are due.
+// Called from the main loop. Only checks once per minute.
+static void cron_check_and_run(void) {
+    if (g_cron_count == 0) return;
+
+    double now = now_ms();
+    if (now - g_cron_last_check_ms < 60000) return; // check at most once per minute
+    g_cron_last_check_ms = now;
+
+    time_t now_t = time(NULL);
+    int any_ran = 0;
+
+    for (int i = 0; i < g_cron_count; i++) {
+        CronJob *j = &g_cron_jobs[i];
+        if (!j->enabled) continue;
+
+        // Don't run more than once per minute (prevent double-fire)
+        if (now_t - j->last_run_at < 60) continue;
+
+        if (!cron_matches_now(j->schedule)) continue;
+
+        // Fire this cron job
+        printf("\n" ANSI_CYAN "  ⏰ [cron: %s]" ANSI_RESET "\n", j->description[0] ? j->description : j->id);
+        printf(ANSI_DIM "  schedule: %s" ANSI_RESET "\n", j->schedule);
+
+        // Save user turn and send to model
+        session_save_turn(g.session_id, "user", j->prompt);
+
+        // Clear stale native tool calls
+        free(g_native_tool_calls);
+        g_native_tool_calls = NULL;
+
+        int sock = send_request(j->prompt, g.max_tokens, g.session_id);
+        if (sock >= 0) {
+            printf("\n");
+            char *response = stream_response(sock, g.max_tokens);
+
+            if (response && (strlen(response) > 0 || g_native_tool_calls)) {
+                if (g_native_tool_calls) {
+                    session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+                } else {
+                    session_save_turn(g.session_id, "assistant", response);
+                }
+                free(g.last_response);
+                g.last_response = strdup(response);
+            }
+
+            // Process tool calls if any
+            if (response && (g_native_tool_calls || strstr(response, "<tool_call>"))) {
+                char *final = handle_tool_calls(response);
+                free(final);
+            } else {
+                free(response);
+            }
+
+            g.turn_count++;
+        }
+
+        // Update job state
+        j->last_run_at = now_t;
+        j->run_count++;
+        any_ran = 1;
+    }
+
+    if (any_ran) {
+        cron_save();
+        printf("\n"); // blank line before next prompt
+    }
+}
+
 static const char *connections_path(void) {
     static char path[PATH_MAX];
     const char *home = getenv("HOME") ?: "/tmp";
@@ -612,6 +1503,7 @@ static void load_connections(void) {
         {"github",       "GitHub",           0},
         {"google",       "Google (Gmail/Drive/Docs)", 1},
         {"wolfram",      "Wolfram Alpha",    0},
+        {"telegram",     "Telegram Bot",     0},
         {NULL, NULL, 0}
     };
     for (int i = 0; services[i].name; i++) {
@@ -796,6 +1688,61 @@ static int list_google_accounts(char *buf, size_t bufsz) {
     }
     buf[off] = 0;
     return off;
+}
+
+// ============================================================================
+// Telegram bot subprocess
+// ============================================================================
+
+static void start_telegram(void) {
+    if (!g_connections_loaded) load_connections();
+    Connection *tg = get_connection("telegram");
+    if (!tg || !tg->active) return;
+
+    // Find the pre-telegram binary next to this binary
+    char tg_bin[PATH_MAX];
+    char self[PATH_MAX] = {0};
+    uint32_t sz = sizeof(self);
+    if (_NSGetExecutablePath(self, &sz) == 0) {
+        char real[PATH_MAX];
+        if (realpath(self, real)) strlcpy(self, real, sizeof(self));
+        char *slash = strrchr(self, '/');
+        if (slash) {
+            *slash = 0;
+            snprintf(tg_bin, sizeof(tg_bin), "%s/pre-telegram", self);
+        } else {
+            snprintf(tg_bin, sizeof(tg_bin), "./pre-telegram");
+        }
+    } else {
+        snprintf(tg_bin, sizeof(tg_bin), "./pre-telegram");
+    }
+
+    struct stat st;
+    if (stat(tg_bin, &st) != 0 || !(st.st_mode & S_IXUSR)) {
+        // Binary not found — silently skip
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child — redirect output to log file so it doesn't interleave with TUI
+        const char *home = getenv("HOME") ?: "/tmp";
+        char logpath[PATH_MAX];
+        snprintf(logpath, sizeof(logpath), "%s/.pre/telegram.log", home);
+        FILE *logf = fopen(logpath, "a");
+        if (logf) {
+            dup2(fileno(logf), STDOUT_FILENO);
+            dup2(fileno(logf), STDERR_FILENO);
+            fclose(logf);
+        }
+        char port_s[16];
+        snprintf(port_s, sizeof(port_s), "%d", g.port);
+        execl(tg_bin, "pre-telegram", "--port", port_s, NULL);
+        _exit(1);
+    } else if (pid > 0) {
+        g_telegram_pid = pid;
+        printf(ANSI_DIM "  Telegram bot active" ANSI_RESET "\n");
+    }
 }
 
 // ============================================================================
@@ -1332,7 +2279,13 @@ static void tui_banner(void) {
     printf("\n");
     // Banner box — 48 inner columns between ║ walls
     printf(ANSI_BOLD ANSI_CYAN "  ╔════════════════════════════════════════════════╗\n" ANSI_RESET);
-    printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_BOLD "  P R E  —  Personal Reasoning Engine           " ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET);
+    if (strcmp(g_agent_name, "PRE") != 0) {
+        char title[64];
+        snprintf(title, sizeof(title), "  %s  —  Personal Reasoning Engine", g_agent_name);
+        printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_BOLD "  %-46s" ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET, title);
+    } else {
+        printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_BOLD "  P R E  —  Personal Reasoning Engine           " ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET);
+    }
     printf(ANSI_BOLD ANSI_CYAN "  ║" ANSI_RESET ANSI_DIM "  %-46s" ANSI_RESET ANSI_BOLD ANSI_CYAN "║\n" ANSI_RESET, MODEL_NAME);
     printf(ANSI_BOLD ANSI_CYAN "  ╚════════════════════════════════════════════════╝\n" ANSI_RESET);
     printf("\n");
@@ -1406,15 +2359,126 @@ static int session_load_title(const char *session_id, char *out, size_t outsize)
     return len > 0;
 }
 
+// Strip <think>...</think> blocks from assistant responses before saving.
+// Thinking blocks are enormous (500-1000+ tokens) and add no value when replayed
+// in future turns — they just bloat the context and slow prefill.
+static char *strip_thinking_blocks(const char *text) {
+    // Quick check: no thinking blocks to strip
+    if (!strstr(text, "<think>")) return NULL;
+
+    size_t len = strlen(text);
+    char *out = malloc(len + 1);
+    size_t oi = 0;
+    const char *p = text;
+
+    while (*p) {
+        char *ts = strstr(p, "<think>");
+        if (!ts) {
+            // No more think blocks — copy rest
+            strcpy(out + oi, p);
+            oi += strlen(p);
+            break;
+        }
+        // Copy everything before <think>
+        size_t before = ts - p;
+        memcpy(out + oi, p, before);
+        oi += before;
+
+        // Skip past </think>
+        char *te = strstr(ts, "</think>");
+        if (te) {
+            p = te + 8; // past </think>
+            // Skip whitespace/newlines after closing tag
+            while (*p == '\n' || *p == '\r' || *p == ' ') p++;
+        } else {
+            // Unclosed think block — skip to end
+            break;
+        }
+    }
+    out[oi] = 0;
+
+    // If stripping produced only whitespace, return NULL
+    const char *check = out;
+    while (*check == ' ' || *check == '\n' || *check == '\r') check++;
+    if (!*check) { free(out); return NULL; }
+
+    return out;
+}
+
 static void session_save_turn(const char *session_id, const char *role, const char *content) {
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, session_id);
     FILE *f = fopen(path, "a");
     if (!f) return;
-    char *escaped = json_escape_alloc(content);
+
+    // Strip thinking blocks from assistant responses to keep session compact
+    char *stripped = NULL;
+    if (strcmp(role, "assistant") == 0) {
+        stripped = strip_thinking_blocks(content);
+    }
+
+    char *escaped = json_escape_alloc(stripped ? stripped : content);
     if (escaped) {
         fprintf(f, "{\"role\":\"%s\",\"content\":\"%s\"}\n", role, escaped);
         free(escaped);
+    }
+    free(stripped);
+    fclose(f);
+}
+
+// Save an assistant turn with native tool_calls JSON for correct session replay.
+// tool_calls_json is the raw JSON array (e.g. [{"id":"...","function":{...}}]).
+static void session_save_assistant_with_tool_calls(const char *session_id, const char *content,
+                                                    const char *tool_calls_json) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, session_id);
+    FILE *f = fopen(path, "a");
+    if (!f) return;
+
+    char *stripped = strip_thinking_blocks(content);
+    char *escaped = json_escape_alloc(stripped ? stripped : (content ? content : ""));
+    if (escaped) {
+        fprintf(f, "{\"role\":\"assistant\",\"content\":\"%s\",\"tool_calls\":%s}\n",
+                escaped, tool_calls_json);
+        free(escaped);
+    }
+    free(stripped);
+    fclose(f);
+}
+
+// Replace the last line in a session file (used to fix truncated tool calls).
+static void session_replace_last_turn(const char *session_id, const char *role, const char *content) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, session_id);
+
+    // Read all lines
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char **lines = NULL;
+    int nlines = 0;
+    char buf[MAX_RESPONSE];
+    while (fgets(buf, sizeof(buf), f)) {
+        lines = realloc(lines, sizeof(char *) * (nlines + 1));
+        lines[nlines++] = strdup(buf);
+    }
+    fclose(f);
+
+    // Rewrite: all lines except the last, then the replacement (or drop if content is NULL/empty)
+    f = fopen(path, "w");
+    if (!f) { for (int i = 0; i < nlines; i++) free(lines[i]); free(lines); return; }
+    for (int i = 0; i < nlines - 1; i++) {
+        fputs(lines[i], f);
+        free(lines[i]);
+    }
+    if (nlines > 0) free(lines[nlines - 1]);
+    free(lines);
+
+    if (content && content[0]) {
+        char *escaped = json_escape_alloc(content);
+        if (escaped) {
+            fprintf(f, "{\"role\":\"%s\",\"content\":\"%s\"}\n", role, escaped);
+            free(escaped);
+        }
     }
     fclose(f);
 }
@@ -1651,6 +2715,241 @@ static char *dir_tree(const char *path, int max_depth) {
 }
 
 // ============================================================================
+// Native tool definitions for Ollama /api/chat tools parameter
+// ============================================================================
+
+// Helper macro: emit one tool definition with JSON Schema
+#define TOOL_DEF(NAME, DESC, PROPS, REQ) \
+    "{\"type\":\"function\",\"function\":{\"name\":\"" NAME "\",\"description\":\"" DESC "\"," \
+    "\"parameters\":{\"type\":\"object\",\"properties\":{" PROPS "}," \
+    "\"required\":[" REQ "],\"additionalProperties\":false}}}"
+
+static char *build_tools_json(void) {
+    size_t cap = 32768;
+    char *buf = malloc(cap);
+    int len = 0;
+
+    len += snprintf(buf + len, cap - len, "[");
+
+    // Core tools — always available
+    static const char *core_tools[] = {
+        TOOL_DEF("bash", "Run a shell command and return output",
+                 "\"command\":{\"type\":\"string\",\"description\":\"The shell command to execute\"}",
+                 "\"command\""),
+
+        TOOL_DEF("read_file", "Read file contents from disk",
+                 "\"path\":{\"type\":\"string\",\"description\":\"File path to read\"}",
+                 "\"path\""),
+
+        TOOL_DEF("list_dir", "List directory contents",
+                 "\"path\":{\"type\":\"string\",\"description\":\"Directory path (default: cwd)\"}",
+                 ""),
+
+        TOOL_DEF("glob", "Find files matching a glob pattern",
+                 "\"pattern\":{\"type\":\"string\",\"description\":\"Glob pattern (e.g. **/*.js)\"},"
+                 "\"path\":{\"type\":\"string\",\"description\":\"Base directory (default: cwd)\"}",
+                 "\"pattern\""),
+
+        TOOL_DEF("grep", "Search file contents with regex",
+                 "\"pattern\":{\"type\":\"string\",\"description\":\"Regex pattern to search for\"},"
+                 "\"path\":{\"type\":\"string\",\"description\":\"File or directory to search\"},"
+                 "\"include\":{\"type\":\"string\",\"description\":\"File glob filter (e.g. *.py)\"}",
+                 "\"pattern\""),
+
+        // NOTE: file_write is excluded from native tools — large content in JSON string
+        // arguments causes the model to skip the tool call entirely. file_write uses
+        // text-based <tool_call> format instead (see system prompt).
+
+        TOOL_DEF("file_edit", "Replace exact text in a file",
+                 "\"path\":{\"type\":\"string\",\"description\":\"File path to edit\"},"
+                 "\"old_string\":{\"type\":\"string\",\"description\":\"Exact text to find (must match once)\"},"
+                 "\"new_string\":{\"type\":\"string\",\"description\":\"Replacement text\"}",
+                 "\"path\",\"old_string\",\"new_string\""),
+
+        TOOL_DEF("web_fetch", "Fetch URL content (HTML/JSON/text)",
+                 "\"url\":{\"type\":\"string\",\"description\":\"URL to fetch\"}",
+                 "\"url\""),
+
+        TOOL_DEF("system_info", "Get system information (OS, CPU, memory, disk)", "", ""),
+
+        TOOL_DEF("process_list", "List running processes",
+                 "\"filter\":{\"type\":\"string\",\"description\":\"Filter processes by name\"}",
+                 ""),
+
+        TOOL_DEF("process_kill", "Kill a process by PID",
+                 "\"pid\":{\"type\":\"string\",\"description\":\"Process ID to kill\"}",
+                 "\"pid\""),
+
+        TOOL_DEF("clipboard_read", "Read clipboard contents", "", ""),
+
+        TOOL_DEF("clipboard_write", "Write text to clipboard",
+                 "\"content\":{\"type\":\"string\",\"description\":\"Text to copy to clipboard\"}",
+                 "\"content\""),
+
+        TOOL_DEF("open_app", "Open a file, URL, or application",
+                 "\"target\":{\"type\":\"string\",\"description\":\"Path, URL, or app name to open\"}",
+                 "\"target\""),
+
+        TOOL_DEF("notify", "Show a macOS notification",
+                 "\"title\":{\"type\":\"string\",\"description\":\"Notification title\"},"
+                 "\"message\":{\"type\":\"string\",\"description\":\"Notification message\"}",
+                 "\"title\",\"message\""),
+
+        TOOL_DEF("memory_save", "Save a persistent memory",
+                 "\"name\":{\"type\":\"string\",\"description\":\"Memory name/key\"},"
+                 "\"type\":{\"type\":\"string\",\"description\":\"Type: user|feedback|project|reference\"},"
+                 "\"description\":{\"type\":\"string\",\"description\":\"One-line description\"},"
+                 "\"content\":{\"type\":\"string\",\"description\":\"Memory content\"},"
+                 "\"scope\":{\"type\":\"string\",\"description\":\"Scope: project|global (default: project)\"}",
+                 "\"name\",\"type\",\"description\",\"content\""),
+
+        TOOL_DEF("memory_search", "Search saved memories",
+                 "\"query\":{\"type\":\"string\",\"description\":\"Search query\"}",
+                 ""),
+
+        TOOL_DEF("memory_list", "List all saved memories", "", ""),
+
+        TOOL_DEF("memory_delete", "Delete a saved memory",
+                 "\"query\":{\"type\":\"string\",\"description\":\"Memory name or search query to delete\"}",
+                 "\"query\""),
+
+        TOOL_DEF("screenshot", "Take a screenshot",
+                 "\"region\":{\"type\":\"string\",\"description\":\"Region: full|window|selection (default: full)\"}",
+                 ""),
+
+        TOOL_DEF("window_list", "List open windows", "", ""),
+
+        TOOL_DEF("window_focus", "Focus/activate an application window",
+                 "\"app\":{\"type\":\"string\",\"description\":\"Application name to focus\"}",
+                 "\"app\""),
+
+        TOOL_DEF("display_info", "Get display/screen information", "", ""),
+
+        TOOL_DEF("net_info", "Get network interface information", "", ""),
+
+        TOOL_DEF("net_connections", "List active network connections",
+                 "\"filter\":{\"type\":\"string\",\"description\":\"Filter connections (e.g. port or process)\"}",
+                 ""),
+
+        TOOL_DEF("service_status", "Check service/daemon status",
+                 "\"service\":{\"type\":\"string\",\"description\":\"Service name to check\"}",
+                 ""),
+
+        TOOL_DEF("disk_usage", "Show disk usage",
+                 "\"path\":{\"type\":\"string\",\"description\":\"Path to check (default: /)\"}",
+                 ""),
+
+        TOOL_DEF("hardware_info", "Get hardware details (CPU, GPU, memory)", "", ""),
+
+        TOOL_DEF("applescript", "Run an AppleScript",
+                 "\"script\":{\"type\":\"string\",\"description\":\"AppleScript code to execute\"}",
+                 "\"script\""),
+
+        // NOTE: artifact is excluded from native tools — the model refuses to stuff
+        // thousands of tokens of HTML into a JSON string argument. It works via text-based
+        // <tool_call> format instead (see system prompt).
+
+        TOOL_DEF("cron", "Manage recurring scheduled tasks",
+                 "\"action\":{\"type\":\"string\",\"description\":\"Action: add|list|remove|enable|disable\"},"
+                 "\"schedule\":{\"type\":\"string\",\"description\":\"5-field cron schedule: min hour dom month dow (e.g. 0 9 * * 1-5)\"},"
+                 "\"prompt\":{\"type\":\"string\",\"description\":\"Prompt to send when job triggers\"},"
+                 "\"description\":{\"type\":\"string\",\"description\":\"Human-readable description\"},"
+                 "\"id\":{\"type\":\"string\",\"description\":\"Job ID (for remove/enable/disable)\"}",
+                 "\"action\""),
+
+        NULL
+    };
+
+    for (int i = 0; core_tools[i]; i++) {
+        if (i > 0) buf[len++] = ',';
+        int tl = (int)strlen(core_tools[i]);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, core_tools[i], tl);
+        len += tl;
+    }
+
+    // Conditional service tools
+    if (!g_connections_loaded) load_connections();
+    Connection *brave = get_connection("brave_search");
+    Connection *gh = get_connection("github");
+    Connection *goog = get_connection("google");
+    Connection *wolf = get_connection("wolfram");
+
+    if (brave && brave->active) {
+        const char *t = "," TOOL_DEF("web_search", "Search the web",
+            "\"query\":{\"type\":\"string\",\"description\":\"Search query\"},"
+            "\"count\":{\"type\":\"integer\",\"description\":\"Number of results (default: 5)\"}",
+            "\"query\"");
+        int tl = (int)strlen(t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, t, tl); len += tl;
+    }
+
+    if (gh && gh->active) {
+        const char *t = "," TOOL_DEF("github", "Interact with GitHub",
+            "\"action\":{\"type\":\"string\",\"description\":\"Action: search_repos|list_issues|read_issue|list_prs|user\"},"
+            "\"repo\":{\"type\":\"string\",\"description\":\"Repository (owner/name)\"},"
+            "\"query\":{\"type\":\"string\",\"description\":\"Search query\"},"
+            "\"number\":{\"type\":\"integer\",\"description\":\"Issue/PR number\"},"
+            "\"state\":{\"type\":\"string\",\"description\":\"State filter: open|closed|all\"}",
+            "\"action\"");
+        int tl = (int)strlen(t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, t, tl); len += tl;
+    }
+
+    if (goog && goog->active) {
+        const char *gmail_t = "," TOOL_DEF("gmail", "Gmail operations",
+            "\"action\":{\"type\":\"string\",\"description\":\"Action: search|read|send|draft|trash|labels|profile\"},"
+            "\"query\":{\"type\":\"string\",\"description\":\"Search query\"},"
+            "\"id\":{\"type\":\"string\",\"description\":\"Message/thread ID\"},"
+            "\"to\":{\"type\":\"string\",\"description\":\"Recipient email\"},"
+            "\"subject\":{\"type\":\"string\",\"description\":\"Email subject\"},"
+            "\"body\":{\"type\":\"string\",\"description\":\"Email body\"},"
+            "\"account\":{\"type\":\"string\",\"description\":\"Google account\"}",
+            "\"action\"");
+        int tl = (int)strlen(gmail_t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, gmail_t, tl); len += tl;
+
+        const char *gdrive_t = "," TOOL_DEF("gdrive", "Google Drive operations",
+            "\"action\":{\"type\":\"string\",\"description\":\"Action: list|search|download|upload|mkdir|share|delete\"},"
+            "\"id\":{\"type\":\"string\",\"description\":\"File/folder ID\"},"
+            "\"path\":{\"type\":\"string\",\"description\":\"Local file path\"},"
+            "\"name\":{\"type\":\"string\",\"description\":\"File name\"},"
+            "\"query\":{\"type\":\"string\",\"description\":\"Search query\"},"
+            "\"account\":{\"type\":\"string\",\"description\":\"Google account\"}",
+            "\"action\"");
+        tl = (int)strlen(gdrive_t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, gdrive_t, tl); len += tl;
+
+        const char *gdocs_t = "," TOOL_DEF("gdocs", "Google Docs operations",
+            "\"action\":{\"type\":\"string\",\"description\":\"Action: create|read|append\"},"
+            "\"id\":{\"type\":\"string\",\"description\":\"Document ID\"},"
+            "\"title\":{\"type\":\"string\",\"description\":\"Document title\"},"
+            "\"content\":{\"type\":\"string\",\"description\":\"Content to write\"},"
+            "\"account\":{\"type\":\"string\",\"description\":\"Google account\"}",
+            "\"action\"");
+        tl = (int)strlen(gdocs_t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, gdocs_t, tl); len += tl;
+    }
+
+    if (wolf && wolf->active) {
+        const char *t = "," TOOL_DEF("wolfram", "Query Wolfram Alpha for computation/facts",
+            "\"query\":{\"type\":\"string\",\"description\":\"Query for Wolfram Alpha\"}",
+            "\"query\"");
+        int tl = (int)strlen(t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, t, tl); len += tl;
+    }
+
+    len += snprintf(buf + len, cap - len, "]");
+    return buf;
+}
+
+// ============================================================================
 // Context injection — build preamble for first message in session
 // ============================================================================
 
@@ -1735,9 +3034,14 @@ static char *build_context_preamble(void) {
     int plen = 0;
 
     // System identity and role
-    plen += snprintf(preamble + plen, cap - plen,
-        "You are PRE (Personal Reasoning Engine), a fully local agentic assistant running on Apple Silicon. "
-        "All data stays on this machine. You have persistent memory across sessions.\n\n");
+    if (strcmp(g_agent_name, "PRE") != 0)
+        plen += snprintf(preamble + plen, cap - plen,
+            "You are %s, a Personal Reasoning Engine (PRE) — a fully local agentic assistant running on Apple Silicon. "
+            "All data stays on this machine. You have persistent memory across sessions.\n\n", g_agent_name);
+    else
+        plen += snprintf(preamble + plen, cap - plen,
+            "You are PRE (Personal Reasoning Engine), a fully local agentic assistant running on Apple Silicon. "
+            "All data stays on this machine. You have persistent memory across sessions.\n\n");
 
     // Project instructions
     if (pre_md_content) {
@@ -1784,49 +3088,45 @@ static char *build_context_preamble(void) {
             datebuf);
     }
 
-    // Tool instructions — kept compact to minimize prompt tokens
+    // Tool usage guidance — tool definitions are now provided via Ollama's native
+    // tools parameter (structured function calling), so we don't need format instructions.
+    // Keep behavioral guidance that the schema can't express.
     plen += snprintf(preamble + plen, cap - plen,
-        "To use a tool: <tool_call>\n{\"name\":\"TOOL\",\"arguments\":{...}}\n</tool_call>\n"
-        "After calling, STOP and wait for <tool_response>.\n\n"
-        "Tools:\n"
-        "bash(command) read_file(path) list_dir(path) glob(pattern,path?) grep(pattern,path?,include?) "
-        "file_write(path,content) file_edit(path,old_string,new_string) web_fetch(url) "
-        "system_info() process_list(filter?) process_kill(pid) "
-        "clipboard_read() clipboard_write(content) open_app(target) notify(title,message) "
-        "memory_save(name,type,description,content,scope?) memory_search(query?) memory_list() memory_delete(query) "
-        "screenshot(region?) window_list() window_focus(app) display_info() "
-        "net_info() net_connections(filter?) service_status(service?) disk_usage(path?) "
-        "hardware_info() applescript(script)\n");
+        "You have tools available. Most tools are called as functions (the system handles the format). "
+        "After each tool call, STOP and wait for the result.\n\n"
+        "CRITICAL — FILE CREATION RULES:\n"
+        "You must NEVER output raw code, HTML, scripts, or file contents in your response text. "
+        "Do NOT draft code in your response — go directly to the tool call. "
+        "Instead, ALWAYS use a tool to save content to disk:\n"
+        "- For visual content (HTML, markdown, CSV, SVG, diagrams, reports, web pages): use artifact. "
+        "This saves the file and opens it in the browser/viewer automatically. "
+        "Aim for compact artifacts (~3000-4000 tokens / ~10KB). Write clean, minimal code without comments or redundant whitespace. "
+        "For games: focus on core mechanics — the system will handle display. "
+        "In HTML artifacts, load CDN scripts in <head> BEFORE any inline <script> that uses them.\n"
+        "- For executable content (scripts, source code, configs): use file_write. "
+        "This saves the file to disk.\n"
+        "- Briefly describe what you created, then immediately use the tool. Do NOT include any file contents in your chat text.\n\n"
+        "IMPORTANT: artifact and file_write use a text-based format (they are NOT function calls). "
+        "You MUST use this exact XML format for these two tools:\n"
+        "<tool_call>\n"
+        "{\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"...full HTML...\", \"type\": \"html\"}}\n"
+        "</tool_call>\n"
+        "<tool_call>\n"
+        "{\"name\": \"file_write\", \"arguments\": {\"path\": \"...\", \"content\": \"...file contents...\"}}\n"
+        "</tool_call>\n"
+        "All other tools (bash, file_edit, read_file, memory_save, etc.) are called as functions — do NOT use <tool_call> tags for them.\n\n"
+        "Tool tips:\n"
+        "memory_save types: user|feedback|project|reference. scope: project|global.\n"
+        "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
+        "artifact types: html|markdown|csv|json|svg|code|text.\n"
+        "Save memories proactively for user prefs, project context, corrections.\n\n");
 
-    // Conditionally advertise connected services
+    // Tell the model about connection-dependent tools (even if not active)
     if (!g_connections_loaded) load_connections();
     Connection *brave = get_connection("brave_search");
     Connection *gh = get_connection("github");
     Connection *goog = get_connection("google");
     Connection *wolf = get_connection("wolfram");
-    if (brave && brave->active)
-        plen += snprintf(preamble + plen, cap - plen,
-            "web_search(query,count?) ");
-    if (gh && gh->active)
-        plen += snprintf(preamble + plen, cap - plen,
-            "github(action:search_repos|list_issues|read_issue|list_prs|user,repo?,query?,number?,state?) ");
-    if (goog && goog->active) {
-        plen += snprintf(preamble + plen, cap - plen,
-            "gmail(action:search|read|send|draft|trash|labels|profile,query?,id?,to?,subject?,body?,cc?,bcc?,max_results?,account?) "
-            "gdrive(action:list|search|download|upload|mkdir|share|delete,id?,path?,name?,folder_id?,query?,email?,role?,count?,account?) "
-            "gdocs(action:create|read|append,id?,title?,content?,account?) ");
-    }
-    if (wolf && wolf->active)
-        plen += snprintf(preamble + plen, cap - plen,
-            "wolfram(query) ");
-    plen += snprintf(preamble + plen, cap - plen, "\n");
-
-    plen += snprintf(preamble + plen, cap - plen,
-        "memory_save types: user|feedback|project|reference. scope: project|global.\n"
-        "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
-        "Save memories proactively for user prefs, project context, corrections.\n\n");
-
-    // Tell the model about connection-dependent tools (even if not active)
     int has_any = (brave && brave->active) || (gh && gh->active) || (goog && goog->active) || (wolf && wolf->active);
     if (!has_any) {
         plen += snprintf(preamble + plen, cap - plen,
@@ -2049,8 +3349,10 @@ static int send_request(const char *user_message, int max_tokens, const char *se
     int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"stream\":true,\"keep_alive\":\"24h\"", g_model);
 
     // Dynamic context window: start small for fast startup, grow as conversation does.
-    // Estimate tokens used so far + headroom for the reply. Round up to next 8K block.
-    int estimated = g.total_tokens_in + g.total_tokens_out + max_tokens + 4096;
+    // Only count actual tokens used so far + modest headroom. Don't include max_tokens
+    // (num_predict) — Ollama allocates generation space separately. Keeping num_ctx
+    // stable avoids KV cache rebuilds which cause multi-second TTFT spikes.
+    int estimated = g.total_tokens_in + g.total_tokens_out + 2048;
     int num_ctx = 8192; // minimum
     while (num_ctx < estimated && num_ctx < MAX_CONTEXT) num_ctx *= 2;
     if (num_ctx > MAX_CONTEXT) num_ctx = MAX_CONTEXT;
@@ -2101,34 +3403,52 @@ static int send_request(const char *user_message, int max_tokens, const char *se
         fclose(sf);
     }
 
-    // Append the new user message
-    char *escaped = json_escape_alloc(user_message);
-    if (!escaped) { free(body); close(sock); return -1; }
-    size_t elen = strlen(escaped);
-    size_t img_len = g_pending_image ? strlen(g_pending_image) : 0;
+    // Append the new user message (NULL = replay session only, no new message)
+    if (user_message) {
+        char *escaped = json_escape_alloc(user_message);
+        if (!escaped) { free(body); close(sock); return -1; }
+        size_t elen = strlen(escaped);
+        size_t img_len = g_pending_image ? strlen(g_pending_image) : 0;
 
-    size_t need = body_len + elen + img_len + 512;
-    if (need > body_cap) {
-        body_cap = need + 4096;
-        body = realloc(body, body_cap);
+        size_t need = body_len + elen + img_len + 512;
+        if (need > body_cap) {
+            body_cap = need + 4096;
+            body = realloc(body, body_cap);
+        }
+
+        if (g_pending_image) {
+            // Ollama native multimodal: images as base64 array at message level
+            body_len += snprintf(body + body_len, body_cap - body_len,
+                ",{\"role\":\"user\",\"content\":\"%s\",\"images\":[\"%s\"]}",
+                escaped, g_pending_image);
+            free(g_pending_image);
+            g_pending_image = NULL;
+        } else {
+            body_len += snprintf(body + body_len, body_cap - body_len,
+                ",{\"role\":\"user\",\"content\":\"%s\"}",
+                escaped);
+        }
+        free(escaped);
     }
 
-    if (g_pending_image) {
-        // Ollama native multimodal: images as base64 array at message level
-        body_len += snprintf(body + body_len, body_cap - body_len,
-            ",{\"role\":\"user\",\"content\":\"%s\",\"images\":[\"%s\"]}",
-            escaped, g_pending_image);
-        free(g_pending_image);
-        g_pending_image = NULL;
-    } else {
-        body_len += snprintf(body + body_len, body_cap - body_len,
-            ",{\"role\":\"user\",\"content\":\"%s\"}",
-            escaped);
-    }
-    free(escaped);
+    // Close messages array
+    body_len += snprintf(body + body_len, body_cap - body_len, "]");
 
-    // Close messages array and request body
-    body_len += snprintf(body + body_len, body_cap - body_len, "]}");
+    // Add native tool definitions — Ollama uses these for structured tool calling.
+    // The model returns tool_calls as structured JSON instead of text-based <tool_call> tags.
+    char *tools_json = build_tools_json();
+    if (tools_json) {
+        size_t tlen = strlen(tools_json);
+        if ((size_t)body_len + tlen + 32 > body_cap) {
+            body_cap = body_len + tlen + 4096;
+            body = realloc(body, body_cap);
+        }
+        body_len += snprintf(body + body_len, body_cap - body_len, ",\"tools\":%s", tools_json);
+        free(tools_json);
+    }
+
+    // Close request body
+    body_len += snprintf(body + body_len, body_cap - body_len, "}");
 
     size_t req_cap = body_len + 256;
     char *request = malloc(req_cap);
@@ -2136,6 +3456,7 @@ static int send_request(const char *user_message, int max_tokens, const char *se
         "POST /api/chat HTTP/1.1\r\n"
         "Host: localhost:%d\r\n"
         "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
         "Content-Length: %d\r\n"
         "\r\n"
         "%s",
@@ -2362,10 +3683,10 @@ static void md_print(const char *text) {
 // Stream response with spinner and stats
 // ============================================================================
 
-static char *stream_response(int sock) {
+static char *stream_response(int sock, int num_predict) {
     int header_done = 0, in_think = 0, tokens = 0;
-    int had_thinking = 0;
-    double t_start = now_ms(), t_first = 0;
+    int had_thinking = 0, in_tool_call_display = 0;
+    double t_start = now_ms(), t_first = 0, last_progress_ms = 0;
     md_reset();
 
     char *response = calloc(1, MAX_RESPONSE);
@@ -2422,6 +3743,20 @@ static char *stream_response(int sock) {
     })
 
     int done = 0;
+    double last_data_ms = now_ms();  // stall detection
+    // Prefill (before first token) can be slow for large contexts — allow 5 minutes.
+    // Mid-generation stalls (after first token) are caught faster at 90 seconds.
+    // Base stall timeouts. Prefill timeout scales with estimated context size:
+    // at 8K tokens, 5 min is plenty; at 128K+, allow up to 10 min.
+    int estimated_ctx = g.total_tokens_in + g.total_tokens_out;
+    double prefill_stall_ms = 300000.0; // 5 min base
+    if (estimated_ctx > 32768) prefill_stall_ms = 300000.0 + (estimated_ctx - 32768) * 2.5;
+    if (prefill_stall_ms > 600000.0) prefill_stall_ms = 600000.0; // cap at 10 min
+    #define STALL_GENERATE_MS  90000   // 90s — no token mid-generation = hung
+    #define STALL_TOOLCALL_MS  600000  // 10 min — native tool call generation (no streaming)
+    int expect_native_tool = 1; // we always send tools param now, so tool calls are possible
+    double tool_wait_start_ms = 0; // when we started waiting for a potential tool call
+
     while (!done) {
         // Extract next newline-delimited line from recv buffer
         char *nl = NULL;
@@ -2441,9 +3776,50 @@ static char *stream_response(int sock) {
             int ready = select(sock + 1, &fds, NULL, NULL, &tv);
             if (ready <= 0) {
                 if (spinning) {
-                    printf("\r  " ANSI_DIM "[reasoning %s]" ANSI_RESET "  ", spin[spin_idx % 10]);
+                    double elapsed = (now_ms() - t_start) / 1000.0;
+                    if (elapsed < 10)
+                        printf("\r  " ANSI_DIM "[reasoning %s]" ANSI_RESET "  ", spin[spin_idx % 10]);
+                    else
+                        printf("\r  " ANSI_DIM "[reasoning %s  %.0fs]" ANSI_RESET "  ", spin[spin_idx % 10], elapsed);
                     fflush(stdout);
                     spin_idx++;
+                }
+                // Stall detection. Three modes:
+                // 1. Prefill (before first token): 5-10 min depending on context
+                // 2. Mid-generation (text streaming): 90s between tokens
+                // 3. Native tool call wait (text done, waiting for tool_calls): 10 min
+                //    With native function calling, Ollama buffers the entire tool call
+                //    and sends it as one message. No data arrives during generation.
+                double stall_limit;
+                const char *stall_phase;
+                if (!t_first) {
+                    stall_limit = prefill_stall_ms;
+                    stall_phase = "prefill";
+                } else if (expect_native_tool && tokens > 0 &&
+                           now_ms() - last_data_ms > 5000) {
+                    // We've received text but no data for 5+ seconds.
+                    // Likely the model finished text and is generating a tool call.
+                    stall_limit = STALL_TOOLCALL_MS;
+                    stall_phase = "tool call generation";
+                    if (tool_wait_start_ms == 0) tool_wait_start_ms = now_ms();
+
+                    // Show progress so user knows we're waiting for a tool call
+                    double wait_s = (now_ms() - tool_wait_start_ms) / 1000.0;
+                    if (now_ms() - last_progress_ms >= 2000) {
+                        printf("\r\033[K" ANSI_DIM "  [waiting for tool call... %.0fs]"
+                               ANSI_RESET, wait_s);
+                        fflush(stdout);
+                        last_progress_ms = now_ms();
+                    }
+                } else {
+                    stall_limit = STALL_GENERATE_MS;
+                    stall_phase = "generation";
+                }
+                if (now_ms() - last_data_ms > stall_limit) {
+                    printf("\n" ANSI_YELLOW "  [server stall — no data for %.0fs during %s, aborting]"
+                           ANSI_RESET "\n", (now_ms() - last_data_ms) / 1000.0,
+                           stall_phase);
+                    done = 1; break;
                 }
                 continue;
             }
@@ -2451,6 +3827,7 @@ static char *stream_response(int sock) {
             ssize_t n = recv(sock, recvbuf + rb_len, sizeof(recvbuf) - rb_len - 1, 0);
             if (n <= 0) { done = 1; break; }
             rb_len += (int)n;
+            last_data_ms = now_ms();  // reset stall timer on data received
         }
         if (done) break;
 
@@ -2477,7 +3854,48 @@ static char *stream_response(int sock) {
         }
         if (is_chunk_size && line[0] != '{') continue;
 
-        // Parse Ollama native NDJSON: {"message":{"content":"...","thinking":"..."},"done":bool}
+        // Parse Ollama native NDJSON: {"message":{"content":"...","thinking":"...","tool_calls":[...]},"done":bool}
+
+        // Check for native tool_calls (structured function calling from Ollama).
+        // These arrive in a single NDJSON line with "tool_calls":[ before the "done":true line.
+        char *tc_field = strstr(line, "\"tool_calls\":[");
+        if (tc_field) {
+            // Extract the tool_calls JSON array
+            char *arr_start = tc_field + 13; // points to '['
+            int depth = 0;
+            const char *p = arr_start;
+            while (*p) {
+                if (*p == '[') depth++;
+                else if (*p == ']') { depth--; if (depth == 0) break; }
+                else if (*p == '"') {
+                    p++;
+                    while (*p && !(*p == '"' && *(p-1) != '\\')) p++;
+                }
+                p++;
+            }
+            if (*p == ']') {
+                size_t arr_len = p - arr_start + 1;
+                free(g_native_tool_calls);
+                g_native_tool_calls = malloc(arr_len + 1);
+                memcpy(g_native_tool_calls, arr_start, arr_len);
+                g_native_tool_calls[arr_len] = 0;
+
+                // Show status — clear any progress line first
+                printf("\r\033[K");
+                if (spinning) { spinning = 0; }
+                if (tool_wait_start_ms > 0) {
+                    double wait_s = (now_ms() - tool_wait_start_ms) / 1000.0;
+                    printf(ANSI_DIM "  [native tool call received after %.0fs]" ANSI_RESET "\n", wait_s);
+                    tool_wait_start_ms = 0;
+                } else {
+                    printf(ANSI_DIM "  [native tool call received]" ANSI_RESET "\n");
+                }
+                fflush(stdout);
+                tokens++;
+                if (!t_first) t_first = now_ms();
+            }
+        }
+
         // Check for done
         if (strstr(line, "\"done\":true")) {
             // Extract server-reported token counts and durations
@@ -2563,7 +3981,47 @@ static char *stream_response(int sock) {
                 }
             }
         } else {
-            md_print(decoded);
+            // Suppress tool call content from display — show status instead
+            // Track: once we see <tool_call> start suppressing, until </tool_call>
+            if (!in_tool_call_display) {
+                // Check if this chunk or recent content starts a tool call
+                char *tc_tag = strstr(response + (resp_len > 64 ? resp_len - 64 : 0), "<tool_call>");
+                if (tc_tag && !strstr(tc_tag, "</tool_call>")) {
+                    in_tool_call_display = 1;
+                    printf("\r\033[K");
+                    printf(ANSI_DIM "  [using tool...]" ANSI_RESET);
+                    fflush(stdout);
+                } else {
+                    md_print(decoded);
+                }
+            } else {
+                // Still inside tool call — check for closing tag
+                if (strstr(response + (resp_len > 64 ? resp_len - 64 : 0), "</tool_call>")) {
+                    in_tool_call_display = 2;  // done, don't print remaining in this response
+                }
+                // Show live progress every 2 seconds so user knows it's not frozen
+                if (in_tool_call_display == 1) {
+                    double now = now_ms();
+                    if (now - last_progress_ms >= 2000) {
+                        double elapsed = (now - t_start) / 1000.0;
+                        double toks = elapsed > 0 ? tokens / elapsed : 0;
+                        printf("\r\033[K" ANSI_DIM "  [using tool... %d tokens, %.0fs, %.1f tok/s]"
+                               ANSI_RESET, tokens, elapsed, toks);
+                        fflush(stdout);
+                        last_progress_ms = now;
+                    }
+
+                    // Early abort: if we're inside an incomplete tool call and approaching
+                    // the num_predict limit, stop now instead of waiting to exhaust the
+                    // budget. This saves minutes of wasted generation on large artifacts.
+                    if (num_predict > 0 && tokens > (num_predict * 9 / 10)) {
+                        printf("\r\033[K" ANSI_YELLOW
+                               "  [tool call approaching limit (%d/%d tokens) — aborting for retry]"
+                               ANSI_RESET "\n", tokens, num_predict);
+                        done = 1; break;
+                    }
+                }
+            }
         }
         fflush(stdout);
     }
@@ -2693,6 +4151,74 @@ static char *decode_json_string(const char *p, const char **endp) {
     return buf;
 }
 
+// Greedy JSON string extraction: handles unescaped double quotes inside string values.
+// When decode_json_string stops at a " that isn't followed by valid JSON continuation
+// (, or }), this function keeps scanning until it finds the real string boundary.
+static char *decode_json_string_greedy(const char *p, const char **endp) {
+    size_t cap = 4096;
+    char *buf = malloc(cap);
+    size_t di = 0;
+    const char *scan = p;
+
+    while (*scan) {
+        if (di + 8 > cap) { cap *= 2; buf = realloc(buf, cap); }
+
+        if (*scan == '\\' && scan[1]) {
+            scan++;
+            switch (*scan) {
+                case 'n': buf[di++] = '\n'; break;
+                case 't': buf[di++] = '\t'; break;
+                case 'r': buf[di++] = '\r'; break;
+                case '"': buf[di++] = '"'; break;
+                case '\\': buf[di++] = '\\'; break;
+                case '/': buf[di++] = '/'; break;
+                case 'u':
+                    if (scan[1] && scan[2] && scan[3] && scan[4]) {
+                        char hex[5] = {scan[1], scan[2], scan[3], scan[4], 0};
+                        unsigned int cp = (unsigned int)strtol(hex, NULL, 16);
+                        scan += 4;
+                        if (cp < 0x80) buf[di++] = (char)cp;
+                        else if (cp < 0x800) {
+                            buf[di++] = (char)(0xC0 | (cp >> 6));
+                            buf[di++] = (char)(0x80 | (cp & 0x3F));
+                        } else {
+                            buf[di++] = (char)(0xE0 | (cp >> 12));
+                            buf[di++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                            buf[di++] = (char)(0x80 | (cp & 0x3F));
+                        }
+                    } else { buf[di++] = 'u'; }
+                    break;
+                default: buf[di++] = *scan; break;
+            }
+            scan++;
+            continue;
+        }
+
+        if (*scan == '"') {
+            // Check if this is a real JSON string boundary
+            const char *after = scan + 1;
+            while (*after == ' ' || *after == '\n' || *after == '\r' || *after == '\t') after++;
+            if (*after == ',' || *after == '}' || *after == '\0') {
+                // Real boundary — stop here
+                if (endp) *endp = scan + 1;
+                buf[di] = 0;
+                return buf;
+            }
+            // Not a real boundary — include the " as literal content
+            buf[di++] = '"';
+            scan++;
+            continue;
+        }
+
+        if (*scan == '\0') break;
+        buf[di++] = *scan++;
+    }
+
+    buf[di] = 0;
+    if (endp) *endp = scan;
+    return buf;
+}
+
 // Extract tool call with full multi-argument support.
 // Fills ToolCall struct. Returns 1 on success.
 static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
@@ -2712,10 +4238,13 @@ static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
         }
     }
 
-    // Find "arguments" then the opening {
+    // Find "arguments", "parameters", or "params" then the opening {
+    // Models hallucinate different key names — claw-code handles all three.
     char *args_start = strstr(tc_body, "\"arguments\"");
+    if (args_start) { args_start += 11; }
+    else if ((args_start = strstr(tc_body, "\"parameters\"")) != NULL) { args_start += 12; }
+    else if ((args_start = strstr(tc_body, "\"params\"")) != NULL) { args_start += 8; }
     if (args_start) {
-        args_start += 11;
         while (*args_start && *args_start != '{') args_start++;
         if (*args_start == '{') {
             args_start++; // skip {
@@ -2744,6 +4273,18 @@ static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
                     p++; // skip opening "
                     const char *endp;
                     tc->vals[tc->argc] = decode_json_string(p, &endp);
+
+                    // Check if decode_json_string stopped at a real JSON boundary
+                    // If model forgot to escape " in HTML, we'll hit a false end
+                    const char *boundary_check = endp;
+                    while (*boundary_check == ' ' || *boundary_check == '\n' ||
+                           *boundary_check == '\r' || *boundary_check == '\t')
+                        boundary_check++;
+                    if (*boundary_check && *boundary_check != ',' && *boundary_check != '}') {
+                        // False boundary — re-extract with greedy parser
+                        free(tc->vals[tc->argc]);
+                        tc->vals[tc->argc] = decode_json_string_greedy(p, &endp);
+                    }
                     p = endp;
                 } else {
                     // Non-string value (number, bool, null) — read until , or }
@@ -2842,6 +4383,140 @@ static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
     return tc->argc > 0;
 }
 
+// Parse native Ollama tool_calls JSON array into ToolCall structs.
+// Input: JSON like [{"id":"call_xxx","function":{"name":"bash","arguments":{"command":"ls"}}}]
+// Returns number of tool calls parsed. Fills batch[] up to max_batch.
+static int parse_native_tool_calls(const char *json, ToolCall *batch, int max_batch) {
+    int count = 0;
+    const char *p = json;
+    if (*p != '[') return 0;
+    p++;
+
+    while (*p && count < max_batch) {
+        // Skip whitespace/commas
+        while (*p && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',')) p++;
+        if (*p == ']' || *p == '\0') break;
+        if (*p != '{') { p++; continue; }
+
+        // Find "function" object within this tool_call object
+        const char *func_key = strstr(p, "\"function\"");
+        if (!func_key) break;
+
+        // Find function name: "name":"tool_name"
+        const char *name_key = strstr(func_key, "\"name\":\"");
+        if (!name_key) break;
+        name_key += 8; // past "name":"
+        const char *name_end = strchr(name_key, '"');
+        if (!name_end) break;
+
+        ToolCall *tc = &batch[count];
+        memset(tc, 0, sizeof(ToolCall));
+        size_t name_len = name_end - name_key;
+        if (name_len >= sizeof(tc->name)) name_len = sizeof(tc->name) - 1;
+        memcpy(tc->name, name_key, name_len);
+        tc->name[name_len] = 0;
+
+        // Find "arguments":{...} — this is a JSON object with pre-parsed values
+        const char *args_key = strstr(func_key, "\"arguments\":{");
+        if (!args_key) args_key = strstr(func_key, "\"arguments\": {");
+        if (!args_key) {
+            // No arguments — tool with no params (like system_info, memory_list)
+            count++;
+            // Skip past this tool_call object
+            int depth = 0;
+            while (*p) {
+                if (*p == '{') depth++;
+                else if (*p == '}') { depth--; if (depth == 0) { p++; break; } }
+                else if (*p == '"') { p++; while (*p && !(*p == '"' && *(p-1) != '\\')) p++; }
+                p++;
+            }
+            continue;
+        }
+
+        // Find the opening { of arguments
+        const char *args_start = strchr(args_key + 11, '{');
+        if (!args_start) break;
+        args_start++; // past {
+
+        // Parse key-value pairs from arguments object
+        const char *ap = args_start;
+        while (*ap && tc->argc < MAX_TOOL_ARGS) {
+            // Skip whitespace
+            while (*ap && (*ap == ' ' || *ap == '\n' || *ap == '\r' || *ap == '\t' || *ap == ',')) ap++;
+            if (*ap == '}') break;
+
+            // Expect "key":value
+            if (*ap != '"') { ap++; continue; }
+            ap++; // past opening "
+            const char *key_end = ap;
+            while (*key_end && *key_end != '"') key_end++;
+            if (!*key_end) break;
+
+            size_t klen = key_end - ap;
+            if (klen >= 64) klen = 63;
+            memcpy(tc->keys[tc->argc], ap, klen);
+            tc->keys[tc->argc][klen] = 0;
+
+            ap = key_end + 1; // past closing "
+            while (*ap && (*ap == ' ' || *ap == ':' || *ap == '\t')) ap++;
+
+            // Parse value — could be string, number, boolean, or null
+            if (*ap == '"') {
+                // String value — decode JSON string
+                ap++; // past opening "
+                size_t val_cap = 4096;
+                char *val = malloc(val_cap);
+                size_t vi = 0;
+                while (*ap && !(*ap == '"' && *(ap > args_start ? ap-1 : ap) != '\\')) {
+                    if (*ap == '\\' && *(ap+1)) {
+                        ap++;
+                        switch (*ap) {
+                            case 'n': val[vi++] = '\n'; break;
+                            case 't': val[vi++] = '\t'; break;
+                            case 'r': val[vi++] = '\r'; break;
+                            case '"': val[vi++] = '"'; break;
+                            case '\\': val[vi++] = '\\'; break;
+                            case '/': val[vi++] = '/'; break;
+                            default: val[vi++] = *ap; break;
+                        }
+                    } else {
+                        val[vi++] = *ap;
+                    }
+                    ap++;
+                    if (vi + 4 >= val_cap) { val_cap *= 2; val = realloc(val, val_cap); }
+                }
+                if (*ap == '"') ap++; // past closing "
+                val[vi] = 0;
+                tc->vals[tc->argc] = val;
+            } else {
+                // Non-string value (number, bool, null) — copy as-is
+                const char *vstart = ap;
+                while (*ap && *ap != ',' && *ap != '}' && *ap != ' ' && *ap != '\n') ap++;
+                size_t vlen = ap - vstart;
+                tc->vals[tc->argc] = malloc(vlen + 1);
+                memcpy(tc->vals[tc->argc], vstart, vlen);
+                tc->vals[tc->argc][vlen] = 0;
+            }
+            tc->argc++;
+        }
+
+        count++;
+
+        // Skip past this tool_call object
+        int depth = 0;
+        const char *skip = p;
+        while (*skip) {
+            if (*skip == '{') depth++;
+            else if (*skip == '}') { depth--; if (depth == 0) { skip++; break; } }
+            else if (*skip == '"') { skip++; while (*skip && !(*skip == '"' && *(skip-1) != '\\')) skip++; }
+            skip++;
+        }
+        p = skip;
+    }
+
+    return count;
+}
+
 // Max bytes per tool response injected into context (keeps prefill fast)
 #define MAX_TOOL_RESPONSE (8 * 1024)
 
@@ -2868,6 +4543,53 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
         if (ch != 'y' && ch != 'Y') {
             printf(ANSI_DIM "  [skipped]" ANSI_RESET "\n");
             return -1;
+        }
+    }
+
+    // --- Resolve tool name aliases (handle model hallucinations) ---
+    // Models frequently hallucinate similar but wrong tool names. This maps
+    // common variants to the canonical name, inspired by LocalClaw's 134-alias table.
+    static const struct { const char *alias; const char *canonical; } tool_aliases[] = {
+        // Shell
+        {"shell", "bash"}, {"run", "bash"}, {"terminal", "bash"}, {"sh", "bash"},
+        {"cmd", "bash"}, {"execute", "bash"}, {"exec", "bash"}, {"command", "bash"},
+        {"run_command", "bash"}, {"shell_exec", "bash"},
+        // File read
+        {"file_read", "read_file"}, {"read", "read_file"}, {"cat", "read_file"},
+        {"view_file", "read_file"}, {"get_file", "read_file"},
+        // File write
+        {"write_file", "file_write"}, {"write", "file_write"}, {"create_file", "file_write"},
+        {"save_file", "file_write"}, {"save", "file_write"},
+        // File edit
+        {"edit_file", "file_edit"}, {"edit", "file_edit"}, {"replace", "file_edit"},
+        {"patch", "file_edit"},
+        // Directory
+        {"ls", "list_dir"}, {"list", "list_dir"}, {"dir", "list_dir"},
+        {"list_directory", "list_dir"},
+        // Search
+        {"search", "grep"}, {"find", "glob"}, {"rg", "grep"}, {"ripgrep", "grep"},
+        {"find_files", "glob"}, {"search_files", "grep"},
+        // Web
+        {"fetch", "web_fetch"}, {"curl", "web_fetch"}, {"http", "web_fetch"},
+        {"browse", "web_fetch"}, {"web", "web_fetch"},
+        // Artifact
+        {"create_artifact", "artifact"}, {"html", "artifact"},
+        {"render", "artifact"}, {"display", "artifact"},
+        // Clipboard
+        {"copy", "clipboard_write"}, {"paste", "clipboard_read"},
+        // Memory
+        {"remember", "memory_save"}, {"recall", "memory_search"},
+        {"forget", "memory_delete"},
+        {NULL, NULL}
+    };
+
+    // First try case-insensitive exact match, then alias lookup
+    for (int a = 0; tool_aliases[a].alias; a++) {
+        if (strcasecmp(name, tool_aliases[a].alias) == 0) {
+            // Copy canonical name into tc->name (it's a fixed-size buffer)
+            strlcpy(tc->name, tool_aliases[a].canonical, sizeof(tc->name));
+            name = tc->name;
+            break;
         }
     }
 
@@ -4419,18 +6141,380 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
         if (out_len == 0)
             out_len = snprintf(output, output_sz, "AppleScript executed (no output)");
 
+    } else if (strcmp(name, "artifact") == 0) {
+        const char *atitle = tool_call_get(tc, "title");
+        const char *acontent = tool_call_get(tc, "content");
+        const char *atype = tool_call_get(tc, "type");
+        // Auto-detect type from content if not provided
+        if (!atype || !atype[0]) {
+            if (acontent && (strstr(acontent, "<html") || strstr(acontent, "<!DOCTYPE") ||
+                strstr(acontent, "<div") || strstr(acontent, "<script")))
+                atype = "html";
+            else if (acontent && acontent[0] == '{')
+                atype = "json";
+            else if (acontent && (strstr(acontent, "<svg") || strstr(acontent, "xmlns=\"http://www.w3.org/2000/svg")))
+                atype = "svg";
+            else
+                atype = "html";
+        }
+        // Default title from timestamp if not provided
+        if (!atitle || !atitle[0]) {
+            static char auto_title[64];
+            snprintf(auto_title, sizeof(auto_title), "artifact_%ld", (long)time(NULL));
+            atitle = auto_title;
+        }
+        out_len = execute_artifact(atitle, acontent, atype, output, output_sz);
+
+    } else if (strcmp(name, "cron") == 0) {
+        const char *action = tool_call_get(tc, "action");
+        if (!action) action = "list";
+
+        // Ensure cron jobs are loaded
+        if (g_cron_count == 0 && g_cron_last_check_ms == 0) {
+            cron_load();
+            g_cron_last_check_ms = now_ms();
+        }
+
+        if (strcmp(action, "add") == 0) {
+            const char *sched = tool_call_get(tc, "schedule");
+            const char *prompt_text = tool_call_get(tc, "prompt");
+            const char *desc = tool_call_get(tc, "description");
+            if (!sched || !prompt_text) {
+                out_len = snprintf(output, output_sz, "Error: cron add requires 'schedule' and 'prompt'");
+            } else if (g_cron_count >= MAX_CRON_JOBS) {
+                out_len = snprintf(output, output_sz, "Error: maximum cron jobs (%d) reached", MAX_CRON_JOBS);
+            } else {
+                CronJob *j = &g_cron_jobs[g_cron_count];
+                memset(j, 0, sizeof(CronJob));
+                cron_generate_id(j->id, sizeof(j->id));
+                strlcpy(j->schedule, sched, sizeof(j->schedule));
+                strlcpy(j->prompt, prompt_text, sizeof(j->prompt));
+                if (desc && desc[0]) {
+                    strlcpy(j->description, desc, sizeof(j->description));
+                } else {
+                    size_t dlen = strlen(prompt_text);
+                    if (dlen > 60) { memcpy(j->description, prompt_text, 57); strcpy(j->description + 57, "..."); }
+                    else strlcpy(j->description, prompt_text, sizeof(j->description));
+                }
+                j->enabled = 1;
+                j->created_at = time(NULL);
+                g_cron_count++;
+                cron_save();
+                out_len = snprintf(output, output_sz, "Created cron job %s (schedule: %s)", j->id, j->schedule);
+                printf(ANSI_GREEN "  [cron: created %s — %s]" ANSI_RESET "\n", j->id, j->schedule);
+            }
+        } else if (strcmp(action, "list") == 0) {
+            out_len = 0;
+            if (g_cron_count == 0) {
+                out_len = snprintf(output, output_sz, "No cron jobs configured.");
+            } else {
+                for (int ci = 0; ci < g_cron_count && out_len < (int)output_sz - 256; ci++) {
+                    CronJob *j = &g_cron_jobs[ci];
+                    out_len += snprintf(output + out_len, output_sz - out_len,
+                        "%s [%s] %s — %s (runs: %d, %s)\n",
+                        j->id, j->schedule, j->enabled ? "enabled" : "DISABLED",
+                        j->description, j->run_count,
+                        j->last_run_at ? "has run" : "never run");
+                }
+            }
+        } else if (strcmp(action, "remove") == 0) {
+            const char *job_id = tool_call_get(tc, "id");
+            if (!job_id) {
+                out_len = snprintf(output, output_sz, "Error: cron remove requires 'id'");
+            } else {
+                int found = 0;
+                for (int ci = 0; ci < g_cron_count; ci++) {
+                    if (strcmp(g_cron_jobs[ci].id, job_id) == 0) {
+                        out_len = snprintf(output, output_sz, "Removed cron job %s: %s", job_id, g_cron_jobs[ci].description);
+                        for (int k = ci; k < g_cron_count - 1; k++) g_cron_jobs[k] = g_cron_jobs[k + 1];
+                        g_cron_count--;
+                        cron_save();
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) out_len = snprintf(output, output_sz, "Error: no cron job with id '%s'", job_id);
+            }
+        } else if (strcmp(action, "enable") == 0 || strcmp(action, "disable") == 0) {
+            const char *job_id = tool_call_get(tc, "id");
+            int enable = (strcmp(action, "enable") == 0);
+            if (!job_id) {
+                out_len = snprintf(output, output_sz, "Error: cron %s requires 'id'", action);
+            } else {
+                int found = 0;
+                for (int ci = 0; ci < g_cron_count; ci++) {
+                    if (strcmp(g_cron_jobs[ci].id, job_id) == 0) {
+                        g_cron_jobs[ci].enabled = enable;
+                        cron_save();
+                        out_len = snprintf(output, output_sz, "%s cron job %s",
+                                           enable ? "Enabled" : "Disabled", job_id);
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) out_len = snprintf(output, output_sz, "Error: no cron job with id '%s'", job_id);
+            }
+        } else {
+            out_len = snprintf(output, output_sz, "Error: unknown cron action '%s'. Use: add|list|remove|enable|disable", action);
+        }
+
     } else {
         out_len = snprintf(output, output_sz, "Error: unknown tool '%s'", name);
+    }
+
+    // Truncate tool results to prevent context bloat (inspired by LocalClaw's 8000-char cap).
+    // Large tool outputs (file reads, grep results) get saved to session and replayed every turn.
+    #define MAX_TOOL_RESULT_CHARS 8000
+    if (out_len > MAX_TOOL_RESULT_CHARS) {
+        snprintf(output + MAX_TOOL_RESULT_CHARS - 80, 80,
+                 "\n...[truncated — %d chars total, showing first %d]",
+                 out_len, MAX_TOOL_RESULT_CHARS - 80);
+        out_len = (int)strlen(output);
     }
 
     return out_len;
 }
 
+// Extract raw JSON tool calls from text when model doesn't use <tool_call> tags.
+// Looks for patterns like: {"name":"tool_name","arguments":{...}} or {"name":"tool_name","parameters":{...}}
+// Returns 1 if a tool call was found and wrapped in <tool_call> tags in the response.
+static int extract_json_tool_calls(char **response_ptr) {
+    char *response = *response_ptr;
+    if (!response || strstr(response, "<tool_call>")) return 0; // already has tags
+
+    // Scan for JSON objects that look like tool calls
+    char *scan = response;
+    char *best_start = NULL;
+    int best_len = 0;
+
+    while (*scan) {
+        // Find a { that might start a tool call JSON
+        char *brace = strchr(scan, '{');
+        if (!brace) break;
+
+        // Quick check: does it contain "name" near the start?
+        char *name_key = strstr(brace, "\"name\"");
+        if (!name_key || name_key - brace > 30) { scan = brace + 1; continue; }
+
+        // Check for "arguments" or "parameters"
+        char *args_key = strstr(brace, "\"arguments\"");
+        if (!args_key) args_key = strstr(brace, "\"parameters\"");
+        if (!args_key) args_key = strstr(brace, "\"params\"");
+        if (!args_key) { scan = brace + 1; continue; }
+
+        // Find the matching closing brace (counting depth)
+        int depth = 0;
+        int in_string = 0;
+        const char *p = brace;
+        while (*p) {
+            if (*p == '"' && (p == brace || *(p-1) != '\\')) in_string = !in_string;
+            if (!in_string) {
+                if (*p == '{') depth++;
+                else if (*p == '}') { depth--; if (depth == 0) break; }
+            }
+            p++;
+        }
+        if (*p == '}' && depth == 0) {
+            int len = (int)(p - brace + 1);
+            if (len > best_len) {
+                best_start = brace;
+                best_len = len;
+            }
+        }
+        scan = brace + 1;
+    }
+
+    if (!best_start || best_len < 20) return 0;
+
+    // Verify it parses as a valid tool call
+    char *tc_body = malloc(best_len + 1);
+    memcpy(tc_body, best_start, best_len);
+    tc_body[best_len] = 0;
+
+    ToolCall tc;
+    if (!extract_tool_call_v2(tc_body, &tc) || !tc.name[0]) {
+        free(tc_body);
+        return 0;
+    }
+    tool_call_free(&tc);
+
+    // Wrap the JSON in <tool_call> tags so the normal parser handles it
+    printf(ANSI_YELLOW "  [found raw JSON tool call for '%s' — wrapping in tags]" ANSI_RESET "\n",
+           tc.name);
+
+    size_t resp_len = strlen(response);
+    size_t new_len = resp_len + 25 + best_len; // <tool_call>\n...\n</tool_call>
+    char *new_response = malloc(new_len + 1);
+
+    // Copy everything before the JSON
+    size_t prefix_len = best_start - response;
+    memcpy(new_response, response, prefix_len);
+    int pos = (int)prefix_len;
+
+    // Insert <tool_call> wrapper
+    pos += sprintf(new_response + pos, "<tool_call>\n%s\n</tool_call>", tc_body);
+
+    // Copy everything after the JSON
+    char *after = best_start + best_len;
+    strcpy(new_response + pos, after);
+
+    free(tc_body);
+    free(*response_ptr);
+    *response_ptr = new_response;
+    return 1;
+}
+
+// Strip artifact HTML content from ALL assistant turns in the session file.
+// Replaces the content value with a short placeholder to prevent context bloat.
+// Works on the raw JSONL bytes — no JSON parsing needed.
+static void compact_artifact_content(const char *session_id) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.jsonl", g.sessions_dir, session_id);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    // Read all lines
+    char **lines = NULL;
+    int nlines = 0;
+    char buf[MAX_RESPONSE];
+    while (fgets(buf, sizeof(buf), f)) {
+        lines = realloc(lines, sizeof(char *) * (nlines + 1));
+        lines[nlines++] = strdup(buf);
+    }
+    fclose(f);
+
+    int modified = 0;
+
+    for (int i = 0; i < nlines; i++) {
+        // Only process assistant lines that mention "artifact"
+        if (!strstr(lines[i], "\"role\":\"assistant\"")) continue;
+        if (!strstr(lines[i], "artifact")) continue;
+        // Skip lines already compacted
+        if (strstr(lines[i], "[artifact content")) continue;
+
+        // Find the artifact content value. In the session JSONL, the assistant's
+        // content field is a JSON string, so inner quotes are escaped as \".
+        // The artifact tool call inside looks like:
+        //   \"content\": \"<!DOCTYPE html>...\"
+        // or:
+        //   \"content\":\"<!DOCTYPE html>...\"
+        // We search for \"content\" followed by : then optional space then \"
+        // then look for HTML-like content start.
+        char *search = lines[i];
+        while ((search = strstr(search, "\\\"content\\\""))) {
+            // Found \"content\" — now look for :  then \"
+            char *after_key = search + 11; // past \"content\"
+            if (*after_key != ':') { search = after_key; continue; }
+            after_key++; // past :
+            while (*after_key == ' ') after_key++; // skip optional space
+
+            // Expect \" (the opening quote of the value)
+            if (after_key[0] != '\\' || after_key[1] != '"') { search = after_key; continue; }
+            char *val_start = after_key + 2; // past \"
+
+            // Check if this looks like HTML content (the artifact payload)
+            if (strncmp(val_start, "<!DOCTYPE", 9) != 0 &&
+                strncmp(val_start, "<html", 5) != 0 &&
+                strncmp(val_start, "<HTML", 5) != 0 &&
+                strncmp(val_start, "<svg", 4) != 0) {
+                search = val_start;
+                continue;
+            }
+
+            // Find the end of the value: scan for \" that's a JSON string boundary.
+            // The value ends at \" followed by optional space then , or } or ]
+            // IMPORTANT: Inside the HTML content, JS strings are double-escaped:
+            //   \\\" (4 bytes: \ \ \ ") — these are NOT boundaries.
+            // Real boundaries use just \" (2 bytes: \ ") — NOT preceded by another \.
+            const char *p = val_start;
+            const char *val_end = NULL;
+            while (*p) {
+                if (p[0] == '\\' && p[1] == '"') {
+                    // Check this isn't \\\" (double-escaped quote inside HTML/JS)
+                    int preceded_by_backslash = (p > val_start && *(p-1) == '\\');
+                    if (!preceded_by_backslash) {
+                        const char *after = p + 2;
+                        while (*after == ' ') after++;
+                        if (*after == ',' || *after == '}' || *after == ']' ||
+                            *after == '\n' || *after == 0) {
+                            val_end = p;
+                            break;
+                        }
+                    }
+                }
+                p++;
+            }
+            if (!val_end || (size_t)(val_end - val_start) < 200) {
+                search = val_start;
+                continue;
+            }
+
+            // Replace val_start..val_end with a placeholder
+            size_t content_len = val_end - val_start;
+            char placeholder[128];
+            snprintf(placeholder, sizeof(placeholder),
+                     "[artifact content — %zu bytes saved to disk]", content_len);
+
+            size_t prefix_len = val_start - lines[i];
+            size_t suffix_len = strlen(val_end);
+            size_t new_len = prefix_len + strlen(placeholder) + suffix_len + 1;
+            char *compacted = malloc(new_len);
+            memcpy(compacted, lines[i], prefix_len);
+            memcpy(compacted + prefix_len, placeholder, strlen(placeholder));
+            memcpy(compacted + prefix_len + strlen(placeholder), val_end, suffix_len);
+            compacted[prefix_len + strlen(placeholder) + suffix_len] = 0;
+
+            free(lines[i]);
+            lines[i] = compacted;
+            modified = 1;
+
+            printf(ANSI_DIM "  [compacted artifact content: %zu → %zu bytes]" ANSI_RESET "\n",
+                   content_len, strlen(placeholder));
+            break; // one artifact per line is typical
+        }
+    }
+
+    if (modified) {
+        f = fopen(path, "w");
+        if (f) {
+            for (int i = 0; i < nlines; i++) {
+                fputs(lines[i], f);
+                // Ensure each line ends with newline
+                size_t ll = strlen(lines[i]);
+                if (ll > 0 && lines[i][ll-1] != '\n') fputc('\n', f);
+            }
+            fclose(f);
+        }
+    }
+
+    for (int i = 0; i < nlines; i++) free(lines[i]);
+    free(lines);
+}
+
 static char *handle_tool_calls(char *response) {
     g._reserved_approve = 0;
     int loop_turns = 0;
+    int truncation_retries = 0;
+    int native_mode = 0; // 1 if using Ollama native tool calls
 
-    while (response && strstr(response, "<tool_call>")) {
+    // Check for native tool calls first (from Ollama's structured function calling).
+    // These are pre-parsed and don't need text-based extraction.
+    if (g_native_tool_calls && g_native_tool_calls[0] == '[') {
+        native_mode = 1;
+    }
+
+    // Fallback: if no native calls and model output raw JSON tool calls without <tool_call> tags,
+    // extract and wrap them so the normal parser can handle them.
+    if (!native_mode && response && !strstr(response, "<tool_call>")) {
+        extract_json_tool_calls(&response);
+    }
+
+    // Check if we have anything to process
+    int has_tool_calls = native_mode ||
+                         (response && strstr(response, "<tool_call>"));
+
+    while (has_tool_calls) {
         if (++loop_turns > MAX_TOOL_LOOP_TURNS) {
             printf(ANSI_YELLOW "\n  [tool loop limit reached (%d turns)]" ANSI_RESET "\n", MAX_TOOL_LOOP_TURNS);
             break;
@@ -4441,15 +6525,54 @@ static char *handle_tool_calls(char *response) {
         ToolCall batch[MAX_BATCH_TOOLS];
         int batch_count = 0;
 
-        char *scan = response;
-        while (batch_count < MAX_BATCH_TOOLS) {
-            char *tc_start = strstr(scan, "<tool_call>");
-            if (!tc_start) break;
-            char *tc_end = strstr(tc_start, "</tool_call>");
-            if (!tc_end) break;
+        if (native_mode && g_native_tool_calls) {
+            // Parse native tool calls from structured JSON
+            batch_count = parse_native_tool_calls(g_native_tool_calls, batch, MAX_BATCH_TOOLS);
+            for (int i = 0; i < batch_count; i++) {
+                printf(ANSI_DIM "  [tool: %s (native)]" ANSI_RESET "\n", batch[i].name);
+            }
+            // Consume the native tool calls
+            free(g_native_tool_calls);
+            g_native_tool_calls = NULL;
+            native_mode = 0; // subsequent iterations use text-based parsing
+        } else {
+            // Text-based <tool_call> tag extraction (fallback path)
+            char *scan = response;
+            while (batch_count < MAX_BATCH_TOOLS) {
+                char *tc_start = strstr(scan, "<tool_call>");
+                if (!tc_start) break;
+                char *tc_end = strstr(tc_start, "</tool_call>");
 
-            char *body_start = tc_start + 11;
-            int tc_len = (int)(tc_end - body_start);
+                char *body_start = tc_start + 11;
+                int tc_len;
+                if (tc_end) {
+                    tc_len = (int)(tc_end - body_start);
+                } else {
+                    // Model omitted closing tag — use rest of response
+                    tc_len = (int)strlen(body_start);
+                    // Try to find end of JSON object by matching braces
+                    int depth = 0;
+                    int found_end = 0;
+                    for (int j = 0; j < tc_len; j++) {
+                        if (body_start[j] == '{') depth++;
+                        else if (body_start[j] == '}') {
+                            depth--;
+                            if (depth == 0) {
+                                tc_len = j + 1;
+                                found_end = 1;
+                                break;
+                            }
+                        } else if (body_start[j] == '"') {
+                            // Skip string contents (don't count braces inside strings)
+                            j++;
+                            while (j < tc_len && body_start[j] != '"') {
+                                if (body_start[j] == '\\') j++; // skip escaped char
+                                j++;
+                            }
+                        }
+                    }
+                if (!found_end) break; // can't parse, give up
+            }
 
             // Heap-allocate tc_body for large payloads (file_write content)
             char *tc_body = malloc(tc_len + 1);
@@ -4457,13 +6580,98 @@ static char *handle_tool_calls(char *response) {
             tc_body[tc_len] = 0;
 
             if (extract_tool_call_v2(tc_body, &batch[batch_count])) {
+                printf(ANSI_DIM "  [tool: %s%s]" ANSI_RESET "\n",
+                       batch[batch_count].name,
+                       tc_end ? "" : " (no closing tag)");
                 batch_count++;
+            } else {
+                printf(ANSI_YELLOW "  [tool call parse failed — first 100 chars: %.100s]" ANSI_RESET "\n", tc_body);
             }
             free(tc_body);
-            scan = tc_end + 12; // past </tool_call>
+            scan = tc_end ? tc_end + 12 : body_start + tc_len; // past </tool_call> or end of JSON
         }
+        } // end else (text-based parsing)
 
-        if (batch_count == 0) break;
+        // Dynamic token budgets:
+        //   - Truncation retry: 4x base (we know 1x wasn't enough)
+        //   - Tool follow-ups:  2x base (room for another tool call, not wasteful)
+        int retry_budget = g.max_tokens * 4;
+        int followup_budget = g.max_tokens * 2;
+        if (retry_budget > MAX_CONTEXT / 2) retry_budget = MAX_CONTEXT / 2;
+        if (followup_budget > MAX_CONTEXT / 2) followup_budget = MAX_CONTEXT / 2;
+
+        if (batch_count == 0) {
+            // Tool call detected but couldn't be parsed — likely truncated by num_predict limit.
+            // Drop the broken assistant response and retry with guidance to produce shorter output.
+            session_replace_last_turn(g.session_id, "assistant", NULL);
+
+            // Undo the output token count from the dropped response
+            g.total_tokens_out -= g.last_token_count;
+            if (g.total_tokens_out < 0) g.total_tokens_out = 0;
+
+            int actual_tokens = g.last_token_count;
+
+            // Cap retries: after 2 truncation retries, give up — the model isn't
+            // producing compact enough output and more retries just waste time.
+            truncation_retries++;
+            if (truncation_retries > 2) {
+                printf(ANSI_YELLOW "\n  [tool call too large after %d retries (%d tokens) — "
+                       "try asking for a simpler version]" ANSI_RESET "\n", truncation_retries, actual_tokens);
+
+                // Synthesize a tool result so the session stays consistent.
+                // Without this, the session has an assistant turn with a tool call
+                // but no corresponding tool response, confusing the model on future turns.
+                const char *synthetic = "<tool_response name=\"unknown\">\n"
+                    "Error: tool call was too large and could not be completed after multiple "
+                    "retries. Please try a simpler approach with less code.\n"
+                    "</tool_response>";
+                session_save_turn(g.session_id, "tool", synthetic);
+
+                free(response);
+                return strdup("");
+            }
+
+            // Escalate retry budget based on actual usage
+            if (actual_tokens * 2 > retry_budget) {
+                retry_budget = actual_tokens * 2;
+                if (retry_budget > MAX_CONTEXT / 2) retry_budget = MAX_CONTEXT / 2;
+            }
+
+            printf(ANSI_YELLOW "\n  [tool call truncated at %d tokens — retrying with %d]"
+                   ANSI_RESET "\n", actual_tokens, retry_budget);
+
+            // Inject truncation feedback so the model knows to produce shorter output.
+            // Without this, the model has no signal that its approach was too verbose
+            // and will regenerate the same bloated response.
+            char feedback[512];
+            snprintf(feedback, sizeof(feedback),
+                "Your previous response was truncated at %d tokens — the artifact was too long. "
+                "Please try again with shorter code (~3000 tokens). Tips: skip comments, use short "
+                "variable names, implement only the core game loop. Go directly to the tool call "
+                "without drafting code in your response text.",
+                actual_tokens);
+            session_save_turn(g.session_id, "user", feedback);
+
+            free(response);
+            int sock = send_request(NULL, retry_budget, g.session_id);
+            if (sock < 0) return NULL;
+
+            printf("\n");
+            response = stream_response(sock, retry_budget);
+
+            // Drop the injected feedback from session (it was only for the retry)
+            // and save the new assistant response in its place
+            session_replace_last_turn(g.session_id, "user", NULL); // remove feedback
+            if (response && strlen(response) > 0) {
+                if (g_native_tool_calls) {
+                    session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+                } else {
+                    session_save_turn(g.session_id, "assistant", response);
+                }
+            }
+
+            continue;
+        }
 
         // Execute all collected tool calls and combine responses
         size_t combined_cap = 65536 * batch_count + 512;
@@ -4471,11 +6679,13 @@ static char *handle_tool_calls(char *response) {
         combined[0] = 0;
         size_t combined_len = 0;
         int denied = 0;
+        int had_artifact = 0;
 
         for (int i = 0; i < batch_count && !denied; i++) {
             char output[65536];
             int out_len = execute_tool(&batch[i], output, sizeof(output));
             if (out_len < 0) { denied = 1; break; }
+            if (strcmp(batch[i].name, "artifact") == 0) had_artifact = 1;
 
             int wrote = snprintf(combined + combined_len, combined_cap - combined_len,
                 "<tool_response name=\"%s\">\n%s</tool_response>\n",
@@ -4486,6 +6696,22 @@ static char *handle_tool_calls(char *response) {
         // Free all ToolCall heap memory
         for (int i = 0; i < batch_count; i++) tool_call_free(&batch[i]);
 
+        // After successful artifact creation, compact the assistant's session turn
+        // to strip the large HTML content. The full content is saved to disk by
+        // execute_artifact; keeping it in the session bloats every future prefill.
+        if (had_artifact && !denied) {
+            // Compact artifact content from the session file. Scans ALL assistant
+            // lines (not just the last) and strips HTML content from artifact tool calls,
+            // replacing it with a short placeholder. This prevents context bloat on
+            // subsequent turns — the full content is already saved to disk by execute_artifact.
+            //
+            // In the session JSONL, text-based <tool_call> content looks like:
+            //   {"role":"assistant","content":"...<tool_call>\n{\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"<!DOCTYPE html>...\", ...
+            // The artifact content is JSON-escaped inside the content string, so the
+            // boundary markers are \" (backslash-quote on disk = two bytes: '\' '"').
+            compact_artifact_content(g.session_id);
+        }
+
         if (denied) {
             free(combined);
             free(response);
@@ -4493,17 +6719,50 @@ static char *handle_tool_calls(char *response) {
         }
 
         session_save_turn(g.session_id, "tool", combined);
+
+        // For artifact-only batches, skip the follow-up request entirely.
+        // The model already described what it built in the prose before the tool call,
+        // and the user can see the pop-out window. Skipping avoids a costly prefill
+        // (often 2-5 minutes) just for a redundant "Here's your game!" summary.
+        if (had_artifact && batch_count == 1) {
+            free(combined);
+            free(response);
+            return strdup("");  // empty response = no more tool calls, loop exits
+        }
+
         free(response);
 
-        int sock = send_request(combined, g.max_tokens, g.session_id);
+        // Auto-compact before follow-up to prevent context bloat
+        maybe_compact();
+
+        // Follow-up requests in tool loop get 2x budget (room for another tool call)
+        int sock = send_request(combined, followup_budget, g.session_id);
         free(combined);
         if (sock < 0) return NULL;
 
         printf("\n");
-        response = stream_response(sock);
+        response = stream_response(sock, followup_budget);
 
-        if (response && strlen(response) > 0) {
-            session_save_turn(g.session_id, "assistant", response);
+        if (response && (strlen(response) > 0 || g_native_tool_calls)) {
+            if (g_native_tool_calls) {
+                session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+            } else {
+                session_save_turn(g.session_id, "assistant", response);
+            }
+        }
+
+        // Check if the follow-up response has tool calls (native or text-based)
+        if (g_native_tool_calls && g_native_tool_calls[0] == '[') {
+            native_mode = 1;
+            has_tool_calls = 1;
+        } else if (response && strstr(response, "<tool_call>")) {
+            has_tool_calls = 1;
+        } else {
+            // Try JSON extraction fallback
+            if (response && !strstr(response, "<tool_call>")) {
+                extract_json_tool_calls(&response);
+            }
+            has_tool_calls = (response && strstr(response, "<tool_call>"));
         }
     }
 
@@ -4541,6 +6800,9 @@ static void cmd_forget(const char *args);
 static void cmd_channel(const char *args);
 static void cmd_project(const char *args);
 static void cmd_connections(const char *args);
+static void cmd_name(const char *args);
+static void cmd_artifacts(const char *args);
+static void cmd_cron(const char *args);
 
 typedef struct {
     const char *name;
@@ -4578,6 +6840,9 @@ static SlashCommand commands[] = {
     {"/channel",  "[name]",   "Switch channel or list channels",   cmd_channel},
     {"/project",  NULL,       "Show detected project info",        cmd_project},
     {"/connections", "[service]", "Manage API connections",        cmd_connections},
+    {"/name",    "<name>",   "Rename this agent",                  cmd_name},
+    {"/artifacts","[open|dir]","List session artifacts or open one", cmd_artifacts},
+    {"/cron",    "[add|rm|ls]","Manage recurring scheduled tasks",   cmd_cron},
     {NULL, NULL, NULL, NULL}
 };
 
@@ -5109,7 +7374,7 @@ static void cmd_summary(const char *args __attribute__((unused))) {
     if (sock < 0) return;
 
     printf("\n");
-    char *response = stream_response(sock);
+    char *response = stream_response(sock, g.max_tokens);
     if (response && strlen(response) > 0) {
         session_save_turn(g.session_id, "assistant", response);
         free(g.last_response);
@@ -5181,6 +7446,301 @@ static void cmd_rename(const char *args) {
 
     session_save_title(g.session_id, g.session_title);
     printf(ANSI_GREEN "  [session renamed: %s]" ANSI_RESET "\n\n", g.session_title);
+}
+
+static void cmd_name(const char *args) {
+    if (!args || !args[0] || *args == ' ') {
+        // Trim leading spaces
+        while (args && *args == ' ') args++;
+        if (!args || !*args) {
+            printf("  Agent name: " ANSI_BOLD "%s" ANSI_RESET "\n", g_agent_name);
+            printf(ANSI_DIM "  Usage: /name <new name>" ANSI_RESET "\n\n");
+            return;
+        }
+    }
+    while (*args == ' ') args++;
+    char name[128];
+    strlcpy(name, args, sizeof(name));
+    // Trim trailing whitespace
+    int len = (int)strlen(name);
+    while (len > 0 && (name[len-1] == ' ' || name[len-1] == '\n')) name[--len] = 0;
+    if (len == 0) { printf(ANSI_YELLOW "  Usage: /name <new name>" ANSI_RESET "\n\n"); return; }
+    save_identity(name);
+    save_memory("agent_identity", "user", "The agent's chosen name and identity",
+        g_agent_name, "global");
+    printf(ANSI_GREEN "  Agent renamed to: %s" ANSI_RESET "\n\n", g_agent_name);
+}
+
+static void cmd_artifacts(const char *args) {
+    while (args && *args == ' ') args++;
+
+    // /artifacts dir — open artifacts folder in Finder
+    if (args && strncmp(args, "dir", 3) == 0) {
+        const char *home = getenv("HOME");
+        char dir[PATH_MAX];
+        snprintf(dir, sizeof(dir), "%s/.pre/artifacts", home);
+        char cmd[PATH_MAX + 32];
+        snprintf(cmd, sizeof(cmd), "open '%s'", dir);
+        system(cmd);
+        printf("  Opened artifacts directory in Finder.\n\n");
+        return;
+    }
+
+    // /artifacts open <n> — re-open artifact by number
+    if (args && strncmp(args, "open", 4) == 0) {
+        const char *num = args + 4;
+        while (*num == ' ') num++;
+        int idx = atoi(num) - 1;
+        if (idx < 0 || idx >= g_artifact_count) {
+            printf(ANSI_YELLOW "  Invalid artifact number. Use /artifacts to list." ANSI_RESET "\n\n");
+            return;
+        }
+        show_artifact_window(g_artifacts[idx].path, g_artifacts[idx].title);
+        printf("  Reopened: %s\n\n", g_artifacts[idx].title);
+        return;
+    }
+
+    // Default: list session artifacts
+    if (g_artifact_count == 0) {
+        printf("  No artifacts created this session.\n");
+        printf(ANSI_DIM "  The model can create artifacts using the artifact tool." ANSI_RESET "\n");
+        printf(ANSI_DIM "  Use /artifacts dir to browse all saved artifacts." ANSI_RESET "\n\n");
+        return;
+    }
+
+    printf("\n" ANSI_BOLD "  Session Artifacts" ANSI_RESET "\n");
+    printf("  ─────────────────────────────\n");
+    for (int i = 0; i < g_artifact_count; i++) {
+        printf("  %d. " ANSI_CYAN "%s" ANSI_RESET " [%s]\n",
+               i + 1, g_artifacts[i].title, g_artifacts[i].type);
+        printf("     \033]8;;file://%s\033\\", g_artifacts[i].path);
+        printf(ANSI_DIM "▸ %s" ANSI_RESET, g_artifacts[i].path);
+        printf("\033]8;;\033\\\n");
+    }
+    printf("\n  " ANSI_DIM "/artifacts open <n>  — reopen artifact" ANSI_RESET "\n");
+    printf("  " ANSI_DIM "/artifacts dir       — open folder in Finder" ANSI_RESET "\n\n");
+}
+
+// /cron — manage recurring scheduled tasks
+// Usage: /cron add <schedule> <prompt>   — add a new cron job
+//        /cron ls                        — list all cron jobs
+//        /cron rm <id>                   — remove a cron job
+//        /cron enable <id>               — enable a disabled job
+//        /cron disable <id>              — disable a job
+static void cmd_cron(const char *args) {
+    while (args && *args == ' ') args++;
+
+    // Load jobs if not already loaded
+    if (g_cron_count == 0 && g_cron_last_check_ms == 0) {
+        cron_load();
+        g_cron_last_check_ms = now_ms();
+    }
+
+    // /cron (no args) or /cron ls — list jobs
+    if (!args || !args[0] || strncmp(args, "ls", 2) == 0 || strncmp(args, "list", 4) == 0) {
+        if (g_cron_count == 0) {
+            printf("\n  No cron jobs configured.\n");
+            printf(ANSI_DIM "  Use /cron add <schedule> <prompt> to create one.\n");
+            printf("  Schedule is standard 5-field cron: min hour dom month dow\n");
+            printf("  Example: /cron add */30 * * * * check disk usage and alert if > 90%%" ANSI_RESET "\n\n");
+            return;
+        }
+
+        printf("\n" ANSI_BOLD "  Cron Jobs" ANSI_RESET "\n");
+        printf("  ─────────────────────────────────────\n");
+        for (int i = 0; i < g_cron_count; i++) {
+            CronJob *j = &g_cron_jobs[i];
+            printf("  %s%s" ANSI_RESET " " ANSI_DIM "[%s]" ANSI_RESET " %s\n",
+                   j->enabled ? ANSI_GREEN : ANSI_RED,
+                   j->id,
+                   j->schedule,
+                   j->description[0] ? j->description : j->prompt);
+            if (!j->enabled)
+                printf("     " ANSI_DIM "(disabled)" ANSI_RESET "\n");
+            if (j->run_count > 0) {
+                char timebuf[64];
+                struct tm *tm = localtime(&j->last_run_at);
+                strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M", tm);
+                printf("     " ANSI_DIM "runs: %d, last: %s" ANSI_RESET "\n", j->run_count, timebuf);
+            }
+        }
+        printf("\n");
+        return;
+    }
+
+    // /cron add <schedule> <prompt>
+    // The schedule is 5 space-separated fields, then the rest is the prompt.
+    // To disambiguate, we parse exactly 5 cron fields then treat the rest as prompt.
+    if (strncmp(args, "add ", 4) == 0) {
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+
+        // Parse 5 cron fields
+        char schedule[64] = "";
+        int slen = 0;
+        int field_count = 0;
+        const char *field_start = p;
+
+        while (field_count < 5 && *p) {
+            while (*p && *p != ' ') p++;
+            if (field_count > 0) schedule[slen++] = ' ';
+            int flen = (int)(p - field_start);
+            if (slen + flen >= (int)sizeof(schedule) - 1) break;
+            memcpy(schedule + slen, field_start, flen);
+            slen += flen;
+            field_count++;
+            while (*p == ' ') p++;
+            field_start = p;
+        }
+        schedule[slen] = 0;
+
+        if (field_count < 5 || !*p) {
+            printf(ANSI_YELLOW "  Usage: /cron add <min> <hour> <dom> <month> <dow> <prompt>" ANSI_RESET "\n");
+            printf(ANSI_DIM "  Example: /cron add 0 9 * * 1-5 summarize yesterday's git activity" ANSI_RESET "\n\n");
+            return;
+        }
+
+        if (g_cron_count >= MAX_CRON_JOBS) {
+            printf(ANSI_YELLOW "  Maximum cron jobs (%d) reached." ANSI_RESET "\n\n", MAX_CRON_JOBS);
+            return;
+        }
+
+        CronJob *j = &g_cron_jobs[g_cron_count];
+        memset(j, 0, sizeof(CronJob));
+        cron_generate_id(j->id, sizeof(j->id));
+        strlcpy(j->schedule, schedule, sizeof(j->schedule));
+        strlcpy(j->prompt, p, sizeof(j->prompt));
+        j->enabled = 1;
+        j->created_at = time(NULL);
+
+        // Auto-generate description: first 60 chars of prompt
+        size_t dlen = strlen(p);
+        if (dlen > 60) {
+            memcpy(j->description, p, 57);
+            strcpy(j->description + 57, "...");
+        } else {
+            strlcpy(j->description, p, sizeof(j->description));
+        }
+
+        g_cron_count++;
+        cron_save();
+
+        printf(ANSI_GREEN "  Created cron job %s" ANSI_RESET "\n", j->id);
+        printf(ANSI_DIM "  schedule: %s" ANSI_RESET "\n", j->schedule);
+        printf(ANSI_DIM "  prompt:   %s" ANSI_RESET "\n\n", j->prompt);
+        return;
+    }
+
+    // /cron rm <id>
+    if (strncmp(args, "rm ", 3) == 0 || strncmp(args, "remove ", 7) == 0 ||
+        strncmp(args, "del ", 4) == 0 || strncmp(args, "delete ", 7) == 0) {
+        const char *id = strchr(args, ' ');
+        while (id && *id == ' ') id++;
+        if (!id || !*id) {
+            printf(ANSI_YELLOW "  Usage: /cron rm <id>" ANSI_RESET "\n\n");
+            return;
+        }
+
+        for (int i = 0; i < g_cron_count; i++) {
+            if (strcmp(g_cron_jobs[i].id, id) == 0) {
+                printf("  Removed cron job %s: %s\n\n", g_cron_jobs[i].id, g_cron_jobs[i].description);
+                // Shift remaining jobs down
+                for (int k = i; k < g_cron_count - 1; k++)
+                    g_cron_jobs[k] = g_cron_jobs[k + 1];
+                g_cron_count--;
+                cron_save();
+                return;
+            }
+        }
+        printf(ANSI_YELLOW "  No cron job with id '%s'" ANSI_RESET "\n\n", id);
+        return;
+    }
+
+    // /cron enable <id>
+    if (strncmp(args, "enable ", 7) == 0) {
+        const char *id = args + 7;
+        while (*id == ' ') id++;
+        for (int i = 0; i < g_cron_count; i++) {
+            if (strcmp(g_cron_jobs[i].id, id) == 0) {
+                g_cron_jobs[i].enabled = 1;
+                cron_save();
+                printf(ANSI_GREEN "  Enabled cron job %s" ANSI_RESET "\n\n", id);
+                return;
+            }
+        }
+        printf(ANSI_YELLOW "  No cron job with id '%s'" ANSI_RESET "\n\n", id);
+        return;
+    }
+
+    // /cron disable <id>
+    if (strncmp(args, "disable ", 8) == 0) {
+        const char *id = args + 8;
+        while (*id == ' ') id++;
+        for (int i = 0; i < g_cron_count; i++) {
+            if (strcmp(g_cron_jobs[i].id, id) == 0) {
+                g_cron_jobs[i].enabled = 0;
+                cron_save();
+                printf(ANSI_YELLOW "  Disabled cron job %s" ANSI_RESET "\n\n", id);
+                return;
+            }
+        }
+        printf(ANSI_YELLOW "  No cron job with id '%s'" ANSI_RESET "\n\n", id);
+        return;
+    }
+
+    // /cron run <id> — manually trigger a job now
+    if (strncmp(args, "run ", 4) == 0) {
+        const char *id = args + 4;
+        while (*id == ' ') id++;
+        for (int i = 0; i < g_cron_count; i++) {
+            if (strcmp(g_cron_jobs[i].id, id) == 0) {
+                CronJob *j = &g_cron_jobs[i];
+                printf(ANSI_CYAN "  Running cron job %s: %s" ANSI_RESET "\n", j->id, j->description);
+
+                session_save_turn(g.session_id, "user", j->prompt);
+                free(g_native_tool_calls);
+                g_native_tool_calls = NULL;
+
+                int sock = send_request(j->prompt, g.max_tokens, g.session_id);
+                if (sock >= 0) {
+                    printf("\n");
+                    char *response = stream_response(sock, g.max_tokens);
+                    if (response && (strlen(response) > 0 || g_native_tool_calls)) {
+                        if (g_native_tool_calls) {
+                            session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+                        } else {
+                            session_save_turn(g.session_id, "assistant", response);
+                        }
+                        free(g.last_response);
+                        g.last_response = strdup(response);
+                    }
+                    if (response && (g_native_tool_calls || strstr(response, "<tool_call>"))) {
+                        char *final = handle_tool_calls(response);
+                        free(final);
+                    } else {
+                        free(response);
+                    }
+                    g.turn_count++;
+                }
+
+                j->last_run_at = time(NULL);
+                j->run_count++;
+                cron_save();
+                printf("\n");
+                return;
+            }
+        }
+        printf(ANSI_YELLOW "  No cron job with id '%s'" ANSI_RESET "\n\n", id);
+        return;
+    }
+
+    printf(ANSI_YELLOW "  Unknown cron subcommand. Usage:" ANSI_RESET "\n");
+    printf("  /cron add <min> <hr> <dom> <mon> <dow> <prompt>\n");
+    printf("  /cron ls          — list all jobs\n");
+    printf("  /cron rm <id>     — remove a job\n");
+    printf("  /cron enable <id> — enable a disabled job\n");
+    printf("  /cron disable <id>— disable a job\n");
+    printf("  /cron run <id>    — manually trigger a job now\n\n");
 }
 
 static void cmd_context(const char *args __attribute__((unused))) {
@@ -5551,6 +8111,11 @@ static int connection_test(Connection *c) {
             "curl -sf -o /dev/null -w '%%{http_code}' "
             "'https://api.wolframalpha.com/v2/query?input=1%%2B1&appid=%s&output=json' 2>/dev/null",
             c->key);
+    } else if (strcmp(c->name, "telegram") == 0) {
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf -o /dev/null -w '%%{http_code}' "
+            "'https://api.telegram.org/bot%s/getMe' 2>/dev/null",
+            c->key);
     } else if (strncmp(c->name, "google", 6) == 0 && c->is_oauth) {
         if (!oauth_ensure_token(c)) return 0;
         snprintf(cmd, sizeof(cmd),
@@ -5714,6 +8279,12 @@ static void connections_setup_service(Connection *c) {
         printf("  1. Go to " ANSI_CYAN "https://developer.wolframalpha.com/access" ANSI_RESET "\n");
         printf("  2. Create an app and get your AppID\n");
         printf("  3. Paste it below\n\n");
+    } else if (strcmp(c->name, "telegram") == 0) {
+        printf(ANSI_DIM "  Chat with PRE from your phone via Telegram" ANSI_RESET "\n");
+        printf("  1. Open Telegram and search for " ANSI_CYAN "@BotFather" ANSI_RESET "\n");
+        printf("  2. Send " ANSI_BOLD "/newbot" ANSI_RESET " and follow the prompts to create a bot\n");
+        printf("  3. Copy the bot token and paste it below\n\n");
+        printf(ANSI_DIM "  After setup, run: pre-telegram" ANSI_RESET "\n\n");
     }
 
     printf("  " ANSI_BOLD "API key" ANSI_RESET " (or 'skip' / 'remove'): ");
@@ -5787,7 +8358,7 @@ static void cmd_connections(const char *args) {
         printf("    /connections add google <label> Add another Google account\n");
         printf("    /connections remove <service>   Remove a service\n");
         printf("    /connections test               Test all connections\n\n");
-        printf(ANSI_DIM "  Services: brave_search, github, google, wolfram" ANSI_RESET "\n\n");
+        printf(ANSI_DIM "  Services: brave_search, github, google, wolfram, telegram" ANSI_RESET "\n\n");
         return;
     }
 
@@ -5903,24 +8474,58 @@ static void first_run_check(void) {
     if (!g_connections_loaded) load_connections();
 
     struct stat st;
-    if (stat(connections_path(), &st) == 0) return; // Already exists
+    int is_first = (stat(connections_path(), &st) != 0);
+    int needs_name = (stat(identity_path(), &st) != 0);
 
-    printf(ANSI_DIM "  ─────────────────────────────────────────" ANSI_RESET "\n");
-    printf("  " ANSI_BOLD "First run detected." ANSI_RESET
-           " Would you like to set up external\n"
-           "  connections (web search, GitHub, etc.)?\n\n");
-    printf("  " ANSI_BOLD "[y]" ANSI_RESET " Run setup    "
-           ANSI_BOLD "[n]" ANSI_RESET " Skip (run /connections later)\n\n  > ");
-    fflush(stdout);
+    if (!is_first && !needs_name) return;
 
-    char ch[16];
-    if (fgets(ch, sizeof(ch), stdin) && (ch[0] == 'y' || ch[0] == 'Y')) {
-        connections_setup_wizard();
-    } else {
-        // Create empty file so we don't prompt again
-        FILE *f = fopen(connections_path(), "w");
-        if (f) { fprintf(f, "{}\n"); fclose(f); chmod(connections_path(), 0600); }
-        printf(ANSI_DIM "  Skipped. Run /connections setup anytime." ANSI_RESET "\n\n");
+    if (needs_name) {
+        printf(ANSI_DIM "  ─────────────────────────────────────────" ANSI_RESET "\n");
+        printf("  " ANSI_BOLD "Welcome to PRE." ANSI_RESET
+               " Let's personalize your agent.\n\n");
+        printf("  What would you like to name your assistant?\n");
+        printf("  " ANSI_DIM "(This becomes its identity — used in prompts and the banner)" ANSI_RESET "\n\n");
+        printf("  Name: ");
+        fflush(stdout);
+
+        char name_buf[128];
+        if (fgets(name_buf, sizeof(name_buf), stdin)) {
+            // Trim whitespace
+            char *p = name_buf;
+            while (*p == ' ') p++;
+            size_t len = strlen(p);
+            while (len > 0 && (p[len-1] == '\n' || p[len-1] == '\r' || p[len-1] == ' '))
+                p[--len] = 0;
+            if (len > 0) {
+                save_identity(p);
+                printf("\n  " ANSI_GREEN "Hello! I'm %s." ANSI_RESET "\n\n", g_agent_name);
+                // Also save as a memory so the model knows its name
+                save_memory("agent_identity", "user", "The agent's chosen name and identity",
+                    g_agent_name, "global");
+            } else {
+                printf(ANSI_DIM "  Using default name: PRE" ANSI_RESET "\n\n");
+                save_identity("PRE");
+            }
+        }
+    }
+
+    if (is_first) {
+        printf(ANSI_DIM "  ─────────────────────────────────────────" ANSI_RESET "\n");
+        printf("  Would you like to set up external connections\n"
+               "  (web search, GitHub, etc.)?\n\n");
+        printf("  " ANSI_BOLD "[y]" ANSI_RESET " Run setup    "
+               ANSI_BOLD "[n]" ANSI_RESET " Skip (run /connections later)\n\n  > ");
+        fflush(stdout);
+
+        char ch[16];
+        if (fgets(ch, sizeof(ch), stdin) && (ch[0] == 'y' || ch[0] == 'Y')) {
+            connections_setup_wizard();
+        } else {
+            // Create empty file so we don't prompt again
+            FILE *f = fopen(connections_path(), "w");
+            if (f) { fprintf(f, "{}\n"); fclose(f); chmod(connections_path(), 0600); }
+            printf(ANSI_DIM "  Skipped. Run /connections setup anytime." ANSI_RESET "\n\n");
+        }
     }
 }
 
@@ -6047,9 +8652,28 @@ static char *hints_cb(const char *buf, int *color, int *bold) {
 
 int main(int argc, char **argv) {
     @autoreleasepool {
+        // Save our executable path for fork+exec subprocess launching
+        if (argv[0][0] == '/') {
+            strlcpy(g_exe_path, argv[0], sizeof(g_exe_path));
+        } else {
+            // Resolve relative path
+            char *rp = realpath(argv[0], NULL);
+            if (rp) { strlcpy(g_exe_path, rp, sizeof(g_exe_path)); free(rp); }
+            else strlcpy(g_exe_path, argv[0], sizeof(g_exe_path));
+        }
+
+        // --artifact mode: launched by show_artifact_window via fork+exec
+        if (argc >= 3 && strcmp(argv[1], "--artifact") == 0) {
+            return artifact_window_main(argv[2], argc >= 4 ? argv[3] : "Artifact");
+        }
+
+        // Unload model on Ctrl+C or kill
+        signal(SIGINT, handle_exit_signal);
+        signal(SIGTERM, handle_exit_signal);
+
         // Defaults
         g.port = 11434;
-        g.max_tokens = 8192;
+        g.max_tokens = 16384;
         getcwd(g.cwd, sizeof(g.cwd));
         const char *resume_id = NULL;
 
@@ -6089,7 +8713,7 @@ int main(int argc, char **argv) {
                 case 'h':
                     printf("Usage: %s [options]\n", argv[0]);
                     printf("  --port N         Server port (default: 8000)\n");
-                    printf("  --max-tokens N   Max response tokens (default: 8192)\n");
+                    printf("  --max-tokens N   Max response tokens (default: 16384)\n");
                     printf("  --show-think     Show <think> blocks (dimmed)\n");
                     printf("  --resume ID      Resume a previous session\n");
                     printf("  --sessions       List saved sessions\n");
@@ -6132,6 +8756,9 @@ int main(int argc, char **argv) {
             channel_init("general");
         }
 
+        // Load agent identity
+        load_identity();
+
         // Banner
         tui_banner();
 
@@ -6146,7 +8773,16 @@ int main(int argc, char **argv) {
         // First-run: offer connection setup
         first_run_check();
 
+        // Auto-start Telegram bot if configured
+        start_telegram();
+
         g.session_start_ms = now_ms();
+
+        // Load cron jobs
+        cron_load();
+        if (g_cron_count > 0)
+            printf(ANSI_DIM "  %d cron job%s loaded" ANSI_RESET "\n",
+                   g_cron_count, g_cron_count == 1 ? "" : "s");
 
         // Resume session
         if (resume_id) {
@@ -6155,6 +8791,10 @@ int main(int argc, char **argv) {
             else g.turn_count = turns / 2;
             session_load_title(g.session_id, g.session_title, sizeof(g.session_title));
         }
+
+        // Compact any uncompacted artifact content from previous runs.
+        // This prevents context bloat from HTML that wasn't compacted due to bugs.
+        compact_artifact_content(g.session_id);
 
         // Linenoise setup
         linenoiseSetMultiLine(1);
@@ -6166,6 +8806,9 @@ int main(int argc, char **argv) {
 
         // Main loop
         for (;;) {
+            // Check cron jobs (runs at most once per minute)
+            cron_check_and_run();
+
             // Build prompt with channel name
             char prompt[128];
             if (g.project_name[0])
@@ -6212,6 +8855,10 @@ int main(int argc, char **argv) {
             // Estimate input tokens (~4 chars per token)
             g.total_tokens_in += (int)(strlen(message) / 4);
 
+            // Clear any stale native tool calls from previous turn
+            free(g_native_tool_calls);
+            g_native_tool_calls = NULL;
+
             // Save user turn (save original input, not the preamble-augmented version)
             session_save_turn(g.session_id, "user", message);
 
@@ -6224,13 +8871,202 @@ int main(int argc, char **argv) {
             if (sock < 0) continue;
 
             printf("\n");
-            char *response = stream_response(sock);
+            char *response = stream_response(sock, g.max_tokens);
 
-            // Save assistant turn
-            if (response && strlen(response) > 0) {
-                session_save_turn(g.session_id, "assistant", response);
+            // Save assistant turn — use native format if tool_calls are present.
+            // With native tool calls, content may be empty but we still need to save.
+            if (response && (strlen(response) > 0 || g_native_tool_calls)) {
+                if (g_native_tool_calls) {
+                    session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+                } else {
+                    session_save_turn(g.session_id, "assistant", response);
+                }
                 free(g.last_response);
                 g.last_response = strdup(response);
+            }
+
+            // Detect HTML code dumped in chat without a tool call. Instead of
+            // nudging the model to retry (which doesn't work — it just dumps code
+            // again), auto-extract the HTML and create the artifact ourselves.
+            if (response && !g_native_tool_calls && !strstr(response, "<tool_call>")) {
+                // Find the last/best HTML block in the response
+                // Try ```html fenced block first, then raw <!DOCTYPE or <html
+                char *html_content = NULL;
+                char *fence = strstr(response, "```html");
+                if (!fence) fence = strstr(response, "```HTML");
+                if (fence) {
+                    // Extract content between ```html and closing ```
+                    char *start = strchr(fence + 7, '\n');
+                    if (start) {
+                        start++; // past newline
+                        char *end = strstr(start, "```");
+                        if (end) {
+                            html_content = malloc(end - start + 1);
+                            memcpy(html_content, start, end - start);
+                            html_content[end - start] = 0;
+                        }
+                    }
+                }
+                // Also check for the LAST ```html block (model often writes multiple)
+                if (fence) {
+                    char *last_fence = fence;
+                    char *scan = fence + 7; // past first "```html"
+                    char *next;
+                    while ((next = strstr(scan, "```html")) != NULL) {
+                        last_fence = next;
+                        scan = next + 7;
+                    }
+                    // Also check for ```HTML variant
+                    scan = fence + 7;
+                    while ((next = strstr(scan, "```HTML")) != NULL) {
+                        if (next > last_fence) last_fence = next;
+                        scan = next + 7;
+                    }
+                    if (last_fence != fence) {
+                        char *start = strchr(last_fence + 7, '\n');
+                        if (start) {
+                            start++;
+                            char *end = strstr(start, "```");
+                            if (end && (end - start) > (int)(html_content ? strlen(html_content) : 0)) {
+                                free(html_content);
+                                html_content = malloc(end - start + 1);
+                                memcpy(html_content, start, end - start);
+                                html_content[end - start] = 0;
+                            }
+                        }
+                    }
+                }
+                // Fallback: find raw <!DOCTYPE or <html
+                if (!html_content) {
+                    char *doctype = strstr(response, "<!DOCTYPE");
+                    if (!doctype) doctype = strstr(response, "<html");
+                    if (doctype) {
+                        // Take everything from doctype to end of </html> or end of response
+                        char *html_end = strstr(doctype, "</html>");
+                        if (html_end) html_end += 7;
+                        else html_end = response + strlen(response);
+                        size_t len = html_end - doctype;
+                        html_content = malloc(len + 1);
+                        memcpy(html_content, doctype, len);
+                        html_content[len] = 0;
+                    }
+                }
+
+                if (html_content && strlen(html_content) > 100) {
+                    printf(ANSI_YELLOW "\n  [HTML detected in chat — auto-creating artifact]"
+                           ANSI_RESET "\n");
+                    char auto_output[65536];
+                    execute_artifact("Auto-Extracted Game", html_content, "html",
+                                    auto_output, sizeof(auto_output));
+                    size_t html_len = strlen(html_content);
+                    free(html_content);
+
+                    // Compact the session: replace the full response with a brief note.
+                    // The model's response often has thousands of tokens of HTML code
+                    // that was dumped in chat. Keeping ANY of it bloats every future prefill.
+                    // Extract just the first ~200 chars of non-code text as context.
+                    char compact_buf[512];
+                    const char *src = response;
+                    int ci = 0;
+                    // Copy leading text up to the first code fence or HTML tag
+                    while (*src && ci < 200) {
+                        if (*src == '`' && *(src+1) == '`' && *(src+2) == '`') break;
+                        if (*src == '<' && (strncmp(src, "<!DOCTYPE", 9) == 0 ||
+                                           strncmp(src, "<html", 5) == 0)) break;
+                        compact_buf[ci++] = *src++;
+                    }
+                    // Trim trailing whitespace
+                    while (ci > 0 && (compact_buf[ci-1] == ' ' || compact_buf[ci-1] == '\n')) ci--;
+                    snprintf(compact_buf + ci, sizeof(compact_buf) - ci,
+                             "\n[code auto-extracted to artifact — %zu bytes]", html_len);
+                    session_replace_last_turn(g.session_id, "assistant", compact_buf);
+                } else {
+                    free(html_content);
+                }
+            }
+
+            // Nudge: if the model described creating something but didn't call a tool,
+            // send a follow-up to trigger the actual tool call. Safety net for when the
+            // model narrates what it plans to build but forgets the <tool_call> tags.
+            if (response && !g_native_tool_calls && !strstr(response, "<tool_call>")) {
+                // Check if the response suggests the model intended to create an artifact
+                int intended_tool = (strstr(response, "I'll create") || strstr(response, "I'll build") ||
+                                     strstr(response, "I will create") || strstr(response, "I will build") ||
+                                     strstr(response, "Creating") || strstr(response, "creating the") ||
+                                     strstr(response, "I'll use") || strstr(response, "the artifact") ||
+                                     strstr(response, "generate the") || strstr(response, "I'll make") ||
+                                     strstr(response, "here it is") || strstr(response, "Here it is") ||
+                                     strstr(response, "Here's the"));
+                if (intended_tool) {
+                    printf(ANSI_YELLOW "\n  [model described creating content but didn't call tool — nudging]"
+                           ANSI_RESET "\n");
+                    const char *nudge = "Please proceed with the tool call now. "
+                        "Use the <tool_call> tag format to call the artifact tool with the complete HTML content.";
+                    session_save_turn(g.session_id, "user", nudge);
+
+                    free(g_native_tool_calls);
+                    g_native_tool_calls = NULL;
+
+                    int nudge_budget = g.max_tokens * 4;
+                    if (nudge_budget > MAX_CONTEXT / 2) nudge_budget = MAX_CONTEXT / 2;
+                    int sock = send_request(NULL, nudge_budget, g.session_id);
+                    if (sock >= 0) {
+                        printf("\n");
+                        char *nudge_response = stream_response(sock, nudge_budget);
+
+                        // Drop the nudge from session and save the new response
+                        session_replace_last_turn(g.session_id, "user", NULL);
+                        if (nudge_response && (strlen(nudge_response) > 0 || g_native_tool_calls)) {
+                            if (g_native_tool_calls) {
+                                session_save_assistant_with_tool_calls(g.session_id, nudge_response, g_native_tool_calls);
+                            } else {
+                                session_save_turn(g.session_id, "assistant", nudge_response);
+                            }
+                        }
+
+                        // If the nudge produced HTML in chat, auto-extract it
+                        if (nudge_response && !g_native_tool_calls && !strstr(nudge_response, "<tool_call>")) {
+                            char *html_start = strstr(nudge_response, "```html");
+                            if (!html_start) html_start = strstr(nudge_response, "<!DOCTYPE");
+                            if (!html_start) html_start = strstr(nudge_response, "<html");
+                            if (html_start) {
+                                char *content_start = html_start;
+                                char *content_end = NULL;
+                                if (html_start[0] == '`') {
+                                    content_start = strchr(html_start + 7, '\n');
+                                    if (content_start) { content_start++; content_end = strstr(content_start, "```"); }
+                                } else {
+                                    content_end = strstr(content_start, "</html>");
+                                    if (content_end) content_end += 7;
+                                    else content_end = nudge_response + strlen(nudge_response);
+                                }
+                                if (content_start && content_end && content_end > content_start) {
+                                    size_t clen = content_end - content_start;
+                                    char *extracted = malloc(clen + 1);
+                                    memcpy(extracted, content_start, clen);
+                                    extracted[clen] = 0;
+                                    if (clen > 100) {
+                                        printf(ANSI_YELLOW "  [HTML extracted from nudge response — creating artifact]"
+                                               ANSI_RESET "\n");
+                                        char auto_output[65536];
+                                        execute_artifact("Auto-Extracted Game", extracted, "html",
+                                                        auto_output, sizeof(auto_output));
+                                        // Compact session
+                                        char compact_note[256];
+                                        snprintf(compact_note, sizeof(compact_note),
+                                                 "[artifact auto-created — %zu bytes]", clen);
+                                        session_replace_last_turn(g.session_id, "assistant", compact_note);
+                                    }
+                                    free(extracted);
+                                }
+                            }
+                        }
+
+                        // Replace the original response with the nudge response for tool handling
+                        free(response);
+                        response = nudge_response;
+                    }
+                }
             }
 
             // Handle tool calls
@@ -6242,7 +9078,10 @@ int main(int argc, char **argv) {
             // Stats are shown inline by stream_response()
         }
 
-        // Cleanup
+        // Cleanup — stop services, unload model from GPU
+        printf(ANSI_DIM "\nStopping services..." ANSI_RESET "\n");
+        stop_telegram();
+        ollama_unload();
         free(g.last_response);
         free(g_pending_attach);
         free(g_pending_image);

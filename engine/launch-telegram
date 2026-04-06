@@ -1,0 +1,64 @@
+#!/bin/bash
+# launch-telegram — Launch PRE Telegram bot bridge
+#
+# Connects to Ollama and bridges Telegram Bot API to your local PRE agent.
+# Requires: bot token configured via /connections add telegram in PRE.
+
+set -e
+
+# Resolve symlinks
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+    DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+PRE_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+TG_BIN="$PRE_DIR/pre-telegram"
+PORT="${PRE_PORT:-11434}"
+
+# Check if Ollama is running
+if ! curl -sf http://localhost:${PORT}/v1/models >/dev/null 2>&1; then
+    echo "  Ollama not running. Starting..."
+    ollama serve >/dev/null 2>&1 &
+    sleep 2
+    if ! curl -sf http://localhost:${PORT}/v1/models >/dev/null 2>&1; then
+        echo "Error: Cannot connect to Ollama on port $PORT"
+        echo "Start Ollama.app or run: ollama serve"
+        exit 1
+    fi
+fi
+
+# Verify the model is available
+if ! ollama list 2>/dev/null | grep -q "pre-gemma4"; then
+    echo "  Custom model not found. Creating from Modelfile..."
+    if [ -f "$PRE_DIR/Modelfile" ]; then
+        ollama create pre-gemma4 -f "$PRE_DIR/Modelfile" || {
+            echo "Error: Failed to create pre-gemma4 model"
+            exit 1
+        }
+    else
+        echo "Error: pre-gemma4 not found. Run pre-launch first to set up the model."
+        exit 1
+    fi
+fi
+
+# Pre-warm the model
+if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
+    echo "  Loading model into GPU..."
+    curl -sf http://localhost:${PORT}/api/chat -d '{"model":"pre-gemma4","messages":[],"keep_alive":"24h"}' >/dev/null 2>&1 || true
+    for i in $(seq 1 30); do
+        if ollama ps 2>/dev/null | grep -q "pre-gemma4"; then break; fi
+        sleep 1
+    done
+fi
+
+echo "  Ollama running on port $PORT."
+
+if [ ! -x "$TG_BIN" ]; then
+    echo "Error: pre-telegram binary not found at $TG_BIN"
+    echo "Run: cd $PRE_DIR && make telegram"
+    exit 1
+fi
+
+exec "$TG_BIN" --port "$PORT" "$@"

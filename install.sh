@@ -172,7 +172,7 @@ else
         fail "Modelfile not found at $ENGINE_DIR/Modelfile"
     fi
     ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
-    ok "  Custom model created (262K context, optimized batch size)."
+    ok "  Custom model created (dynamic context, optimized batch size)."
 fi
 
 # ============================================================================
@@ -200,11 +200,14 @@ step "Building PRE"
 
 cd "$ENGINE_DIR"
 make clean 2>/dev/null || true
-make pre 2>&1 | tail -3
+make pre telegram 2>&1 | tail -5
 if [ ! -x "$ENGINE_DIR/pre" ]; then
     fail "Build failed — 'pre' binary not found."
 fi
 ok "  Built: pre ($(du -sh pre | cut -f1))"
+if [ -x "$ENGINE_DIR/pre-telegram" ]; then
+    ok "  Built: pre-telegram ($(du -sh pre-telegram | cut -f1))"
+fi
 
 # ============================================================================
 # Step 6: Install pre-launch command
@@ -242,8 +245,10 @@ step "Setting up PRE data directories"
 
 mkdir -p "$HOME/.pre/sessions"
 mkdir -p "$HOME/.pre/memory"
+mkdir -p "$HOME/.pre/checkpoints"
 ok "  Created ~/.pre/sessions/"
 ok "  Created ~/.pre/memory/"
+ok "  Created ~/.pre/checkpoints/"
 
 # Migrate from old Flash-MoE layout if present
 if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
@@ -286,17 +291,23 @@ echo -e "  ${BOLD}Launch:${RESET}"
 echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE from any directory"
 echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
 echo ""
+echo -e "  ${BOLD}First Launch:${RESET}"
+echo -e "    PRE will ask you to name your agent and optionally"
+echo -e "    configure connections (Google, GitHub, Brave, Wolfram)."
+echo ""
 echo -e "  ${BOLD}Connections (optional):${RESET}"
 echo -e "    Type ${BOLD}/connections${RESET} inside PRE to set up:"
+echo -e "    • ${DIM}Google        — Gmail, Drive, Docs (built-in OAuth)${RESET}"
+echo -e "    • ${DIM}Telegram      — chat from your phone${RESET}"
 echo -e "    • ${DIM}Brave Search  — web search${RESET}"
-echo -e "    • ${DIM}Google        — Gmail, Drive, Docs${RESET}"
 echo -e "    • ${DIM}GitHub        — repos, issues, PRs${RESET}"
 echo -e "    • ${DIM}Wolfram Alpha — computation${RESET}"
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
-echo -e "    ${DIM}~/.pre/sessions/${RESET}    Session history"
-echo -e "    ${DIM}~/.pre/memory/${RESET}      Persistent memory"
-echo -e "    ${DIM}~/.pre/pre_history${RESET}  Command history"
+echo -e "    ${DIM}~/.pre/identity.json${RESET}  Agent name"
+echo -e "    ${DIM}~/.pre/sessions/${RESET}      Session history"
+echo -e "    ${DIM}~/.pre/memory/${RESET}        Persistent memory"
+echo -e "    ${DIM}~/.pre/telegram.log${RESET}   Telegram bot log"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""

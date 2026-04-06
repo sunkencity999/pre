@@ -2,6 +2,8 @@
 engine/infer
 engine/pre
 engine/chat
+engine/pre-telegram
+engine/telegram
 engine/metal_infer
 *.air
 *.metallib
@@ -26,6 +28,9 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+
+# Benchmark results
+benchmark_results/
 
 # Session data (user-specific)
 .flash-moe/

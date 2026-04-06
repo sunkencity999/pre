@@ -77,6 +77,7 @@ These aren't demos. These are workflows that complete in under a minute because 
   - [Channels](#channels)
   - [Context Management](#context-management)
 - [Best Practices](#best-practices)
+- [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
@@ -141,9 +142,15 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Deep system inspection** — Network interfaces, running processes, disk usage, hardware info, window management, screenshots, and arbitrary AppleScript automation.
 
-**Connect to external services** — Optional integrations with Brave Search, GitHub, Google (Gmail, Drive, Docs), and Wolfram Alpha via `/connections`. OAuth 2.0 for Google, API keys for the rest. Tokens stored locally.
+**Connect to external services** — Optional integrations with Brave Search, GitHub, Google (Gmail, Drive, Docs), Wolfram Alpha, and Telegram via `/connections`. Google uses built-in OAuth — just sign in, no Cloud Console setup. API keys for the rest. Multi-account Google is supported (`/connections add google work`). Tokens stored locally.
+
+**Chat from your phone** — Configure a Telegram bot and PRE automatically bridges it when you launch. Full system access from Telegram — same 35 tools, same memory, same agentic workflows. No separate process to manage.
+
+**Personalize your agent** — On first launch, PRE asks you to name your assistant. The name appears in the banner, system prompt, and Telegram bot. Change it anytime with `/name`.
 
 **Paste images for analysis** — Ctrl+V pastes clipboard images directly into the prompt. Gemma 4 is multimodal — it can analyze screenshots, diagrams, photos, and more.
+
+**Clean shutdown** — Ctrl+C stops all services (including the Telegram bot) and unloads the model from GPU memory, freeing VRAM immediately.
 
 **Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Connection-dependent tools make API calls to their respective services; all other tools are fully local.
 
@@ -254,6 +261,10 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 | `/stats` | Detailed session statistics |
 | `/undo` | Revert last file change |
 | `/think` | Toggle reasoning visibility |
+| `/name <name>` | Rename your agent |
+| `/cron add <schedule> <prompt>` | Schedule a recurring task (5-field cron) |
+| `/cron list` | List all scheduled tasks |
+| `/cron rm <id>` | Remove a scheduled task |
 
 #### Help
 
@@ -470,12 +481,19 @@ PRE can integrate with external services via API keys and OAuth. Run `/connectio
 
 | Service | Auth Type | Tools Unlocked |
 |---------|-----------|----------------|
+| **Google** | Built-in OAuth 2.0 | `gmail`, `gdrive`, `gdocs` |
+| **Telegram** | Bot token (via @BotFather) | Phone access to PRE |
 | **Brave Search** | API key | `web_search` |
 | **GitHub** | Personal access token | `github` |
-| **Google** | OAuth 2.0 | `gmail`, `gdrive`, `gdocs` |
 | **Wolfram Alpha** | API key | `wolfram` |
 
-Google OAuth uses a local HTTP callback server — no data leaves your machine except for the API calls themselves. Tokens are stored locally and refreshed automatically.
+**Google** uses built-in OAuth credentials — just run `/connections add google` and sign in via your browser. No Google Cloud Console setup required. For advanced users who want their own OAuth app, option 2 in the setup menu supports custom client ID/secret.
+
+**Multi-account Google** is supported: `/connections add google work` and `/connections add google personal` create named accounts. The model uses the `account` parameter to target the right one.
+
+**Telegram** automatically starts when PRE launches (if configured). See [Telegram Integration](#telegram-integration) for details.
+
+All tokens are stored locally in `~/.pre/connections.json` and refreshed automatically.
 
 ---
 
@@ -537,6 +555,42 @@ PRE dynamically manages Gemma 4's 262K token context window. The context budget 
 
 ---
 
+## Telegram Integration
+
+PRE includes a built-in Telegram bot that gives you full agent access from your phone.
+
+### Setup
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram and create a new bot
+2. In PRE, run `/connections add telegram` and paste the bot token
+3. Restart PRE — the Telegram bot starts automatically
+
+### How It Works
+
+When PRE launches and a Telegram connection is configured, it automatically spawns `pre-telegram` as a background process. The bot long-polls the Telegram API (no webhook, no public URL required) and routes messages through the same Ollama instance as the TUI.
+
+- **Full system access** — all 35 tools, same as the TUI. File operations, bash, process management, clipboard, screenshots, Google services, everything.
+- **Owner authorization** — the first Telegram user to message the bot becomes the owner. All other users are blocked.
+- **Conversation management** — per-chat history with `/new` to reset
+- **Automatic lifecycle** — starts with PRE, stops with PRE (Ctrl+C kills both)
+- **Logs** — output goes to `~/.pre/telegram.log`
+
+### Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Welcome message |
+| `/new` | New conversation |
+| `/status` | Bot status (model, connections, memory count) |
+| `/memory` | List saved memories |
+| `/help` | Show commands |
+
+### Architecture
+
+The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that shares the same Ollama model, memory system, connections, and identity. It uses non-streaming Ollama chat with dynamic context scaling (matching the TUI), and sends typing indicators while the model generates.
+
+---
+
 ## Architecture
 
 ### How PRE Works
@@ -547,21 +601,31 @@ PRE dynamically manages Gemma 4's 262K token context window. The context budget 
 │  (pre.m)    │   raw recv() NDJSON │  localhost:11434  │
 │  ~6000 lines│                     │                   │
 │  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
-└─────────────┘                     │  MoE, q4_K_M      │
-      │                             │  ~70 tok/s         │
-      ▼                             └───────────────────┘
+└──────┬──────┘                     │  MoE, q4_K_M      │
+       │                            │  ~70 tok/s         │
+       │ fork/exec                  └──────────▲────────┘
+       │                                       │
+┌──────▼──────────┐    /api/chat (non-stream)  │
+│  pre-telegram   │ ───────────────────────────┘
+│  (telegram.m)   │
+│  Telegram Bot   │  ◄──► Telegram Bot API
+└─────────────────┘       (long-poll)
+
   ~/.pre/
-  ├── sessions/     # Conversation JSONL files
-  ├── history       # Input history (arrow-key recall)
-  ├── checkpoints/  # File backups for /undo
-  ├── connections/  # API keys and OAuth tokens
-  ├── memory/       # Global persistent memories
+  ├── identity.json       # Agent name
+  ├── connections.json    # API keys and OAuth tokens
+  ├── sessions/           # Conversation JSONL files
+  ├── history             # Input history (arrow-key recall)
+  ├── checkpoints/        # File backups for /undo
+  ├── telegram.log        # Telegram bot output
+  ├── telegram_owner      # Authorized Telegram user ID
+  ├── memory/             # Global persistent memories
   │   ├── index.md
   │   └── *.md
   └── projects/
       └── {name}/
-          ├── memory/    # Project-scoped memories
-          └── channels/  # Channel metadata
+          ├── memory/     # Project-scoped memories
+          └── channels/   # Channel metadata
 ```
 
 ### Optimization Stack
@@ -578,27 +642,42 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 | **Prompt compression** | Function-signature tool format (~800 tokens for 35 tools) | More room for conversation, faster prefill |
 | **Model pre-warming** | `keep_alive: "24h"` + warmup request at launch | No cold-start penalty |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth performance numbers |
+| **Hybrid tool calling** | Native Ollama `tools` API for small tools, text-based for artifacts | Reliable structured calls + large content generation |
+| **Artifact compaction** | Strip HTML from session after saving to disk | Prevents prefill stalls on follow-up turns |
 | **Auto-compaction** | Summarize old turns at 75% context usage | Extends effective session length |
 | **Tool response cap** | 8KB limit per tool result | Prevents context blowout from large files |
 
 ### The PRE Binary
 
-**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~6000 lines). It handles:
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~9000 lines). It handles:
 - Ollama native API client with raw `recv()` NDJSON streaming
 - Dynamic context window sizing with per-request `num_ctx`
 - System prompt as `role:system` message for KV cache prefix reuse
 - Streaming markdown renderer with ANSI formatting
-- Multi-format tool call parser (JSON, XML, bare)
+- Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` for large content
 - Up to 35 tool implementations with two-tier permissions
-- OAuth 2.0 flow with local HTTP callback for Google APIs
-- Connection management for external services (Brave, GitHub, Google, Wolfram)
+- Cron registry for recurring scheduled tasks (`/cron`, persisted in `~/.pre/cron.json`)
+- Built-in Google OAuth 2.0 with multi-account support
+- Connection management for external services (Brave, GitHub, Google, Wolfram, Telegram)
+- Automatic Telegram bot subprocess management
+- Agent identity system (custom naming, persisted across sessions)
 - Persistent memory with per-project scoping
 - Channel-based conversation management
 - Project detection and PRE.md loading
 - Context compaction and token budget management (up to 262K)
+- Artifact session compaction (strips HTML from session after saving to disk)
+- Model unload on exit (frees GPU memory on Ctrl+C)
 - File checkpointing and undo
 - Ctrl+V image paste for multimodal queries (via AppKit)
 - linenoise-based line editor with tab completion and ANSI-aware cursor
+
+**Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines) auto-launched by PRE:
+- Telegram Bot API long-polling (no webhook/public URL needed)
+- Full tool access matching the TUI (all 35 tools)
+- Per-chat conversation history with dynamic context scaling
+- Owner-based authorization (first user to message becomes owner)
+- Typing indicators via forked child process
+- Shared identity, connections, and memory with the TUI
 
 **Ollama** serves the model via a custom Modelfile (`pre-gemma4`) with tuned parameters and a small default context. PRE uses the native `/api/chat` endpoint — not the OpenAI-compatible layer — for access to server-reported metrics, native multimodal support, and streaming NDJSON.
 
@@ -631,9 +710,13 @@ All PRE data lives in `~/.pre/`:
 
 ```
 ~/.pre/
+├── identity.json       # Agent name
+├── connections.json    # API keys, OAuth tokens (chmod 600)
 ├── sessions/           # Conversation JSONL (one per channel)
 ├── history             # Readline history
 ├── checkpoints/        # File backups (auto-cleaned)
+├── telegram.log        # Telegram bot output
+├── telegram_owner      # Authorized Telegram user ID
 ├── memory/
 │   ├── index.md        # Memory index
 │   └── *.md            # Individual memory files
@@ -654,10 +737,12 @@ pre/
 ├── system.md               # Model system prompt reference
 ├── engine/
 │   ├── pre.m               # PRE CLI (single-file, ~6000 lines)
+│   ├── telegram.m          # Telegram bot bridge (~2000 lines)
 │   ├── linenoise.c/h       # Terminal line editor (patched: Ctrl+V, ANSI-aware)
-│   ├── Makefile             # Build: make pre
+│   ├── Makefile             # Build: make pre telegram
 │   ├── Modelfile            # Ollama model config (pre-gemma4)
-│   └── pre-launch           # Universal launcher script
+│   ├── pre-launch           # Universal launcher script
+│   └── launch-telegram      # Standalone Telegram launcher (optional)
 ├── docs/
 │   └── *.md                 # Research notes from Flash-MoE era
 └── benchmark_results/       # Performance benchmarks
@@ -675,6 +760,7 @@ PRE is built and maintained by **Christopher Bradford** — systems administrato
 - **Better rendering** — Syntax highlighting in code blocks, image display in terminal
 - **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
 - **New connections** — Slack, Discord, Notion, Linear, and other service integrations
+- **Telegram enhancements** — Inline keyboards, photo/document handling, group chat support
 - **Documentation** — Tutorials, use-case guides, video walkthroughs
 
 **How to contribute:**
