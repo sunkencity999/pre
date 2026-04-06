@@ -3315,9 +3315,10 @@ static char *build_tools_json(void) {
                  "\"include\":{\"type\":\"string\",\"description\":\"File glob filter (e.g. *.py)\"}",
                  "\"pattern\""),
 
-        // NOTE: file_write is excluded from native tools — large content in JSON string
-        // arguments causes the model to skip the tool call entirely. file_write uses
-        // text-based <tool_call> format instead (see system prompt).
+        TOOL_DEF("file_write", "Create or overwrite a file with content. Use this instead of bash/printf/cat for writing files.",
+                 "\"path\":{\"type\":\"string\",\"description\":\"File path to write (relative to cwd or absolute)\"},"
+                 "\"content\":{\"type\":\"string\",\"description\":\"Full file content to write\"}",
+                 "\"path\",\"content\""),
 
         TOOL_DEF("file_edit", "Replace exact text in a file",
                  "\"path\":{\"type\":\"string\",\"description\":\"File path to edit\"},"
@@ -3678,13 +3679,12 @@ static char *build_context_preamble(void) {
     plen += snprintf(preamble + plen, cap - plen,
         "RULES (follow these exactly):\n"
         "1. NEVER output code, HTML, or file contents in chat. Use tools instead.\n"
-        "2. artifact and file_write use text-based <tool_call> tags (not function calls):\n"
+        "2. artifact uses text-based <tool_call> tags (not function calls):\n"
         "   <tool_call>\n"
         "   {\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"...HTML...\", \"type\": \"html\"}}\n"
         "   </tool_call>\n"
-        "   To save a file: <tool_call>{\"name\":\"file_write\",\"arguments\":{\"path\":\"path/to/file\",\"content\":\"...\"}}</tool_call>\n"
-        "   Do NOT use bash/printf/cat to write files — use file_write instead.\n"
-        "   All other tools are native function calls.\n"
+        "   All other tools (including file_write) are native function calls.\n"
+        "   NEVER use bash with printf/cat/echo to write files. Use the file_write tool.\n"
         "3. One tool call per turn. STOP after each call and wait for the result.\n"
         "4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n"
         "5. For reports with images: web_search first, then image_generate for each image, then artifact last.\n"
