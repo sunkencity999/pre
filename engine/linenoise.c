@@ -131,6 +131,7 @@ static void refreshLineWithFlags(struct linenoiseState *l, int flags);
 
 static struct termios orig_termios; /* In order to restore at exit.*/
 static int maskmode = 0; /* Show "***" instead of input. For passwords. */
+static int in_paste = 0; /* Bracketed paste mode: newlines become spaces */
 static int rawmode = 0; /* For atexit() function to check if restore is needed*/
 static int mlmode = 0;  /* Multi line mode. Default is single line. */
 static int atexit_registered = 0; /* Register atexit just 1 time. */
@@ -572,6 +573,12 @@ static int enableRawMode(int fd) {
     /* put terminal in raw mode after flushing */
     if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
     rawmode = 1;
+
+    /* Enable bracketed paste mode — terminal wraps pasted text in
+     * ESC[200~ ... ESC[201~ so we can distinguish paste from typing.
+     * Without this, pasted newlines trigger Enter (immediate submit). */
+    if (write(fd, "\033[?2004h", 8) == -1) { /* best effort */ }
+
     return 0;
 
 fatal:
@@ -584,6 +591,10 @@ static void disableRawMode(int fd) {
     if (getenv("LINENOISE_ASSUME_TTY")) {
         rawmode = 0;
         return;
+    }
+    /* Disable bracketed paste mode */
+    if (rawmode) {
+        if (write(fd, "\033[?2004l", 8) == -1) { /* best effort */ }
     }
     /* Don't even check the return value as it's too late. */
     if (rawmode && tcsetattr(fd,TCSAFLUSH,&orig_termios) != -1)
@@ -1274,6 +1285,7 @@ int linenoiseEditStart(struct linenoiseState *l, int stdin_fd, int stdout_fd, ch
     /* Populate the linenoise state that we pass to functions implementing
      * specific editing functionalities. */
     l->in_completion = 0;
+    in_paste = 0; /* Reset bracketed paste state for new input */
     l->ifd = stdin_fd != -1 ? stdin_fd : STDIN_FILENO;
     l->ofd = stdout_fd != -1 ? stdout_fd : STDOUT_FILENO;
     l->buf = buf;
@@ -1356,6 +1368,12 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
 
     switch(c) {
     case ENTER:    /* enter */
+        /* During bracketed paste, treat Enter as a space instead of submitting.
+         * This prevents multi-line pastes from triggering immediate send. */
+        if (in_paste) {
+            linenoiseEditInsert(l, " ", 1);
+            break;
+        }
         history_len--;
         free(history[history_len]);
         if (mlmode) linenoiseEditMoveEnd(l);
@@ -1423,13 +1441,23 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
         /* ESC [ sequences. */
         if (seq[0] == '[') {
             if (seq[1] >= '0' && seq[1] <= '9') {
-                /* Extended escape, read additional byte. */
+                /* Extended escape, read additional byte(s). */
                 if (read(l->ifd,seq+2,1) == -1) break;
                 if (seq[2] == '~') {
                     switch(seq[1]) {
                     case '3': /* Delete key. */
                         linenoiseEditDelete(l);
                         break;
+                    }
+                } else if (seq[1] == '2' && seq[2] == '0') {
+                    /* Possible bracketed paste: ESC[200~ or ESC[201~ */
+                    char more[2];
+                    if (read(l->ifd,more,1) == -1) break;
+                    if (read(l->ifd,more+1,1) == -1) break;
+                    if (more[0] == '0' && more[1] == '~') {
+                        in_paste = 1; /* ESC[200~ = paste start */
+                    } else if (more[0] == '1' && more[1] == '~') {
+                        in_paste = 0; /* ESC[201~ = paste end */
                     }
                 }
             } else {
