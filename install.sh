@@ -260,6 +260,105 @@ if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
 fi
 
 # ============================================================================
+# Step 7b: ComfyUI setup (optional — local image generation)
+# ============================================================================
+step "Image Generation Setup (optional)"
+
+COMFYUI_DIR="$HOME/.pre/comfyui"
+COMFYUI_VENV="$HOME/.pre/comfyui-venv"
+COMFYUI_CONFIG="$HOME/.pre/comfyui.json"
+SDXL_CHECKPOINT="sd_xl_turbo_1.0_fp16.safetensors"
+SDXL_URL="https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors"
+
+if [ -f "$COMFYUI_CONFIG" ]; then
+    ok "  ComfyUI already configured — skipping."
+else
+    # Check available RAM
+    RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
+    if [ "$RAM_GB" -lt 48 ] 2>/dev/null; then
+        warn "  Note: Your system has ${RAM_GB}GB RAM. Image generation (SDXL + Gemma 4) works"
+        warn "  best with 48GB+. You can skip this and add it later with /connections."
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Install local image generation?${RESET}"
+    echo -e "  This sets up ComfyUI + SDXL Turbo for generating images from text."
+    echo -e "  ${DIM}Requires: ~8GB disk, Python 3.10+, ~6.5GB model download${RESET}"
+    echo ""
+    read -p "  Install ComfyUI? [y/N] " -n 1 -r
+    echo ""
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        # Check Python
+        if ! command -v python3 &>/dev/null; then
+            warn "  Python 3 not found — skipping ComfyUI. Install Python 3.10+ and re-run."
+        else
+            PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            ok "  Python $PYTHON_VERSION found"
+
+            # Create virtual environment
+            echo "  Creating Python virtual environment..."
+            python3 -m venv "$COMFYUI_VENV" || { warn "  Failed to create venv — skipping."; REPLY=n; }
+
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # Install PyTorch with MPS support
+                echo "  Installing PyTorch (Metal/MPS)..."
+                "$COMFYUI_VENV/bin/pip" install --quiet torch torchvision torchaudio 2>&1 | tail -1
+                ok "  PyTorch installed with MPS support"
+
+                # Clone ComfyUI
+                if [ ! -d "$COMFYUI_DIR" ]; then
+                    echo "  Cloning ComfyUI..."
+                    git clone --depth 1 https://github.com/comfyanonymous/ComfyUI "$COMFYUI_DIR" 2>&1 | tail -1
+                fi
+                ok "  ComfyUI cloned"
+
+                # Install ComfyUI requirements
+                echo "  Installing ComfyUI dependencies..."
+                "$COMFYUI_VENV/bin/pip" install --quiet -r "$COMFYUI_DIR/requirements.txt" 2>&1 | tail -1
+                ok "  Dependencies installed"
+
+                # Download SDXL Turbo checkpoint
+                CKPT_DIR="$COMFYUI_DIR/models/checkpoints"
+                mkdir -p "$CKPT_DIR"
+                if [ -f "$CKPT_DIR/$SDXL_CHECKPOINT" ]; then
+                    ok "  SDXL Turbo checkpoint already downloaded"
+                else
+                    echo "  Downloading SDXL Turbo (~6.5GB — this may take a while)..."
+                    if command -v wget &>/dev/null; then
+                        wget -q --show-progress -O "$CKPT_DIR/$SDXL_CHECKPOINT" "$SDXL_URL"
+                    else
+                        curl -L --progress-bar -o "$CKPT_DIR/$SDXL_CHECKPOINT" "$SDXL_URL"
+                    fi
+
+                    if [ -f "$CKPT_DIR/$SDXL_CHECKPOINT" ]; then
+                        CKPT_SIZE=$(du -sh "$CKPT_DIR/$SDXL_CHECKPOINT" | cut -f1)
+                        ok "  SDXL Turbo downloaded ($CKPT_SIZE)"
+                    else
+                        warn "  Download failed — you can download manually later:"
+                        warn "    wget -O $CKPT_DIR/$SDXL_CHECKPOINT $SDXL_URL"
+                    fi
+                fi
+
+                # Create config file
+                cat > "$COMFYUI_CONFIG" << 'CFGEOF'
+{
+  "installed": true,
+  "port": 8188,
+  "checkpoint": "sd_xl_turbo_1.0_fp16.safetensors"
+}
+CFGEOF
+                ok "  ComfyUI configuration saved"
+                echo ""
+                ok "  ✓ Image generation ready! PRE will start ComfyUI automatically when needed."
+            fi
+        fi
+    else
+        echo "  Skipped. You can install later by re-running this script."
+    fi
+fi
+
+# ============================================================================
 # Step 8: Pre-warm the model
 # ============================================================================
 step "Pre-warming model into GPU memory"
@@ -302,6 +401,11 @@ echo -e "    • ${DIM}Telegram      — chat from your phone${RESET}"
 echo -e "    • ${DIM}Brave Search  — web search${RESET}"
 echo -e "    • ${DIM}GitHub        — repos, issues, PRs${RESET}"
 echo -e "    • ${DIM}Wolfram Alpha — computation${RESET}"
+if [ -f "$HOME/.pre/comfyui.json" ]; then
+echo -e "    • ${GREEN}ComfyUI       — image generation (installed ✓)${RESET}"
+else
+echo -e "    • ${DIM}ComfyUI       — image generation (re-run install.sh to add)${RESET}"
+fi
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
 echo -e "    ${DIM}~/.pre/identity.json${RESET}  Agent name"

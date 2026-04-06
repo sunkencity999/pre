@@ -148,9 +148,15 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Personalize your agent** — On first launch, PRE asks you to name your assistant. The name appears in the banner, system prompt, and Telegram bot. Change it anytime with `/name`.
 
+**Generate images locally** — `image_generate` tool creates images via ComfyUI + SDXL Turbo running on Apple Silicon (MPS). The model can create custom images for reports, presentations, and artifacts — no cloud API required. Optional install via `install.sh`.
+
+**Build rich reports** — Multi-part artifacts let the model build long documents across multiple tool calls. Each `append_to` call adds a new section to an existing artifact. Combined with image generation and `/pdf` export, PRE can produce complete visual reports.
+
 **Paste images for analysis** — Ctrl+V pastes clipboard images directly into the prompt. Gemma 4 is multimodal — it can analyze screenshots, diagrams, photos, and more.
 
-**Clean shutdown** — Ctrl+C stops all services (including the Telegram bot) and unloads the model from GPU memory, freeing VRAM immediately.
+**Export to PDF** — `/pdf` exports any artifact to a clean PDF via WebKit rendering. The model can also call `pdf_export` programmatically to generate shareable documents.
+
+**Clean shutdown** — Ctrl+C stops all services (including the Telegram bot and ComfyUI) and unloads the model from GPU memory, freeing VRAM immediately.
 
 **Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Connection-dependent tools make API calls to their respective services; all other tools are fully local.
 
@@ -262,6 +268,7 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 | `/undo` | Revert last file change |
 | `/think` | Toggle reasoning visibility |
 | `/name <name>` | Rename your agent |
+| `/pdf [title]` | Export artifact to PDF |
 | `/cron add <schedule> <prompt>` | Schedule a recurring task (5-field cron) |
 | `/cron list` | List all scheduled tasks |
 | `/cron rm <id>` | Remove a scheduled task |
@@ -649,13 +656,16 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 
 ### The PRE Binary
 
-**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~9000 lines). It handles:
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~9700 lines). It handles:
 - Ollama native API client with raw `recv()` NDJSON streaming
 - Dynamic context window sizing with per-request `num_ctx`
 - System prompt as `role:system` message for KV cache prefix reuse
 - Streaming markdown renderer with ANSI formatting
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` for large content
-- Up to 35 tool implementations with two-tier permissions
+- 38+ tool implementations with two-tier permissions
+- Local image generation via ComfyUI + SDXL Turbo (MPS-accelerated)
+- Multi-part artifacts with incremental append mode
+- PDF export via native WebKit rendering
 - Cron registry for recurring scheduled tasks (`/cron`, persisted in `~/.pre/cron.json`)
 - Built-in Google OAuth 2.0 with multi-account support
 - Connection management for external services (Brave, GitHub, Google, Wolfram, Telegram)

@@ -176,6 +176,10 @@ static void save_identity(const char *name) {
     chmod(identity_path(), 0600);
 }
 
+// Forward declarations for functions used before their definition
+static int json_extract_str(const char *json, const char *key, char *dst, size_t dsz);
+static void comfyui_stop(void);
+
 // Telegram bot subprocess
 static pid_t g_telegram_pid = 0;
 
@@ -213,6 +217,7 @@ static void handle_exit_signal(int sig) {
     (void)sig;
     printf("\n" ANSI_DIM "Stopping services..." ANSI_RESET "\n");
     stop_telegram();
+    comfyui_stop();
     ollama_unload();
     printf(ANSI_DIM "Goodbye." ANSI_RESET "\n");
     _exit(0);
@@ -267,6 +272,12 @@ static char *g_pending_image = NULL;
 
 // Native tool calls from Ollama's structured response (set by stream_response, consumed by handle_tool_calls)
 static char *g_native_tool_calls = NULL;  // raw JSON array string: [{"id":"...","function":{"name":"...","arguments":{...}}}]
+
+// ComfyUI image generation state
+static pid_t g_comfyui_pid = 0;
+static int g_comfyui_port = 8188;
+static char g_comfyui_checkpoint[256] = "sd_xl_turbo_1.0_fp16.safetensors";
+static int g_comfyui_installed = 0;  // set on startup by checking config file
 
 // ============================================================================
 // Utilities
@@ -371,6 +382,7 @@ static struct {
     char path[PATH_MAX];
     char title[128];
     char type[16];
+    int section_count;  // for multi-part append tracking
 } g_artifacts[MAX_SESSION_ARTIFACTS];
 static int g_artifact_count = 0;
 
@@ -680,6 +692,401 @@ static int artifact_window_main(const char *filepath, const char *title) {
     return 0;
 }
 
+// Entry point for --pdf mode: renders HTML to PDF via WebKit
+// Uses WKWebView's createPDFWithConfiguration (macOS 13+)
+static int pdf_export_main(const char *html_path, const char *pdf_path) {
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+
+        NSString *filePath = [NSString stringWithUTF8String:html_path];
+        NSString *outPath = [NSString stringWithUTF8String:pdf_path];
+        NSError *readErr = nil;
+        NSString *htmlContent = [NSString stringWithContentsOfFile:filePath
+                                        encoding:NSUTF8StringEncoding
+                                        error:&readErr];
+        if (!htmlContent) {
+            fprintf(stderr, "pdf: cannot read %s\n", html_path);
+            return 1;
+        }
+
+        // Create an off-screen WebKit view for rendering
+        WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+        WKWebpagePreferences *pagePrefs = [[WKWebpagePreferences alloc] init];
+        pagePrefs.allowsContentJavaScript = YES;
+        config.defaultWebpagePreferences = pagePrefs;
+
+        // Use a large frame so content renders at full width
+        NSRect frame = NSMakeRect(0, 0, 1024, 768);
+        WKWebView *webView = [[WKWebView alloc] initWithFrame:frame configuration:config];
+
+        // Load HTML with HTTPS base URL for CDN resources
+        NSURL *baseURL = [NSURL URLWithString:@"https://localhost/"];
+        [webView loadHTMLString:htmlContent baseURL:baseURL];
+
+        // Wait for navigation to finish, then export PDF
+        // Use a simple polling approach with the run loop
+        __block BOOL done = NO;
+        __block int result = 0;
+
+        // Use KVO on loading property
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            // Poll until loaded (check every 0.3s, max 15s)
+            __block int polls = 0;
+            [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) {
+                polls++;
+                if (!webView.loading || polls > 50) {
+                    [t invalidate];
+
+                    // Give JS a moment to execute after load
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                                   dispatch_get_main_queue(), ^{
+                        // Export PDF — A4 size in points (595.28 x 841.89)
+                        if (@available(macOS 13.0, *)) {
+                            WKPDFConfiguration *pdfConfig = [[WKPDFConfiguration alloc] init];
+                            pdfConfig.rect = CGRectMake(0, 0, 595.28, 841.89);
+
+                            [webView createPDFWithConfiguration:pdfConfig
+                                             completionHandler:^(NSData *pdfData, NSError *pdfErr) {
+                                if (pdfData && !pdfErr) {
+                                    [pdfData writeToFile:outPath atomically:YES];
+                                    fprintf(stderr, "pdf: exported %lu bytes to %s\n",
+                                            (unsigned long)pdfData.length, pdf_path);
+                                    result = 0;
+                                } else {
+                                    fprintf(stderr, "pdf: export failed: %s\n",
+                                            pdfErr.localizedDescription.UTF8String ?: "unknown error");
+                                    result = 1;
+                                }
+                                done = YES;
+                                [NSApp terminate:nil];
+                            }];
+                        } else {
+                            fprintf(stderr, "pdf: requires macOS 13+\n");
+                            result = 1;
+                            done = YES;
+                            [NSApp terminate:nil];
+                        }
+                    });
+                }
+            }];
+        });
+
+        // Set a hard timeout
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (!done) {
+                fprintf(stderr, "pdf: timeout waiting for render\n");
+                [NSApp terminate:nil];
+            }
+        });
+
+        [NSApp run];
+        return result;
+    }
+}
+
+// Helper: export artifact to PDF using fork+exec --pdf
+static int export_to_pdf(const char *html_path, const char *pdf_path) {
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // Child
+        execl(g_exe_path, g_exe_path, "--pdf", html_path, pdf_path, NULL);
+        _exit(1);
+    }
+    // Parent: wait for child
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        struct stat st;
+        if (stat(pdf_path, &st) == 0 && st.st_size > 0) return 0;
+    }
+    return -1;
+}
+
+// ============================================================================
+// ComfyUI Image Generation
+// ============================================================================
+
+// Check if ComfyUI is installed and load config
+static void comfyui_load_config(void) {
+    const char *home = getenv("HOME");
+    if (!home) return;
+    char cfg_path[PATH_MAX];
+    snprintf(cfg_path, sizeof(cfg_path), "%s/.pre/comfyui.json", home);
+    FILE *f = fopen(cfg_path, "r");
+    if (!f) return;
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+
+    if (strstr(buf, "\"installed\":true") || strstr(buf, "\"installed\": true")) {
+        g_comfyui_installed = 1;
+        // Extract checkpoint name
+        char ckpt[256];
+        if (json_extract_str(buf, "checkpoint", ckpt, sizeof(ckpt)) > 0)
+            strlcpy(g_comfyui_checkpoint, ckpt, sizeof(g_comfyui_checkpoint));
+        // Extract port
+        char port_str[16];
+        if (json_extract_str(buf, "port", port_str, sizeof(port_str)) > 0) {
+            int p = atoi(port_str);
+            if (p > 0 && p < 65536) g_comfyui_port = p;
+        }
+    }
+}
+
+// Check if ComfyUI is running on the configured port
+static int comfyui_is_running(void) {
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "curl -sf http://127.0.0.1:%d/system_stats >/dev/null 2>&1", g_comfyui_port);
+    return system(cmd) == 0;
+}
+
+// Start ComfyUI as a background process
+static int comfyui_start(void) {
+    if (comfyui_is_running()) return 0;
+
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+
+    char venv_python[PATH_MAX], comfyui_main[PATH_MAX], log_path[PATH_MAX];
+    snprintf(venv_python, sizeof(venv_python), "%s/.pre/comfyui-venv/bin/python3", home);
+    snprintf(comfyui_main, sizeof(comfyui_main), "%s/.pre/comfyui/main.py", home);
+    snprintf(log_path, sizeof(log_path), "%s/.pre/comfyui.log", home);
+
+    // Verify files exist
+    struct stat st;
+    if (stat(venv_python, &st) != 0 || stat(comfyui_main, &st) != 0) return -1;
+
+    printf(ANSI_DIM "  [starting ComfyUI on port %d...]" ANSI_RESET "\n", g_comfyui_port);
+
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // Child: redirect stdout/stderr to log, start ComfyUI
+        int logfd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (logfd >= 0) { dup2(logfd, STDOUT_FILENO); dup2(logfd, STDERR_FILENO); close(logfd); }
+        setsid();  // detach from terminal
+
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", g_comfyui_port);
+        execl(venv_python, "python3", comfyui_main,
+              "--listen", "127.0.0.1", "--port", port_str,
+              "--force-fp16", NULL);
+        _exit(1);
+    }
+
+    g_comfyui_pid = pid;
+
+    // Poll until ready (max 60s — first launch loads model into GPU)
+    for (int i = 0; i < 120; i++) {
+        usleep(500000);  // 500ms
+        if (comfyui_is_running()) {
+            printf(ANSI_DIM "  [ComfyUI ready after %ds]" ANSI_RESET "\n", (i + 1) / 2);
+            return 0;
+        }
+        if (i % 4 == 0) {
+            printf("\r" ANSI_DIM "  [ComfyUI loading model... %ds]" ANSI_RESET, (i + 1) / 2);
+            fflush(stdout);
+        }
+    }
+    printf("\n" ANSI_YELLOW "  [ComfyUI failed to start — check ~/.pre/comfyui.log]" ANSI_RESET "\n");
+    return -1;
+}
+
+// Ensure ComfyUI is running, starting it if necessary
+static int comfyui_ensure(void) {
+    if (!g_comfyui_installed) return -1;
+    if (comfyui_is_running()) return 0;
+    return comfyui_start();
+}
+
+// Stop ComfyUI if we started it
+static void comfyui_stop(void) {
+    if (g_comfyui_pid > 0) {
+        kill(g_comfyui_pid, SIGTERM);
+        waitpid(g_comfyui_pid, NULL, WNOHANG);
+        g_comfyui_pid = 0;
+    }
+}
+
+// Generate an image via ComfyUI. Returns 0 on success, -1 on failure.
+// output_path receives the path to the generated PNG.
+static int comfyui_generate(const char *prompt, const char *negative,
+                            int width, int height, char *output_path, size_t path_sz) {
+    if (comfyui_ensure() != 0) return -1;
+
+    const char *home = getenv("HOME");
+    if (!home) return -1;
+
+    // Build filename prefix for this generation
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "pre_%ld", (long)time(NULL));
+
+    // Clamp dimensions for SDXL Turbo (trained at 512x512)
+    if (width <= 0) width = 512;
+    if (height <= 0) height = 512;
+    if (width > 1024) width = 1024;
+    if (height > 1024) height = 1024;
+
+    // JSON-escape the prompt (replace " with \", newlines with \n)
+    char esc_prompt[2048] = {0};
+    int ei = 0;
+    for (int i = 0; prompt[i] && ei < (int)sizeof(esc_prompt) - 4; i++) {
+        if (prompt[i] == '"') { esc_prompt[ei++] = '\\'; esc_prompt[ei++] = '"'; }
+        else if (prompt[i] == '\n') { esc_prompt[ei++] = '\\'; esc_prompt[ei++] = 'n'; }
+        else if (prompt[i] == '\\') { esc_prompt[ei++] = '\\'; esc_prompt[ei++] = '\\'; }
+        else esc_prompt[ei++] = prompt[i];
+    }
+
+    char esc_neg[1024] = {0};
+    if (negative && negative[0]) {
+        ei = 0;
+        for (int i = 0; negative[i] && ei < (int)sizeof(esc_neg) - 4; i++) {
+            if (negative[i] == '"') { esc_neg[ei++] = '\\'; esc_neg[ei++] = '"'; }
+            else if (negative[i] == '\n') { esc_neg[ei++] = '\\'; esc_neg[ei++] = 'n'; }
+            else esc_neg[ei++] = negative[i];
+        }
+    } else {
+        strlcpy(esc_neg, "blurry, low quality, distorted, deformed", sizeof(esc_neg));
+    }
+
+    long seed = (long)arc4random();
+
+    // Build the workflow JSON
+    char workflow[8192];
+    snprintf(workflow, sizeof(workflow),
+        "{"
+        "\"4\":{\"class_type\":\"CheckpointLoaderSimple\",\"inputs\":{\"ckpt_name\":\"%s\"}},"
+        "\"5\":{\"class_type\":\"EmptyLatentImage\",\"inputs\":{\"width\":%d,\"height\":%d,\"batch_size\":1}},"
+        "\"6\":{\"class_type\":\"CLIPTextEncode\",\"inputs\":{\"text\":\"%s\",\"clip\":[\"4\",1]}},"
+        "\"7\":{\"class_type\":\"CLIPTextEncode\",\"inputs\":{\"text\":\"%s\",\"clip\":[\"4\",1]}},"
+        "\"3\":{\"class_type\":\"KSampler\",\"inputs\":{"
+          "\"seed\":%ld,\"steps\":4,\"cfg\":1.0,\"sampler_name\":\"euler_ancestral\","
+          "\"scheduler\":\"normal\",\"denoise\":1.0,"
+          "\"model\":[\"4\",0],\"positive\":[\"6\",0],\"negative\":[\"7\",0],\"latent_image\":[\"5\",0]}},"
+        "\"8\":{\"class_type\":\"VAEDecode\",\"inputs\":{\"samples\":[\"3\",0],\"vae\":[\"4\",2]}},"
+        "\"9\":{\"class_type\":\"SaveImage\",\"inputs\":{\"filename_prefix\":\"%s\",\"images\":[\"8\",0]}}"
+        "}",
+        g_comfyui_checkpoint, width, height,
+        esc_prompt, esc_neg, seed, prefix);
+
+    // POST to /prompt
+    char post_body[16384];
+    snprintf(post_body, sizeof(post_body), "{\"prompt\":%s}", workflow);
+
+    // Write post body to temp file for curl
+    char tmp_path[PATH_MAX];
+    snprintf(tmp_path, sizeof(tmp_path), "%s/.pre/comfyui_request.json", home);
+    FILE *tf = fopen(tmp_path, "w");
+    if (!tf) return -1;
+    fputs(post_body, tf);
+    fclose(tf);
+
+    char cmd[2048];
+    snprintf(cmd, sizeof(cmd),
+        "curl -sf -X POST http://127.0.0.1:%d/prompt "
+        "-H 'Content-Type: application/json' "
+        "-d @%s 2>/dev/null",
+        g_comfyui_port, tmp_path);
+
+    FILE *proc = popen(cmd, "r");
+    if (!proc) { unlink(tmp_path); return -1; }
+    char resp[4096] = {0};
+    fread(resp, 1, sizeof(resp) - 1, proc);
+    pclose(proc);
+    unlink(tmp_path);
+
+    // Extract prompt_id from response
+    char prompt_id[128] = {0};
+    json_extract_str(resp, "prompt_id", prompt_id, sizeof(prompt_id));
+    if (!prompt_id[0]) {
+        fprintf(stderr, "comfyui: no prompt_id in response: %s\n", resp);
+        return -1;
+    }
+
+    // Poll /history/{prompt_id} until complete (max 120s)
+    printf(ANSI_DIM "  [generating image...]" ANSI_RESET);
+    fflush(stdout);
+
+    char filename[256] = {0};
+    for (int poll = 0; poll < 240; poll++) {
+        usleep(500000);
+        if (poll % 4 == 0) {
+            printf("\r" ANSI_DIM "  [generating image... %ds]" ANSI_RESET, (poll + 1) / 2);
+            fflush(stdout);
+        }
+
+        snprintf(cmd, sizeof(cmd),
+            "curl -sf http://127.0.0.1:%d/history/%s 2>/dev/null",
+            g_comfyui_port, prompt_id);
+        proc = popen(cmd, "r");
+        if (!proc) continue;
+        char hist[8192] = {0};
+        fread(hist, 1, sizeof(hist) - 1, proc);
+        pclose(proc);
+
+        // Check if our prompt_id exists in the response (means it completed)
+        if (!strstr(hist, prompt_id)) continue;
+
+        // Extract filename from outputs.9.images[0].filename
+        char *fname_key = strstr(hist, "\"filename\":");
+        if (fname_key) {
+            json_extract_str(fname_key, "filename", filename, sizeof(filename));
+            if (filename[0]) break;
+        }
+    }
+    printf("\r\033[K");
+
+    if (!filename[0]) {
+        printf(ANSI_YELLOW "  [image generation timed out]" ANSI_RESET "\n");
+        return -1;
+    }
+
+    // Copy the image from ComfyUI output to artifacts directory
+    char src_path[PATH_MAX];
+    snprintf(src_path, sizeof(src_path), "%s/.pre/comfyui/output/%s", home, filename);
+
+    // Create date directory in artifacts
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char date_dir[PATH_MAX];
+    snprintf(date_dir, sizeof(date_dir), "%s/.pre/artifacts/%04d-%02d-%02d",
+             home, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+    mkdir(date_dir, 0755);
+
+    // Build descriptive filename from prompt
+    char safe_name[64] = {0};
+    int si = 0;
+    for (int i = 0; prompt[i] && si < 50; i++) {
+        char c = prompt[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+            safe_name[si++] = c;
+        else if (c == ' ' && si > 0 && safe_name[si-1] != '_')
+            safe_name[si++] = '_';
+    }
+    if (!safe_name[0]) strlcpy(safe_name, "generated", sizeof(safe_name));
+
+    snprintf(output_path, path_sz, "%s/%s.png", date_dir, safe_name);
+
+    // Copy file
+    snprintf(cmd, sizeof(cmd), "cp '%s' '%s'", src_path, output_path);
+    if (system(cmd) != 0) {
+        // Fallback: try the source path directly
+        strlcpy(output_path, src_path, path_sz);
+    }
+
+    struct stat ist;
+    if (stat(output_path, &ist) == 0) {
+        printf(ANSI_DIM "  [image generated: %lld bytes]" ANSI_RESET "\n", (long long)ist.st_size);
+        return 0;
+    }
+    return -1;
+}
+
 // Wrap non-HTML content types in a styled HTML page for WebKit rendering
 static char *wrap_content_as_html(const char *content, const char *type, const char *title) {
     size_t clen = strlen(content);
@@ -786,14 +1193,82 @@ static char *wrap_content_as_html(const char *content, const char *type, const c
     return html;
 }
 
-// Create artifact: writes to ~/.pre/artifacts/, opens in native pop-out window
+// Create artifact: writes to ~/.pre/artifacts/, opens in native pop-out window.
+// If append_to is non-NULL, appends content to an existing artifact instead of creating new.
 static int execute_artifact(const char *title, const char *content, const char *type,
-                            char *output, size_t output_sz) {
+                            const char *append_to, char *output, size_t output_sz) {
     const char *home = getenv("HOME");
     if (!home) return snprintf(output, output_sz, "Error: HOME not set");
-    if (!title || !title[0]) return snprintf(output, output_sz, "Error: title required");
     if (!content) return snprintf(output, output_sz, "Error: content required");
     if (!type) type = "text";
+
+    // ---- APPEND MODE ----
+    // Find the existing artifact and inject content before </body>
+    if (append_to && append_to[0]) {
+        int found = -1;
+        for (int i = g_artifact_count - 1; i >= 0; i--) {
+            if (strcasestr(g_artifacts[i].title, append_to)) { found = i; break; }
+        }
+        if (found < 0)
+            return snprintf(output, output_sz, "Error: no artifact matching '%s' found", append_to);
+
+        // Read existing HTML
+        FILE *f = fopen(g_artifacts[found].path, "r");
+        if (!f) return snprintf(output, output_sz, "Error: cannot read %s", g_artifacts[found].path);
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *existing = malloc(fsize + 1);
+        fread(existing, 1, fsize, f);
+        existing[fsize] = 0;
+        fclose(f);
+
+        // Find insertion point: before </body> or </html> or end of file
+        char *insert_point = strstr(existing, "</body>");
+        if (!insert_point) insert_point = strstr(existing, "</html>");
+        if (!insert_point) insert_point = existing + fsize;
+
+        g_artifacts[found].section_count++;
+        int sec_num = g_artifacts[found].section_count;
+
+        // Build the section wrapper with a visual divider
+        f = fopen(g_artifacts[found].path, "w");
+        if (!f) { free(existing); return snprintf(output, output_sz, "Error: cannot write %s", g_artifacts[found].path); }
+
+        // Write everything before insertion point
+        fwrite(existing, 1, insert_point - existing, f);
+
+        // Inject section divider + content
+        fprintf(f, "\n<!-- Section %d -->\n"
+                   "<hr style='border:none;border-top:2px solid #444;margin:32px 0'>\n"
+                   "<section id='section-%d'>\n%s\n</section>\n",
+                sec_num, sec_num, content);
+
+        // Write the rest (</body></html>)
+        fputs(insert_point, f);
+        fclose(f);
+        free(existing);
+
+        struct stat art_st;
+        long long new_size = 0;
+        if (stat(g_artifacts[found].path, &art_st) == 0) new_size = (long long)art_st.st_size;
+
+        printf(ANSI_DIM "  [artifact section %d appended: %lld bytes total]" ANSI_RESET "\n", sec_num, new_size);
+
+        // Refresh the viewer window
+        show_artifact_window(g_artifacts[found].path, g_artifacts[found].title);
+
+        printf(ANSI_CYAN "  ◆ Artifact updated: %s" ANSI_RESET " (section %d)\n",
+               g_artifacts[found].title, sec_num);
+
+        return snprintf(output, output_sz,
+            "Section %d appended to artifact \"%s\" (%lld bytes total).\n"
+            "The updated artifact is displayed in the pop-out window.",
+            sec_num, g_artifacts[found].title, new_size);
+    }
+
+    // ---- CREATE MODE (original path) ----
+    if (!title || !title[0]) return snprintf(output, output_sz, "Error: title required");
 
     // Create date directory
     time_t now = time(NULL);
@@ -2849,6 +3324,18 @@ static char *build_tools_json(void) {
         // thousands of tokens of HTML into a JSON string argument. It works via text-based
         // <tool_call> format instead (see system prompt).
 
+        TOOL_DEF("image_generate", "Generate an image from a text description using local Stable Diffusion",
+                 "\"prompt\":{\"type\":\"string\",\"description\":\"Detailed image description\"},"
+                 "\"width\":{\"type\":\"integer\",\"description\":\"Width in pixels (default: 512, max: 1024)\"},"
+                 "\"height\":{\"type\":\"integer\",\"description\":\"Height in pixels (default: 512, max: 1024)\"},"
+                 "\"style\":{\"type\":\"string\",\"description\":\"Optional style prefix: photorealistic, artistic, cartoon, illustration, cinematic\"}",
+                 "\"prompt\""),
+
+        TOOL_DEF("pdf_export", "Export an artifact to PDF for sharing",
+                 "\"title\":{\"type\":\"string\",\"description\":\"Artifact title to export (or 'latest' for most recent)\"},"
+                 "\"path\":{\"type\":\"string\",\"description\":\"Output PDF path (optional — defaults to same dir as artifact)\"}",
+                 "\"title\""),
+
         TOOL_DEF("cron", "Manage recurring scheduled tasks",
                  "\"action\":{\"type\":\"string\",\"description\":\"Action: add|list|remove|enable|disable\"},"
                  "\"schedule\":{\"type\":\"string\",\"description\":\"5-field cron schedule: min hour dom month dow (e.g. 0 9 * * 1-5)\"},"
@@ -3114,11 +3601,19 @@ static char *build_context_preamble(void) {
         "<tool_call>\n"
         "{\"name\": \"file_write\", \"arguments\": {\"path\": \"...\", \"content\": \"...file contents...\"}}\n"
         "</tool_call>\n"
+        "For long documents (reports, multi-section content), use append_to to build incrementally:\n"
+        "<tool_call>\n"
+        "{\"name\": \"artifact\", \"arguments\": {\"append_to\": \"Report Title\", \"content\": \"<h2>Next Section</h2>...\", \"type\": \"html\"}}\n"
+        "</tool_call>\n"
+        "Each append_to call adds a new section to the existing artifact. No title needed when appending.\n"
         "All other tools (bash, file_edit, read_file, memory_save, etc.) are called as functions — do NOT use <tool_call> tags for them.\n\n"
         "Tool tips:\n"
         "memory_save types: user|feedback|project|reference. scope: project|global.\n"
         "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
         "artifact types: html|markdown|csv|json|svg|code|text.\n"
+        "image_generate creates images locally via Stable Diffusion (SDXL Turbo). Returns a file path.\n"
+        "Use generated images in artifacts: <img src='file://PATH'>. For reports, generate images first, then build the artifact referencing them.\n"
+        "pdf_export converts an artifact to PDF. Use title='latest' for the most recent.\n"
         "Save memories proactively for user prefs, project context, corrections.\n\n");
 
     // Tell the model about connection-dependent tools (even if not active)
@@ -6163,7 +6658,105 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
             snprintf(auto_title, sizeof(auto_title), "artifact_%ld", (long)time(NULL));
             atitle = auto_title;
         }
-        out_len = execute_artifact(atitle, acontent, atype, output, output_sz);
+        const char *aappend = tool_call_get(tc, "append_to");
+        out_len = execute_artifact(atitle, acontent, atype, aappend, output, output_sz);
+
+    } else if (strcmp(name, "image_generate") == 0) {
+        const char *iprompt = tool_call_get(tc, "prompt");
+        const char *istyle = tool_call_get(tc, "style");
+        const char *iwidth_s = tool_call_get(tc, "width");
+        const char *iheight_s = tool_call_get(tc, "height");
+
+        if (!iprompt || !iprompt[0]) {
+            out_len = snprintf(output, output_sz, "Error: prompt is required");
+        } else if (!g_comfyui_installed) {
+            out_len = snprintf(output, output_sz,
+                "Error: ComfyUI is not installed. Run the install script with image generation "
+                "support, or manually install ComfyUI to ~/.pre/comfyui/ and create ~/.pre/comfyui.json");
+        } else {
+            int iw = iwidth_s ? atoi(iwidth_s) : 512;
+            int ih = iheight_s ? atoi(iheight_s) : 512;
+
+            // Prepend style hint to prompt if provided
+            char full_prompt[2048];
+            if (istyle && istyle[0]) {
+                snprintf(full_prompt, sizeof(full_prompt), "%s %s", istyle, iprompt);
+            } else {
+                strlcpy(full_prompt, iprompt, sizeof(full_prompt));
+            }
+
+            char img_path[PATH_MAX] = {0};
+            int rc = comfyui_generate(full_prompt, NULL, iw, ih, img_path, sizeof(img_path));
+            if (rc == 0) {
+                printf(ANSI_CYAN "  ◆ Image: %s" ANSI_RESET "\n", img_path);
+                printf("    \033]8;;file://%s\033\\", img_path);
+                printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET, img_path);
+                printf("\033]8;;\033\\\n");
+
+                out_len = snprintf(output, output_sz,
+                    "Image generated successfully: %s\n"
+                    "To use in an HTML artifact, reference it as: <img src='file://%s'>\n"
+                    "The image is saved locally and visible in the terminal link above.",
+                    img_path, img_path);
+            } else {
+                out_len = snprintf(output, output_sz,
+                    "Error: image generation failed. Check that ComfyUI is running "
+                    "(port %d) and the SDXL model is loaded. See ~/.pre/comfyui.log for details.",
+                    g_comfyui_port);
+            }
+        }
+
+    } else if (strcmp(name, "pdf_export") == 0) {
+        const char *ptitle = tool_call_get(tc, "title");
+        const char *ppath = tool_call_get(tc, "path");
+
+        // Find the artifact to export
+        int found = -1;
+        if (ptitle && (strcmp(ptitle, "latest") == 0 || strcmp(ptitle, "last") == 0)) {
+            if (g_artifact_count > 0) found = g_artifact_count - 1;
+        } else if (ptitle) {
+            for (int i = g_artifact_count - 1; i >= 0; i--) {
+                if (strcasestr(g_artifacts[i].title, ptitle)) { found = i; break; }
+            }
+        }
+        if (found < 0) {
+            out_len = snprintf(output, output_sz, "Error: no artifact matching '%s' found. "
+                "Create an artifact first, then export it.", ptitle ?: "(none)");
+        } else {
+            // Build output PDF path
+            char pdf_path[PATH_MAX];
+            if (ppath && ppath[0]) {
+                strlcpy(pdf_path, ppath, sizeof(pdf_path));
+            } else {
+                // Same directory as HTML, with .pdf extension
+                strlcpy(pdf_path, g_artifacts[found].path, sizeof(pdf_path));
+                char *dot = strrchr(pdf_path, '.');
+                if (dot) strlcpy(dot, ".pdf", sizeof(pdf_path) - (dot - pdf_path));
+                else strlcat(pdf_path, ".pdf", sizeof(pdf_path));
+            }
+
+            printf(ANSI_DIM "  [exporting to PDF...]" ANSI_RESET "\n");
+            int rc = export_to_pdf(g_artifacts[found].path, pdf_path);
+            if (rc == 0) {
+                struct stat pst;
+                long long psz = 0;
+                if (stat(pdf_path, &pst) == 0) psz = (long long)pst.st_size;
+
+                printf(ANSI_CYAN "  ◆ PDF exported: %s" ANSI_RESET " (%lld bytes)\n", pdf_path, psz);
+                // Print clickable link
+                printf("    \033]8;;file://%s\033\\", pdf_path);
+                printf(ANSI_BOLD ANSI_CYAN "▸ %s" ANSI_RESET, pdf_path);
+                printf("\033]8;;\033\\\n");
+
+                out_len = snprintf(output, output_sz,
+                    "PDF exported successfully: %s (%lld bytes)\n"
+                    "The user can click the terminal link to open it.", pdf_path, psz);
+            } else {
+                out_len = snprintf(output, output_sz,
+                    "Error: PDF export failed. The artifact HTML may have issues, "
+                    "or macOS 13+ is required for WebKit PDF export.");
+            }
+        }
 
     } else if (strcmp(name, "cron") == 0) {
         const char *action = tool_call_get(tc, "action");
@@ -6803,6 +7396,7 @@ static void cmd_connections(const char *args);
 static void cmd_name(const char *args);
 static void cmd_artifacts(const char *args);
 static void cmd_cron(const char *args);
+static void cmd_pdf(const char *args);
 
 typedef struct {
     const char *name;
@@ -6842,6 +7436,7 @@ static SlashCommand commands[] = {
     {"/connections", "[service]", "Manage API connections",        cmd_connections},
     {"/name",    "<name>",   "Rename this agent",                  cmd_name},
     {"/artifacts","[open|dir]","List session artifacts or open one", cmd_artifacts},
+    {"/pdf",     "[title|N]", "Export artifact to PDF",              cmd_pdf},
     {"/cron",    "[add|rm|ls]","Manage recurring scheduled tasks",   cmd_cron},
     {NULL, NULL, NULL, NULL}
 };
@@ -7527,6 +8122,57 @@ static void cmd_artifacts(const char *args) {
 //        /cron rm <id>                   — remove a cron job
 //        /cron enable <id>               — enable a disabled job
 //        /cron disable <id>              — disable a job
+static void cmd_pdf(const char *args) {
+    if (g_artifact_count == 0) {
+        printf(ANSI_YELLOW "  No artifacts in this session. Create one first." ANSI_RESET "\n");
+        return;
+    }
+
+    int idx = -1;
+    if (!args || !args[0]) {
+        // Default: most recent artifact
+        idx = g_artifact_count - 1;
+    } else if (args[0] >= '0' && args[0] <= '9') {
+        idx = atoi(args) - 1;
+        if (idx < 0 || idx >= g_artifact_count) {
+            printf(ANSI_YELLOW "  Invalid index. Use 1-%d." ANSI_RESET "\n", g_artifact_count);
+            return;
+        }
+    } else {
+        // Search by title
+        for (int i = g_artifact_count - 1; i >= 0; i--) {
+            if (strcasestr(g_artifacts[i].title, args)) { idx = i; break; }
+        }
+        if (idx < 0) {
+            printf(ANSI_YELLOW "  No artifact matching '%s'." ANSI_RESET "\n", args);
+            return;
+        }
+    }
+
+    // Build PDF path
+    char pdf_path[PATH_MAX];
+    strlcpy(pdf_path, g_artifacts[idx].path, sizeof(pdf_path));
+    char *dot = strrchr(pdf_path, '.');
+    if (dot) strlcpy(dot, ".pdf", sizeof(pdf_path) - (dot - pdf_path));
+    else strlcat(pdf_path, ".pdf", sizeof(pdf_path));
+
+    printf(ANSI_DIM "  Exporting \"%s\" to PDF..." ANSI_RESET "\n", g_artifacts[idx].title);
+
+    int rc = export_to_pdf(g_artifacts[idx].path, pdf_path);
+    if (rc == 0) {
+        struct stat pst;
+        long long psz = 0;
+        if (stat(pdf_path, &pst) == 0) psz = (long long)pst.st_size;
+
+        printf(ANSI_CYAN "  ◆ PDF: %s" ANSI_RESET " (%lld bytes)\n", pdf_path, psz);
+        // Open in Preview
+        pid_t opid = fork();
+        if (opid == 0) { execl("/usr/bin/open", "open", pdf_path, NULL); _exit(1); }
+    } else {
+        printf(ANSI_RED "  PDF export failed. Requires macOS 13+." ANSI_RESET "\n");
+    }
+}
+
 static void cmd_cron(const char *args) {
     while (args && *args == ' ') args++;
 
@@ -8667,6 +9313,11 @@ int main(int argc, char **argv) {
             return artifact_window_main(argv[2], argc >= 4 ? argv[3] : "Artifact");
         }
 
+        // --pdf mode: launched by pdf_export via fork+exec
+        if (argc >= 4 && strcmp(argv[1], "--pdf") == 0) {
+            return pdf_export_main(argv[2], argv[3]);
+        }
+
         // Unload model on Ctrl+C or kill
         signal(SIGINT, handle_exit_signal);
         signal(SIGTERM, handle_exit_signal);
@@ -8783,6 +9434,11 @@ int main(int argc, char **argv) {
         if (g_cron_count > 0)
             printf(ANSI_DIM "  %d cron job%s loaded" ANSI_RESET "\n",
                    g_cron_count, g_cron_count == 1 ? "" : "s");
+
+        // Load ComfyUI config
+        comfyui_load_config();
+        if (g_comfyui_installed)
+            printf(ANSI_DIM "  ComfyUI available (image generation)" ANSI_RESET "\n");
 
         // Resume session
         if (resume_id) {
@@ -8957,7 +9613,7 @@ int main(int argc, char **argv) {
                            ANSI_RESET "\n");
                     char auto_output[65536];
                     execute_artifact("Auto-Extracted Game", html_content, "html",
-                                    auto_output, sizeof(auto_output));
+                                    NULL, auto_output, sizeof(auto_output));
                     size_t html_len = strlen(html_content);
                     free(html_content);
 
@@ -9050,7 +9706,7 @@ int main(int argc, char **argv) {
                                                ANSI_RESET "\n");
                                         char auto_output[65536];
                                         execute_artifact("Auto-Extracted Game", extracted, "html",
-                                                        auto_output, sizeof(auto_output));
+                                                        NULL, auto_output, sizeof(auto_output));
                                         // Compact session
                                         char compact_note[256];
                                         snprintf(compact_note, sizeof(compact_note),
@@ -9081,6 +9737,7 @@ int main(int argc, char **argv) {
         // Cleanup — stop services, unload model from GPU
         printf(ANSI_DIM "\nStopping services..." ANSI_RESET "\n");
         stop_telegram();
+        comfyui_stop();
         ollama_unload();
         free(g.last_response);
         free(g_pending_attach);
