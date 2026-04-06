@@ -96,6 +96,7 @@ typedef struct {
     // Cumulative session stats
     int total_tokens_out;       // total generated tokens this session
     int total_tokens_in;        // estimated input tokens this session
+    int last_num_ctx;           // last num_ctx sent to Ollama (avoid KV cache rebuilds)
     double cumulative_gen_ms;   // total generation time
     double session_start_ms;    // when session began
 
@@ -1575,6 +1576,7 @@ static void channel_init(const char *name) {
     g.turn_count = 0;
     g.total_tokens_in = 0;
     g.total_tokens_out = 0;
+    g.last_num_ctx = 0;
     g.cumulative_gen_ms = 0;
     g.session_start_ms = now_ms();
     free(g.last_response); g.last_response = NULL;
@@ -3957,13 +3959,20 @@ static int send_request(const char *user_message, int max_tokens, const char *se
     int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"stream\":true,\"keep_alive\":\"24h\"", g_model);
 
     // Dynamic context window: start small for fast startup, grow as conversation does.
-    // Only count actual tokens used so far + modest headroom. Don't include max_tokens
-    // (num_predict) — Ollama allocates generation space separately. Keeping num_ctx
-    // stable avoids KV cache rebuilds which cause multi-second TTFT spikes.
+    // CRITICAL: changing num_ctx between requests forces Ollama to discard the KV cache
+    // and reprocess the entire conversation from scratch. This causes TTFT to spike from
+    // seconds to minutes (observed: 15s→56s→257s→300s timeout during a 4-image tool chain).
+    // Strategy: never shrink num_ctx, and add headroom to avoid mid-chain doublings.
     int estimated = g.total_tokens_in + g.total_tokens_out + 2048;
     int num_ctx = 8192; // minimum
     while (num_ctx < estimated && num_ctx < MAX_CONTEXT) num_ctx *= 2;
+    // Add headroom: one extra doubling if we're past the initial warmup (>4K tokens).
+    // This prevents the next tool call from crossing a boundary and triggering a rebuild.
+    if (num_ctx < MAX_CONTEXT && estimated > 4096) num_ctx *= 2;
     if (num_ctx > MAX_CONTEXT) num_ctx = MAX_CONTEXT;
+    // Never shrink — Ollama rebuilds KV cache on ANY change to num_ctx.
+    if (g.last_num_ctx > 0 && num_ctx < g.last_num_ctx) num_ctx = g.last_num_ctx;
+    g.last_num_ctx = num_ctx;
 
     body_len += snprintf(body + body_len, body_cap - body_len,
         ",\"options\":{\"num_predict\":%d,\"num_ctx\":%d}",
@@ -4357,8 +4366,11 @@ static char *stream_response(int sock, int num_predict) {
     // Base stall timeouts. Prefill timeout scales with estimated context size:
     // at 8K tokens, 5 min is plenty; at 128K+, allow up to 10 min.
     int estimated_ctx = g.total_tokens_in + g.total_tokens_out;
+    // Prefill timeout: scale with context size. A KV cache rebuild at 32K tokens
+    // can take 250+ seconds on M4 Max; at 64K it can exceed 5 minutes. Allow enough
+    // time for legitimate rebuilds without hanging indefinitely on true stalls.
     double prefill_stall_ms = 300000.0; // 5 min base
-    if (estimated_ctx > 32768) prefill_stall_ms = 300000.0 + (estimated_ctx - 32768) * 2.5;
+    if (estimated_ctx > 16384) prefill_stall_ms = 300000.0 + (estimated_ctx - 16384) * 3.0;
     if (prefill_stall_ms > 600000.0) prefill_stall_ms = 600000.0; // cap at 10 min
     #define STALL_GENERATE_MS  90000   // 90s — no token mid-generation = hung
     #define STALL_TOOLCALL_MS  600000  // 10 min — native tool call generation (no streaming)
