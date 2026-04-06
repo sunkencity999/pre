@@ -79,6 +79,9 @@
 
 // Approximate context window budget for the model (tokens)
 #define MAX_CONTEXT     262144
+// Actual num_ctx configured in the Modelfile — must match exactly.
+// Sending any different value to Ollama triggers a full model reload (300s+).
+#define MODEL_CTX       32768
 
 typedef struct {
     int port;
@@ -985,11 +988,21 @@ static int comfyui_generate(const char *prompt, const char *negative,
     char prefix[64];
     snprintf(prefix, sizeof(prefix), "pre_%ld", (long)time(NULL));
 
-    // Clamp dimensions for SDXL Turbo (trained at 512x512)
-    if (width <= 0) width = 512;
-    if (height <= 0) height = 512;
-    if (width > 1024) width = 1024;
-    if (height > 1024) height = 1024;
+    // Detect if using SDXL Turbo (speed mode) vs a full SDXL model (quality mode).
+    // Turbo is trained at 512x512 with 4 steps; full SDXL at 1024x1024 with 20-30 steps.
+    int is_turbo = (strstr(g_comfyui_checkpoint, "turbo") != NULL);
+
+    if (is_turbo) {
+        if (width <= 0) width = 512;
+        if (height <= 0) height = 512;
+        if (width > 1024) width = 1024;
+        if (height > 1024) height = 1024;
+    } else {
+        if (width <= 0) width = 1024;
+        if (height <= 0) height = 1024;
+        if (width > 1536) width = 1536;
+        if (height > 1536) height = 1536;
+    }
 
     // JSON-escape the prompt (replace " with \", newlines with \n)
     char esc_prompt[2048] = {0};
@@ -1010,10 +1023,21 @@ static int comfyui_generate(const char *prompt, const char *negative,
             else esc_neg[ei++] = negative[i];
         }
     } else {
-        strlcpy(esc_neg, "blurry, low quality, distorted, deformed", sizeof(esc_neg));
+        strlcpy(esc_neg,
+            "blurry, low quality, distorted, deformed, disfigured, "
+            "bad anatomy, wrong proportions, extra limbs, mutated hands, "
+            "ugly face, distorted face, malformed face, crossed eyes, "
+            "watermark, text, signature, jpeg artifacts",
+            sizeof(esc_neg));
     }
 
     long seed = (long)arc4random();
+
+    // Workflow parameters adapt to the checkpoint type
+    int steps = is_turbo ? 4 : 25;
+    double cfg = is_turbo ? 1.0 : 5.5;
+    const char *sampler = is_turbo ? "euler_ancestral" : "dpmpp_2m";
+    const char *scheduler = is_turbo ? "normal" : "karras";
 
     // Build the workflow JSON
     char workflow[8192];
@@ -1024,14 +1048,14 @@ static int comfyui_generate(const char *prompt, const char *negative,
         "\"6\":{\"class_type\":\"CLIPTextEncode\",\"inputs\":{\"text\":\"%s\",\"clip\":[\"4\",1]}},"
         "\"7\":{\"class_type\":\"CLIPTextEncode\",\"inputs\":{\"text\":\"%s\",\"clip\":[\"4\",1]}},"
         "\"3\":{\"class_type\":\"KSampler\",\"inputs\":{"
-          "\"seed\":%ld,\"steps\":4,\"cfg\":1.0,\"sampler_name\":\"euler_ancestral\","
-          "\"scheduler\":\"normal\",\"denoise\":1.0,"
+          "\"seed\":%ld,\"steps\":%d,\"cfg\":%.1f,\"sampler_name\":\"%s\","
+          "\"scheduler\":\"%s\",\"denoise\":1.0,"
           "\"model\":[\"4\",0],\"positive\":[\"6\",0],\"negative\":[\"7\",0],\"latent_image\":[\"5\",0]}},"
         "\"8\":{\"class_type\":\"VAEDecode\",\"inputs\":{\"samples\":[\"3\",0],\"vae\":[\"4\",2]}},"
         "\"9\":{\"class_type\":\"SaveImage\",\"inputs\":{\"filename_prefix\":\"%s\",\"images\":[\"8\",0]}}"
         "}",
         g_comfyui_checkpoint, width, height,
-        esc_prompt, esc_neg, seed, prefix);
+        esc_prompt, esc_neg, seed, steps, cfg, sampler, scheduler, prefix);
 
     // POST to /prompt
     char post_body[16384];
@@ -1067,12 +1091,12 @@ static int comfyui_generate(const char *prompt, const char *negative,
         return -1;
     }
 
-    // Poll /history/{prompt_id} until complete (max 120s)
+    // Poll /history/{prompt_id} until complete (max 300s for 25-step generation at 1024x1024)
     printf(ANSI_DIM "  [generating image...]" ANSI_RESET);
     fflush(stdout);
 
     char filename[256] = {0};
-    for (int poll = 0; poll < 240; poll++) {
+    for (int poll = 0; poll < 600; poll++) {
         usleep(500000);
         if (poll % 4 == 0) {
             printf("\r" ANSI_DIM "  [generating image... %ds]" ANSI_RESET, (poll + 1) / 2);
@@ -3414,7 +3438,7 @@ static char *build_tools_json(void) {
 
     // Conditional tool: image_generate (only when ComfyUI is installed)
     if (g_comfyui_installed) {
-        const char *t = "," TOOL_DEF("image_generate", "Generate an image locally using SDXL Turbo on the GPU. INSTALLED AND OPERATIONAL. Returns a file path to the generated PNG. Call this tool — do not use external image URLs instead.",
+        const char *t = "," TOOL_DEF("image_generate", "Generate an image locally on the GPU. INSTALLED AND OPERATIONAL. Returns a file path to the generated PNG. Produces high-quality photorealistic output. Call this tool — do not use external image URLs instead.",
             "\"prompt\":{\"type\":\"string\",\"description\":\"Detailed image description\"},"
             "\"width\":{\"type\":\"integer\",\"description\":\"Width in pixels (default: 512, max: 1024)\"},"
             "\"height\":{\"type\":\"integer\",\"description\":\"Height in pixels (default: 512, max: 1024)\"},"
@@ -3658,6 +3682,8 @@ static char *build_context_preamble(void) {
         "   <tool_call>\n"
         "   {\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"...HTML...\", \"type\": \"html\"}}\n"
         "   </tool_call>\n"
+        "   To save a file: <tool_call>{\"name\":\"file_write\",\"arguments\":{\"path\":\"path/to/file\",\"content\":\"...\"}}</tool_call>\n"
+        "   Do NOT use bash/printf/cat to write files — use file_write instead.\n"
         "   All other tools are native function calls.\n"
         "3. One tool call per turn. STOP after each call and wait for the result.\n"
         "4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n"
@@ -3667,7 +3693,7 @@ static char *build_context_preamble(void) {
 
     if (g_comfyui_installed) {
         plen += snprintf(preamble + plen, cap - plen,
-            "8. image_generate is a WORKING native function call. It creates images on the local GPU in ~5 seconds. "
+            "8. image_generate is a WORKING native function call. It creates photorealistic images on the local GPU in ~30-45 seconds. "
             "ALWAYS call it when images are requested. NEVER use Unsplash or external URLs instead. "
             "After generating, use the returned path in artifacts: <img src='file:///path/from/tool'>\n");
     }
@@ -3721,7 +3747,8 @@ static char *build_context_preamble(void) {
     plen += snprintf(preamble + plen, cap - plen, "\n--- SYSTEM STATUS ---\n");
     if (g_comfyui_installed) {
         plen += snprintf(preamble + plen, cap - plen,
-            "image_generate: ONLINE (ComfyUI + SDXL Turbo, port %d, GPU-accelerated)\n", g_comfyui_port);
+            "image_generate: ONLINE (ComfyUI + %s, port %d, GPU-accelerated)\n",
+            g_comfyui_checkpoint, g_comfyui_port);
     }
     Connection *bs = get_connection("brave_search");
     if (bs && bs->active) {
@@ -3875,13 +3902,16 @@ static int compact_session(const char *session_id, int keep_turns) {
 // Check if we should compact and do it
 static void maybe_compact(void) {
     int estimated_tokens = g.total_tokens_in + g.total_tokens_out;
-    // Compact when we've used 75% of context budget
-    int threshold = MAX_CONTEXT * 3 / 4;
+    // Compact when we've used 75% of the model's actual context window (32768).
+    // Can't grow num_ctx at runtime — any change triggers a 300s+ model reload.
+    // 75% of 32768 = ~24576 tokens — enough room for the next tool round-trip.
+    int threshold = MODEL_CTX * 3 / 4;
     if (estimated_tokens > threshold) {
         // Keep last 6 turns (12 messages) for immediate context
         compact_session(g.session_id, 6);
         // Reset token estimates after compaction
         g.total_tokens_in = estimated_tokens / 4; // rough estimate of compacted size
+        g.total_tokens_out = 0;
     }
 }
 
@@ -3912,25 +3942,15 @@ static int send_request(const char *user_message, int max_tokens, const char *se
     char *body = malloc(body_cap);
     int body_len = snprintf(body, body_cap, "{\"model\":\"%s\",\"stream\":true,\"keep_alive\":\"24h\"", g_model);
 
-    // Dynamic context window: start small for fast startup, grow as conversation does.
-    // CRITICAL: changing num_ctx between requests forces Ollama to discard the KV cache
-    // and reprocess the entire conversation from scratch. This causes TTFT to spike from
-    // seconds to minutes (observed: 15s→56s→257s→300s timeout during a 4-image tool chain).
-    // Strategy: never shrink num_ctx, and add headroom to avoid mid-chain doublings.
-    int estimated = g.total_tokens_in + g.total_tokens_out + 2048;
-    int num_ctx = 8192; // minimum
-    while (num_ctx < estimated && num_ctx < MAX_CONTEXT) num_ctx *= 2;
-    // Add headroom: one extra doubling if we're past the initial warmup (>4K tokens).
-    // This prevents the next tool call from crossing a boundary and triggering a rebuild.
-    if (num_ctx < MAX_CONTEXT && estimated > 4096) num_ctx *= 2;
-    if (num_ctx > MAX_CONTEXT) num_ctx = MAX_CONTEXT;
-    // Never shrink — Ollama rebuilds KV cache on ANY change to num_ctx.
-    if (g.last_num_ctx > 0 && num_ctx < g.last_num_ctx) num_ctx = g.last_num_ctx;
-    g.last_num_ctx = num_ctx;
-
+    // Context window strategy: ALWAYS send the same num_ctx value matching the Modelfile.
+    // Any num_ctx change triggers a full model reload in Ollama (300s+ for Gemma 4 26B).
+    // The Modelfile sets num_ctx=32768 and pre-launch pre-warms the model with a real
+    // request to fully allocate the KV cache. By sending the same value every time,
+    // Ollama recognizes it matches the loaded model and reuses the existing KV allocation.
+    // Auto-compaction (maybe_compact) keeps conversations within this 32K budget.
     body_len += snprintf(body + body_len, body_cap - body_len,
         ",\"options\":{\"num_predict\":%d,\"num_ctx\":%d}",
-        max_tokens, num_ctx);
+        max_tokens, MODEL_CTX);
 
     // Messages array — starts with system message for tool/context instructions
     // Using role:system in messages array (not top-level "system" field) for
@@ -4641,9 +4661,9 @@ static char *stream_response(int sock, int num_predict) {
         printf("\n  %d tokens  │  %.1f tok/s  │  TTFT %.1fs\n",
                tokens, tok_s, ttft / 1000.0);
 
-        // Context window usage bar
+        // Context window usage bar (relative to model's actual num_ctx, not MAX_CONTEXT)
         int used = g.total_tokens_in + g.total_tokens_out;
-        int pct = used * 100 / MAX_CONTEXT;
+        int pct = used * 100 / MODEL_CTX;
         if (pct > 100) pct = 100;
         int bar_width = 30;
         int filled = pct * bar_width / 100;
@@ -4658,7 +4678,7 @@ static char *stream_response(int sock, int num_predict) {
                 printf("░");
             }
         }
-        printf("] %d%% of %dK", pct, MAX_CONTEXT / 1024);
+        printf("] %d%% of %dK", pct, MODEL_CTX / 1024);
         if (pct >= 75) printf("  ⟳ auto-compact active");
         printf(ANSI_RESET "\n\n");
     }
@@ -4881,7 +4901,68 @@ static int extract_tool_call_v2(const char *tc_body, ToolCall *tc) {
         }
     }
 
-    // If we found a name via JSON but no arguments block, still valid (no-arg tool)
+    // If we found a name but no "arguments" block, try parsing top-level keys
+    // as arguments. Models often hallucinate {"name":"bash","command":"ls"} without
+    // wrapping in an "arguments" object. Re-scan for all string keys that aren't "name".
+    if (tc->name[0] && tc->argc == 0) {
+        const char *p = tc_body;
+        while (*p && tc->argc < MAX_TOOL_ARGS) {
+            // Find next quoted key
+            char *q = strchr(p, '"');
+            if (!q) break;
+            q++; // skip opening "
+            // Read key
+            char key[64] = {0};
+            int ki = 0;
+            while (*q && *q != '"' && ki < 63) key[ki++] = *q++;
+            key[ki] = 0;
+            if (*q == '"') q++; // skip closing "
+
+            // Skip to value
+            while (*q && (*q == ' ' || *q == ':' || *q == '\t')) q++;
+
+            if (strcmp(key, "name") == 0 || strcmp(key, "arguments") == 0 ||
+                strcmp(key, "parameters") == 0 || strcmp(key, "params") == 0) {
+                // Skip known wrapper keys — advance past their value
+                if (*q == '"') {
+                    q++; // skip opening "
+                    while (*q && !(*q == '"' && *(q-1) != '\\')) q++;
+                    if (*q == '"') q++;
+                } else if (*q == '{') {
+                    int depth = 1; q++;
+                    while (*q && depth > 0) {
+                        if (*q == '{') depth++;
+                        else if (*q == '}') depth--;
+                        q++;
+                    }
+                }
+                p = q;
+                continue;
+            }
+
+            // Parse value for this key
+            if (*q == '"') {
+                q++; // skip opening "
+                const char *endp;
+                tc->vals[tc->argc] = decode_json_string(q, &endp);
+                q = (char *)endp;
+            } else {
+                // Non-string value
+                const char *start = q;
+                while (*q && *q != ',' && *q != '}') q++;
+                size_t vlen = (size_t)(q - start);
+                tc->vals[tc->argc] = malloc(vlen + 1);
+                memcpy(tc->vals[tc->argc], start, vlen);
+                tc->vals[tc->argc][vlen] = 0;
+            }
+            strncpy(tc->keys[tc->argc], key, 63);
+            tc->argc++;
+            p = q;
+        }
+        if (tc->argc > 0) return 1;
+    }
+
+    // If we found a name via JSON but no arguments at all, still valid (no-arg tool)
     if (nk && tc->name[0]) return 1;
 
     // === Fallback: Qwen XML-style format ===
@@ -5218,7 +5299,12 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
         const char *cmd = tool_call_get(tc, "command");
         if (!cmd) { out_len = snprintf(output, output_sz, "Error: no command provided"); return out_len; }
         printf(ANSI_DIM "  [$ %s]" ANSI_RESET "\n", cmd);
-        FILE *proc = popen(cmd, "r");
+        // Redirect stderr to stdout so shell errors are captured in the tool result.
+        // Without this, popen() only reads stdout — shell errors go to the terminal
+        // display but not the tool response, causing the model to hallucinate success.
+        char cmd_with_stderr[4096];
+        snprintf(cmd_with_stderr, sizeof(cmd_with_stderr), "%s 2>&1", cmd);
+        FILE *proc = popen(cmd_with_stderr, "r");
         if (proc) {
             while (out_len < (int)output_sz - 1) {
                 int ch = fgetc(proc);
@@ -7410,8 +7496,14 @@ static char *handle_tool_calls(char *response) {
         // Auto-compact before follow-up to prevent context bloat
         maybe_compact();
 
-        // Follow-up requests in tool loop get 2x budget (room for another tool call)
-        int sock = send_request(combined, followup_budget, g.session_id);
+        // Follow-up requests in tool loop get 2x budget (room for another tool call).
+        // Pass NULL as user_message — the tool result is already saved in the session
+        // JSONL (line above), so send_request will replay it from there. Passing
+        // `combined` here would duplicate the tool result (once as role:tool from
+        // JSONL, once as role:user appended by send_request), which doubles the
+        // token count and invalidates Ollama's KV cache prefix match, causing a
+        // full reprocess (observed: 300s stall after image_generate).
+        int sock = send_request(NULL, followup_budget, g.session_id);
         free(combined);
         if (sock < 0) return NULL;
 
@@ -8473,7 +8565,7 @@ static void cmd_cron(const char *args) {
 
 static void cmd_context(const char *args __attribute__((unused))) {
     int used = g.total_tokens_in + g.total_tokens_out;
-    int pct = MAX_CONTEXT > 0 ? (used * 100 / MAX_CONTEXT) : 0;
+    int pct = MODEL_CTX > 0 ? (used * 100 / MODEL_CTX) : 0;
     if (pct > 100) pct = 100;
 
     printf("\n" ANSI_BOLD "  Context Window" ANSI_RESET "\n");

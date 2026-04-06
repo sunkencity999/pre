@@ -267,8 +267,12 @@ step "Image Generation Setup (optional)"
 COMFYUI_DIR="$HOME/.pre/comfyui"
 COMFYUI_VENV="$HOME/.pre/comfyui-venv"
 COMFYUI_CONFIG="$HOME/.pre/comfyui.json"
-SDXL_CHECKPOINT="sd_xl_turbo_1.0_fp16.safetensors"
-SDXL_URL="https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors"
+
+# Checkpoint options
+TURBO_CHECKPOINT="sd_xl_turbo_1.0_fp16.safetensors"
+TURBO_URL="https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors"
+QUALITY_CHECKPOINT="Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
+QUALITY_REPO="RunDiffusion/Juggernaut-XL-v9"
 
 if [ -f "$COMFYUI_CONFIG" ]; then
     ok "  ComfyUI already configured — skipping."
@@ -282,7 +286,7 @@ else
 
     echo ""
     echo -e "  ${BOLD}Install local image generation?${RESET}"
-    echo -e "  This sets up ComfyUI + SDXL Turbo for generating images from text."
+    echo -e "  This sets up ComfyUI + Stable Diffusion XL for generating images from text."
     echo -e "  ${DIM}Requires: ~8GB disk, Python 3.10-3.13 (PyTorch), ~6.5GB model download${RESET}"
     echo ""
     read -p "  Install ComfyUI? [y/N] " -n 1 -r
@@ -334,39 +338,97 @@ else
                 "$COMFYUI_VENV/bin/pip" install --quiet -r "$COMFYUI_DIR/requirements.txt" 2>&1 | tail -1
                 ok "  Dependencies installed"
 
-                # Download SDXL Turbo checkpoint
+                # Choose checkpoint: Quality (Juggernaut XL) or Speed (SDXL Turbo)
                 CKPT_DIR="$COMFYUI_DIR/models/checkpoints"
                 mkdir -p "$CKPT_DIR"
-                if [ -f "$CKPT_DIR/$SDXL_CHECKPOINT" ]; then
-                    ok "  SDXL Turbo checkpoint already downloaded"
-                else
-                    echo "  Downloading SDXL Turbo (~6.5GB — this may take a while)..."
-                    if command -v wget &>/dev/null; then
-                        wget -q --show-progress -O "$CKPT_DIR/$SDXL_CHECKPOINT" "$SDXL_URL"
-                    else
-                        curl -L --progress-bar -o "$CKPT_DIR/$SDXL_CHECKPOINT" "$SDXL_URL"
-                    fi
 
-                    if [ -f "$CKPT_DIR/$SDXL_CHECKPOINT" ]; then
-                        CKPT_SIZE=$(du -sh "$CKPT_DIR/$SDXL_CHECKPOINT" | cut -f1)
-                        ok "  SDXL Turbo downloaded ($CKPT_SIZE)"
+                echo ""
+                echo -e "  ${BOLD}Choose image model:${RESET}"
+                echo -e "  ${CYAN}1)${RESET} ${BOLD}Juggernaut XL${RESET} (recommended) — Photorealistic, excellent faces"
+                echo -e "     ~30-45s per image, 25 steps at 1024x1024"
+                echo -e "  ${CYAN}2)${RESET} ${BOLD}SDXL Turbo${RESET} — Fast but lower quality"
+                echo -e "     ~5s per image, 4 steps at 512x512"
+                echo ""
+                read -p "  Choice [1/2, default=1]: " -n 1 -r IMG_CHOICE
+                echo ""
+
+                SELECTED_CHECKPOINT=""
+                if [ "$IMG_CHOICE" = "2" ]; then
+                    # SDXL Turbo (speed)
+                    if [ -f "$CKPT_DIR/$TURBO_CHECKPOINT" ]; then
+                        ok "  SDXL Turbo checkpoint already downloaded"
                     else
-                        warn "  Download failed — you can download manually later:"
-                        warn "    wget -O $CKPT_DIR/$SDXL_CHECKPOINT $SDXL_URL"
+                        echo "  Downloading SDXL Turbo (~6.5GB)..."
+                        if command -v wget &>/dev/null; then
+                            wget -q --show-progress -O "$CKPT_DIR/$TURBO_CHECKPOINT" "$TURBO_URL"
+                        else
+                            curl -L --progress-bar -o "$CKPT_DIR/$TURBO_CHECKPOINT" "$TURBO_URL"
+                        fi
+                    fi
+                    if [ -f "$CKPT_DIR/$TURBO_CHECKPOINT" ]; then
+                        CKPT_SIZE=$(du -sh "$CKPT_DIR/$TURBO_CHECKPOINT" | cut -f1)
+                        ok "  SDXL Turbo downloaded ($CKPT_SIZE)"
+                        SELECTED_CHECKPOINT="$TURBO_CHECKPOINT"
+                    else
+                        warn "  Download failed — you can download manually later."
+                    fi
+                else
+                    # Juggernaut XL (quality — default)
+                    if [ -f "$CKPT_DIR/$QUALITY_CHECKPOINT" ]; then
+                        ok "  Juggernaut XL checkpoint already downloaded"
+                        SELECTED_CHECKPOINT="$QUALITY_CHECKPOINT"
+                    else
+                        echo "  Downloading Juggernaut XL v9 (~6.6GB)..."
+                        if command -v huggingface-cli &>/dev/null; then
+                            huggingface-cli download "$QUALITY_REPO" "$QUALITY_CHECKPOINT" \
+                                --local-dir "$CKPT_DIR" 2>&1 | tail -3
+                            # Clean up HF cache
+                            rm -rf "$CKPT_DIR/.cache" 2>/dev/null
+                        elif command -v wget &>/dev/null; then
+                            wget -q --show-progress -O "$CKPT_DIR/$QUALITY_CHECKPOINT" \
+                                "https://huggingface.co/$QUALITY_REPO/resolve/main/$QUALITY_CHECKPOINT"
+                        else
+                            curl -L --progress-bar -o "$CKPT_DIR/$QUALITY_CHECKPOINT" \
+                                "https://huggingface.co/$QUALITY_REPO/resolve/main/$QUALITY_CHECKPOINT"
+                        fi
+                    fi
+                    if [ -f "$CKPT_DIR/$QUALITY_CHECKPOINT" ]; then
+                        CKPT_SIZE=$(du -sh "$CKPT_DIR/$QUALITY_CHECKPOINT" | cut -f1)
+                        ok "  Juggernaut XL downloaded ($CKPT_SIZE)"
+                        SELECTED_CHECKPOINT="$QUALITY_CHECKPOINT"
+                    else
+                        warn "  Download failed — falling back to SDXL Turbo..."
+                        echo "  Downloading SDXL Turbo (~6.5GB)..."
+                        if command -v wget &>/dev/null; then
+                            wget -q --show-progress -O "$CKPT_DIR/$TURBO_CHECKPOINT" "$TURBO_URL"
+                        else
+                            curl -L --progress-bar -o "$CKPT_DIR/$TURBO_CHECKPOINT" "$TURBO_URL"
+                        fi
+                        if [ -f "$CKPT_DIR/$TURBO_CHECKPOINT" ]; then
+                            SELECTED_CHECKPOINT="$TURBO_CHECKPOINT"
+                            ok "  SDXL Turbo downloaded as fallback"
+                        else
+                            warn "  Both downloads failed. You can download manually later."
+                        fi
                     fi
                 fi
 
-                # Create config file
-                cat > "$COMFYUI_CONFIG" << 'CFGEOF'
+                if [ -n "$SELECTED_CHECKPOINT" ]; then
+                    # Create config file
+                    cat > "$COMFYUI_CONFIG" << CFGEOF
 {
   "installed": true,
   "port": 8188,
-  "checkpoint": "sd_xl_turbo_1.0_fp16.safetensors"
+  "checkpoint": "$SELECTED_CHECKPOINT",
+  "venv": "~/.pre/comfyui-venv",
+  "comfyui_dir": "~/.pre/comfyui"
 }
 CFGEOF
-                ok "  ComfyUI configuration saved"
-                echo ""
-                ok "  ✓ Image generation ready! PRE will start ComfyUI automatically when needed."
+                    ok "  ComfyUI configuration saved (using $SELECTED_CHECKPOINT)"
+                    echo ""
+                    ok "  Image generation ready! PRE will start ComfyUI automatically when needed."
+                    echo -e "  ${DIM}Tip: To switch models later, edit ~/.pre/comfyui.json${RESET}"
+                fi
             fi
         fi
     else

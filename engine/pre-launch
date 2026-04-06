@@ -45,15 +45,23 @@ if ! ollama list 2>/dev/null | grep -q "pre-gemma4"; then
     fi
 fi
 
-# Pre-warm the model into GPU memory (avoids cold-start TTFT penalty)
+# Pre-warm the model into GPU memory (avoids cold-start TTFT penalty).
+# CRITICAL: Send a real message (not empty) to force full KV cache allocation.
+# Ollama loads the model lazily — an empty messages request makes the model
+# visible in `ollama ps` but defers KV cache allocation to the first real
+# request. For Gemma 4 26B at 32K context, that deferred allocation can take
+# minutes, causing a prefill stall that looks like a hang.
 if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
-    echo "  Loading model into GPU..."
-    curl -sf http://localhost:${PORT}/api/chat -d '{"model":"pre-gemma4","messages":[],"keep_alive":"24h"}' >/dev/null 2>&1 || true
-    # Wait until loaded
-    for i in $(seq 1 30); do
-        if ollama ps 2>/dev/null | grep -q "pre-gemma4"; then break; fi
-        sleep 1
-    done
+    echo "  Loading model into GPU (this may take 1-2 minutes on first load)..."
+    # Send a trivial real request to force the full model + KV cache load.
+    # Use timeout to prevent indefinite hangs. The response is discarded.
+    curl -sf --max-time 300 http://localhost:${PORT}/api/chat \
+        -d '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"keep_alive":"24h","options":{"num_predict":1}}' \
+        >/dev/null 2>&1 || true
+    # Verify it loaded
+    if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
+        echo "  Warning: Model may not have fully loaded. First request may be slow."
+    fi
 fi
 
 echo "  Ollama running on port $PORT."
