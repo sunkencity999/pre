@@ -3382,12 +3382,9 @@ static char *build_tools_json(void) {
         // thousands of tokens of HTML into a JSON string argument. It works via text-based
         // <tool_call> format instead (see system prompt).
 
-        TOOL_DEF("image_generate", "Generate an image from a text description using local Stable Diffusion",
-                 "\"prompt\":{\"type\":\"string\",\"description\":\"Detailed image description\"},"
-                 "\"width\":{\"type\":\"integer\",\"description\":\"Width in pixels (default: 512, max: 1024)\"},"
-                 "\"height\":{\"type\":\"integer\",\"description\":\"Height in pixels (default: 512, max: 1024)\"},"
-                 "\"style\":{\"type\":\"string\",\"description\":\"Optional style prefix: photorealistic, artistic, cartoon, illustration, cinematic\"}",
-                 "\"prompt\""),
+        // NOTE: image_generate is added conditionally below (only when ComfyUI is installed).
+        // Including it when unavailable causes the model to reason about it in <think>
+        // blocks and then decide it can't work, wasting tokens and confusing itself.
 
         TOOL_DEF("pdf_export", "Export an artifact to PDF for sharing",
                  "\"title\":{\"type\":\"string\",\"description\":\"Artifact title to export (or 'latest' for most recent)\"},"
@@ -3411,6 +3408,19 @@ static char *build_tools_json(void) {
         if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
         memcpy(buf + len, core_tools[i], tl);
         len += tl;
+    }
+
+    // Conditional tool: image_generate (only when ComfyUI is installed)
+    if (g_comfyui_installed) {
+        const char *t = "," TOOL_DEF("image_generate", "Generate an image from a text description using local Stable Diffusion (SDXL Turbo). This tool WORKS — call it whenever images are requested.",
+            "\"prompt\":{\"type\":\"string\",\"description\":\"Detailed image description\"},"
+            "\"width\":{\"type\":\"integer\",\"description\":\"Width in pixels (default: 512, max: 1024)\"},"
+            "\"height\":{\"type\":\"integer\",\"description\":\"Height in pixels (default: 512, max: 1024)\"},"
+            "\"style\":{\"type\":\"string\",\"description\":\"Optional style prefix: photorealistic, artistic, cartoon, illustration, cinematic\"}",
+            "\"prompt\"");
+        int tl = (int)strlen(t);
+        if ((size_t)(len + tl + 64) > cap) { cap *= 2; buf = realloc(buf, cap); }
+        memcpy(buf + len, t, tl); len += tl;
     }
 
     // Conditional service tools
@@ -3669,12 +3679,30 @@ static char *build_context_preamble(void) {
         "memory_save types: user|feedback|project|reference. scope: project|global.\n"
         "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
         "artifact types: html|markdown|csv|json|svg|code|text.\n"
-        "image_generate creates images locally via Stable Diffusion (SDXL Turbo). Returns a file path.\n"
-        "IMPORTANT workflow for images in artifacts: call image_generate FIRST to get the file path, "
-        "THEN create the artifact with <img src='file:///full/path/to/image.png'>. "
-        "Use single quotes around the src. The file:// path will be auto-embedded when displayed.\n"
         "pdf_export converts an artifact to PDF. Use title='latest' for the most recent.\n"
-        "Save memories proactively for user prefs, project context, corrections.\n\n");
+        "Save memories proactively for user prefs, project context, corrections.\n\n"
+
+        "CRITICAL — RESEARCH TOOLS:\n"
+        "When the user asks you to 'research', 'look up', 'find out about', or 'search for' a topic, "
+        "you MUST call web_search (or other research tools) FIRST before writing any content. "
+        "Do NOT fabricate information from training data when research tools are available. "
+        "Call web_search multiple times with different queries to gather comprehensive information, "
+        "THEN synthesize the results into your response or artifact.\n\n");
+
+    // Image generation guidance — only when ComfyUI is installed
+    if (g_comfyui_installed) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "CRITICAL — IMAGE GENERATION:\n"
+            "You have a WORKING local image generator (image_generate tool). It runs SDXL Turbo on this machine's GPU and is FAST (~5 seconds per image). "
+            "When the user asks for images, you MUST call image_generate — do NOT use placeholder URLs from Unsplash, stock photo sites, or any external source. "
+            "The tool is a native function call (NOT <tool_call> tags). It returns a local file path.\n"
+            "Workflow for images in reports/artifacts:\n"
+            "1. Call image_generate for EACH image FIRST (before creating the artifact)\n"
+            "2. Collect the returned file paths from each tool result\n"
+            "3. THEN create the artifact referencing those paths: <img src='file:///exact/path/from/tool'>\n"
+            "4. Use SINGLE QUOTES around src values. The file:// paths are auto-embedded as base64 when displayed.\n"
+            "NEVER skip image_generate. NEVER use external image URLs when the user asks you to generate images. The tool works.\n\n");
+    }
 
     // Tell the model about connection-dependent tools (even if not active)
     if (!g_connections_loaded) load_connections();
@@ -9655,6 +9683,27 @@ int main(int argc, char **argv) {
                         }
                     }
                 }
+                // Check for <artifact ...>...</artifact> XML format (wrong format but recoverable)
+                if (!html_content) {
+                    char *art_tag = strstr(response, "<artifact ");
+                    if (art_tag) {
+                        // Find the closing > of the opening tag
+                        char *tag_end = strchr(art_tag, '>');
+                        if (tag_end) {
+                            tag_end++; // past >
+                            char *art_close = strstr(tag_end, "</artifact>");
+                            if (!art_close) art_close = response + strlen(response);
+                            size_t len = art_close - tag_end;
+                            if (len > 100) {
+                                html_content = malloc(len + 1);
+                                memcpy(html_content, tag_end, len);
+                                html_content[len] = 0;
+                                // Strip leading/trailing whitespace
+                                while (html_content[0] == '\n') memmove(html_content, html_content + 1, strlen(html_content));
+                            }
+                        }
+                    }
+                }
                 // Fallback: find raw <!DOCTYPE or <html
                 if (!html_content) {
                     char *doctype = strstr(response, "<!DOCTYPE");
@@ -9674,8 +9723,27 @@ int main(int argc, char **argv) {
                 if (html_content && strlen(html_content) > 100) {
                     printf(ANSI_YELLOW "\n  [HTML detected in chat — auto-creating artifact]"
                            ANSI_RESET "\n");
+                    // Extract title from <title>...</title> tag if present
+                    char auto_title[256] = "Auto-Extracted Content";
+                    char *title_start = strstr(html_content, "<title>");
+                    if (title_start) {
+                        title_start += 7;
+                        char *title_end = strstr(title_start, "</title>");
+                        if (title_end && (title_end - title_start) > 0 && (title_end - title_start) < 200) {
+                            size_t tlen = title_end - title_start;
+                            memcpy(auto_title, title_start, tlen);
+                            auto_title[tlen] = 0;
+                            // Strip leading/trailing whitespace
+                            char *t = auto_title;
+                            while (*t == ' ' || *t == '\n' || *t == '\t') t++;
+                            if (t != auto_title) memmove(auto_title, t, strlen(t) + 1);
+                            size_t at_len = strlen(auto_title);
+                            while (at_len > 0 && (auto_title[at_len-1] == ' ' || auto_title[at_len-1] == '\n'))
+                                auto_title[--at_len] = 0;
+                        }
+                    }
                     char auto_output[65536];
-                    execute_artifact("Auto-Extracted Game", html_content, "html",
+                    execute_artifact(auto_title, html_content, "html",
                                     NULL, auto_output, sizeof(auto_output));
                     size_t html_len = strlen(html_content);
                     free(html_content);
@@ -9719,8 +9787,11 @@ int main(int argc, char **argv) {
                 if (intended_tool) {
                     printf(ANSI_YELLOW "\n  [model described creating content but didn't call tool — nudging]"
                            ANSI_RESET "\n");
-                    const char *nudge = "Please proceed with the tool call now. "
-                        "Use the <tool_call> tag format to call the artifact tool with the complete HTML content.";
+                    const char *nudge = "You did not use a tool call. You MUST use this exact format:\n"
+                        "<tool_call>\n"
+                        "{\"name\": \"artifact\", \"arguments\": {\"title\": \"Your Title\", \"content\": \"...HTML...\", \"type\": \"html\"}}\n"
+                        "</tool_call>\n"
+                        "Do NOT output raw HTML or use any other format. Use <tool_call> tags NOW with the artifact tool.";
                     session_save_turn(g.session_id, "user", nudge);
 
                     free(g_native_tool_calls);
@@ -9767,8 +9838,27 @@ int main(int argc, char **argv) {
                                     if (clen > 100) {
                                         printf(ANSI_YELLOW "  [HTML extracted from nudge response — creating artifact]"
                                                ANSI_RESET "\n");
+                                        // Extract title from <title> tag
+                                        char nudge_title[256] = "Auto-Extracted Content";
+                                        char *nt_start = strstr(extracted, "<title>");
+                                        if (nt_start) {
+                                            nt_start += 7;
+                                            char *nt_end = strstr(nt_start, "</title>");
+                                            if (nt_end && (nt_end - nt_start) > 0 && (nt_end - nt_start) < 200) {
+                                                size_t ntlen = nt_end - nt_start;
+                                                memcpy(nudge_title, nt_start, ntlen);
+                                                nudge_title[ntlen] = 0;
+                                                // Strip whitespace
+                                                char *nt = nudge_title;
+                                                while (*nt == ' ' || *nt == '\n' || *nt == '\t') nt++;
+                                                if (nt != nudge_title) memmove(nudge_title, nt, strlen(nt) + 1);
+                                                size_t nl = strlen(nudge_title);
+                                                while (nl > 0 && (nudge_title[nl-1] == ' ' || nudge_title[nl-1] == '\n'))
+                                                    nudge_title[--nl] = 0;
+                                            }
+                                        }
                                         char auto_output[65536];
-                                        execute_artifact("Auto-Extracted Game", extracted, "html",
+                                        execute_artifact(nudge_title, extracted, "html",
                                                         NULL, auto_output, sizeof(auto_output));
                                         // Compact session
                                         char compact_note[256];
