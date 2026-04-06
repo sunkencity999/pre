@@ -283,22 +283,38 @@ else
     echo ""
     echo -e "  ${BOLD}Install local image generation?${RESET}"
     echo -e "  This sets up ComfyUI + SDXL Turbo for generating images from text."
-    echo -e "  ${DIM}Requires: ~8GB disk, Python 3.10+, ~6.5GB model download${RESET}"
+    echo -e "  ${DIM}Requires: ~8GB disk, Python 3.10-3.13 (PyTorch), ~6.5GB model download${RESET}"
     echo ""
     read -p "  Install ComfyUI? [y/N] " -n 1 -r
     echo ""
 
     if [[ $REPLY =~ ^[Yy]$ ]]; then
-        # Check Python
-        if ! command -v python3 &>/dev/null; then
-            warn "  Python 3 not found — skipping ComfyUI. Install Python 3.10+ and re-run."
+        # Find a compatible Python (3.10-3.13; 3.14+ lacks PyTorch support)
+        COMFYUI_PYTHON=""
+        for pyver in python3.12 python3.13 python3.11 python3.10; do
+            if command -v "$pyver" &>/dev/null; then
+                COMFYUI_PYTHON="$pyver"
+                break
+            fi
+        done
+        # Fallback to python3 if it's in the supported range
+        if [ -z "$COMFYUI_PYTHON" ] && command -v python3 &>/dev/null; then
+            PY_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
+            if [ "$PY_MINOR" -ge 10 ] && [ "$PY_MINOR" -le 13 ]; then
+                COMFYUI_PYTHON="python3"
+            fi
+        fi
+
+        if [ -z "$COMFYUI_PYTHON" ]; then
+            warn "  Python 3.10-3.13 not found — skipping ComfyUI. PyTorch requires Python <=3.13."
+            warn "  Install Python 3.12 (brew install python@3.12) and re-run."
         else
-            PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-            ok "  Python $PYTHON_VERSION found"
+            PYTHON_VERSION=$($COMFYUI_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            ok "  Python $PYTHON_VERSION found ($COMFYUI_PYTHON)"
 
             # Create virtual environment
             echo "  Creating Python virtual environment..."
-            python3 -m venv "$COMFYUI_VENV" || { warn "  Failed to create venv — skipping."; REPLY=n; }
+            $COMFYUI_PYTHON -m venv "$COMFYUI_VENV" || { warn "  Failed to create venv — skipping."; REPLY=n; }
 
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 # Install PyTorch with MPS support

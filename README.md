@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant that actually works. No cloud. No API keys. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 262K context, 35 integrated tools, persistent memory, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 262K context, 38+ integrated tools, persistent memory, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -51,7 +51,7 @@ The difference between a chatbot and an agent is the **tool-call loop**. A chatb
 3. **Sufficient context** — the conversation must hold the system prompt, tool definitions, all previous turns, tool results, and still have room for the model to reason
 4. **Autonomy with safety** — most actions should just execute; only genuinely dangerous ones should ask
 
-PRE delivers all four. The model produces well-formed `<tool_call>` JSON. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 262K context holds extended multi-step sessions. And the permission model is designed for power users: **32 of 35 tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
+PRE delivers all four. The model produces well-formed `<tool_call>` JSON. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 262K context holds extended multi-step sessions. And the permission model is designed for power users: **35 of 38 tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
 
 This means PRE can do things like:
 
@@ -134,7 +134,7 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Read and modify your codebase** — The model reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-**Run commands autonomously** — Bash execution with a streamlined permission model. 32 of 35 tools auto-execute; only genuinely destructive operations ask for confirmation.
+**Run commands autonomously** — Bash execution with a streamlined permission model. 35 of 38 tools auto-execute; only genuinely destructive operations ask for confirmation.
 
 **Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts.
 
@@ -171,9 +171,10 @@ PRE is not a chatbot — it's a local agent with deep system access.
 | **macOS** | 14.0+ (Sonoma or later) |
 | **Chip** | Apple Silicon (M1 or later) |
 | **RAM** | 16 GB minimum, 32+ GB recommended |
-| **Disk** | ~17 GB for model download |
+| **Disk** | ~17 GB for model, +8 GB for image generation (optional) |
 | **Ollama** | [ollama.ai](https://ollama.ai) or `brew install ollama` |
 | **Xcode CLI** | `xcode-select --install` |
+| **Python 3.10-3.13** | Optional — for ComfyUI image generation (`brew install python@3.12`) |
 
 ### Install
 
@@ -278,7 +279,7 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 | Command | Description |
 |---------|-------------|
 | `/help` | Command overview |
-| `/help tools` | All 35 tools with permission levels |
+| `/help tools` | All 38+ tools with permission levels |
 | `/help memory` | Memory system guide |
 | `/help channels` | Channel system guide |
 | `/help projects` | Project detection & PRE.md |
@@ -289,9 +290,9 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 
 ### Tools
 
-PRE has 29 built-in tools plus up to 6 connection-dependent tools (35 total) that the model can call autonomously. PRE is designed for power users — nearly all tools auto-execute without confirmation:
+PRE has 32 built-in tools plus up to 6 connection-dependent tools (38 total) that the model can call autonomously. PRE is designed for power users — nearly all tools auto-execute without confirmation:
 
-- **Auto** — executes immediately, no confirmation needed (32 of 35 tools)
+- **Auto** — executes immediately, no confirmation needed (35 of 38 tools)
 - **Confirm always** — asks every time (only 3 tools: `process_kill`, `memory_delete`, `applescript`)
 
 #### File & Code
@@ -349,14 +350,28 @@ PRE has 29 built-in tools plus up to 6 connection-dependent tools (35 total) tha
 |---|------|------|-------------|
 | 25 | `web_fetch` | `url` | Fetch a URL (HTML→text conversion) |
 
+#### Creative & Export
+
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 26 | `artifact` | `title`, `content`, `type`, `append_to`? | Create/append rich HTML artifacts in pop-out viewer |
+| 27 | `image_generate` | `prompt`, `width`?, `height`?, `style`? | Generate images locally via SDXL Turbo (MPS) |
+| 28 | `pdf_export` | `title`, `path`? | Export an artifact to PDF via WebKit |
+
 #### Memory
 
 | # | Tool | Args | Description |
 |---|------|------|-------------|
-| 26 | `memory_save` | `name`, `type`, `description`, `content`, `scope`? | Save a persistent memory (global or project-scoped) |
-| 27 | `memory_search` | `query`? | Search saved memories |
-| 28 | `memory_list` | *(none)* | List all memories |
-| 29 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
+| 29 | `memory_save` | `name`, `type`, `description`, `content`, `scope`? | Save a persistent memory (global or project-scoped) |
+| 30 | `memory_search` | `query`? | Search saved memories |
+| 31 | `memory_list` | *(none)* | List all memories |
+| 32 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
+
+#### Scheduling
+
+| # | Tool | Args | Description |
+|---|------|------|-------------|
+| 33 | `cron` | `action`, `schedule`?, `prompt`?, `description`?, `id`? | Manage recurring scheduled tasks |
 
 #### Connection-Dependent Tools
 
@@ -364,12 +379,12 @@ These tools require external API keys or OAuth setup via `/connections`. Run `/c
 
 | # | Tool | Connection | Args | Description |
 |---|------|------------|------|-------------|
-| 30 | `web_search` | Brave Search | `query`, `count`? | Web search via Brave Search API |
-| 31 | `github` | GitHub | `action`, `repo`?, `query`?, `number`?, `state`? | GitHub API (search repos, issues, PRs, user info) |
-| 32 | `gmail` | Google | `action`, `query`?, `id`?, `to`?, `subject`?, `body`?, `cc`?, `bcc`?, `max_results`? | Gmail (search, read, send, draft, trash, labels, profile) |
-| 33 | `gdrive` | Google | `action`, `id`?, `path`?, `name`?, `folder_id`?, `query`?, `email`?, `role`?, `count`? | Google Drive (list, search, download, upload, mkdir, share, delete) |
-| 34 | `gdocs` | Google | `action`, `id`?, `title`?, `content`? | Google Docs (create, read, append) |
-| 35 | `wolfram` | Wolfram Alpha | `query` | Computation, math, science, data queries |
+| 34 | `web_search` | Brave Search | `query`, `count`? | Web search via Brave Search API |
+| 35 | `github` | GitHub | `action`, `repo`?, `query`?, `number`?, `state`? | GitHub API (search repos, issues, PRs, user info) |
+| 36 | `gmail` | Google | `action`, `query`?, `id`?, `to`?, `subject`?, `body`?, `cc`?, `bcc`?, `max_results`? | Gmail (search, read, send, draft, trash, labels, profile) |
+| 37 | `gdrive` | Google | `action`, `id`?, `path`?, `name`?, `folder_id`?, `query`?, `email`?, `role`?, `count`? | Google Drive (list, search, download, upload, mkdir, share, delete) |
+| 38 | `gdocs` | Google | `action`, `id`?, `title`?, `content`? | Google Docs (create, read, append) |
+| 39 | `wolfram` | Wolfram Alpha | `query` | Computation, math, science, data queries |
 
 ---
 
@@ -576,7 +591,7 @@ PRE includes a built-in Telegram bot that gives you full agent access from your 
 
 When PRE launches and a Telegram connection is configured, it automatically spawns `pre-telegram` as a background process. The bot long-polls the Telegram API (no webhook, no public URL required) and routes messages through the same Ollama instance as the TUI.
 
-- **Full system access** — all 35 tools, same as the TUI. File operations, bash, process management, clipboard, screenshots, Google services, everything.
+- **Full system access** — all 38+ tools, same as the TUI. File operations, bash, process management, clipboard, screenshots, Google services, everything.
 - **Owner authorization** — the first Telegram user to message the bot becomes the owner. All other users are blocked.
 - **Conversation management** — per-chat history with `/new` to reset
 - **Automatic lifecycle** — starts with PRE, stops with PRE (Ctrl+C kills both)
@@ -606,17 +621,25 @@ The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that share
 ┌─────────────┐    Ollama Native    ┌─────────────────┐
 │   PRE CLI   │  ◄─ /api/chat ──►  │     Ollama       │
 │  (pre.m)    │   raw recv() NDJSON │  localhost:11434  │
-│  ~6000 lines│                     │                   │
+│ ~10000 lines│                     │                   │
 │  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
-└──────┬──────┘                     │  MoE, q4_K_M      │
-       │                            │  ~70 tok/s         │
-       │ fork/exec                  └──────────▲────────┘
-       │                                       │
-┌──────▼──────────┐    /api/chat (non-stream)  │
-│  pre-telegram   │ ───────────────────────────┘
-│  (telegram.m)   │
-│  Telegram Bot   │  ◄──► Telegram Bot API
-└─────────────────┘       (long-poll)
+└──┬──────┬───┘                     │  MoE, q4_K_M      │
+   │      │                         │  ~70 tok/s         │
+   │      │ fork/exec               └──────────▲────────┘
+   │      │                                    │
+   │  ┌───▼──────────┐  /api/chat (non-stream) │
+   │  │ pre-telegram  │ ───────────────────────┘
+   │  │ (telegram.m)  │
+   │  │ Telegram Bot  │  ◄──► Telegram Bot API
+   │  └───────────────┘       (long-poll)
+   │
+   │ auto-start/stop
+   │
+┌──▼──────────────┐
+│    ComfyUI      │  localhost:8188
+│  SDXL Turbo     │  image_generate tool
+│  (MPS/Metal)    │  4-step diffusion, 512x512
+└─────────────────┘
 
   ~/.pre/
   ├── identity.json       # Agent name
@@ -624,6 +647,11 @@ The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that share
   ├── sessions/           # Conversation JSONL files
   ├── history             # Input history (arrow-key recall)
   ├── checkpoints/        # File backups for /undo
+  ├── artifacts/          # HTML artifacts and generated images
+  ├── cron.json           # Scheduled recurring tasks
+  ├── comfyui.json        # ComfyUI configuration (if installed)
+  ├── comfyui/            # ComfyUI installation (if installed)
+  ├── comfyui-venv/       # Python venv for ComfyUI (if installed)
   ├── telegram.log        # Telegram bot output
   ├── telegram_owner      # Authorized Telegram user ID
   ├── memory/             # Global persistent memories
@@ -651,12 +679,13 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth performance numbers |
 | **Hybrid tool calling** | Native Ollama `tools` API for small tools, text-based for artifacts | Reliable structured calls + large content generation |
 | **Artifact compaction** | Strip HTML from session after saving to disk | Prevents prefill stalls on follow-up turns |
+| **Image data URIs** | Convert `file://` image refs to base64 at render time | Local images display in WebKit without cross-origin blocks |
 | **Auto-compaction** | Summarize old turns at 75% context usage | Extends effective session length |
 | **Tool response cap** | 8KB limit per tool result | Prevents context blowout from large files |
 
 ### The PRE Binary
 
-**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~9700 lines). It handles:
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines). It handles:
 - Ollama native API client with raw `recv()` NDJSON streaming
 - Dynamic context window sizing with per-request `num_ctx`
 - System prompt as `role:system` message for KV cache prefix reuse
@@ -683,7 +712,7 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 
 **Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines) auto-launched by PRE:
 - Telegram Bot API long-polling (no webhook/public URL needed)
-- Full tool access matching the TUI (all 35 tools)
+- Full tool access matching the TUI (all 38+ tools)
 - Per-chat conversation history with dynamic context scaling
 - Owner-based authorization (first user to message becomes owner)
 - Typing indicators via forked child process

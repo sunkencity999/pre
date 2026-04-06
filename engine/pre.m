@@ -658,19 +658,44 @@ static int artifact_window_main(const char *filepath, const char *title) {
         webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
         [window.contentView addSubview:webView];
 
-        // Load the HTML file — read content and use loadHTMLString so external
-        // resources (CDN scripts, stylesheets) are not blocked by file:// security
+        // Load the HTML file. We use loadHTMLString with an HTTPS base URL so
+        // external CDN resources (Chart.js, Leaflet, etc.) load correctly.
+        // Local file:// image references (from image_generate) are converted to
+        // base64 data URIs before loading, since WKWebView blocks cross-origin file access.
         NSString *filePath = [NSString stringWithUTF8String:filepath];
         NSError *readErr = nil;
-        NSString *htmlContent = [NSString stringWithContentsOfFile:filePath
+        NSMutableString *htmlContent = [NSMutableString stringWithContentsOfFile:filePath
                                         encoding:NSUTF8StringEncoding
                                         error:&readErr];
         if (htmlContent) {
-            // Use an HTTPS base URL so external resource loading works
+            // Convert file:// image references to base64 data URIs
+            NSRegularExpression *fileRegex = [NSRegularExpression
+                regularExpressionWithPattern:@"(src=['\"])file://([^'\"]+)(['\"])"
+                options:0 error:nil];
+            NSArray *matches = [fileRegex matchesInString:htmlContent
+                options:0 range:NSMakeRange(0, htmlContent.length)];
+            // Process in reverse order so ranges stay valid after replacements
+            for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
+                NSString *prefix = [htmlContent substringWithRange:[match rangeAtIndex:1]];
+                NSString *localPath = [htmlContent substringWithRange:[match rangeAtIndex:2]];
+                NSString *suffix = [htmlContent substringWithRange:[match rangeAtIndex:3]];
+                NSData *imgData = [NSData dataWithContentsOfFile:localPath];
+                if (imgData) {
+                    NSString *ext = [localPath pathExtension].lowercaseString;
+                    NSString *mime = @"image/png";
+                    if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"])
+                        mime = @"image/jpeg";
+                    else if ([ext isEqualToString:@"gif"]) mime = @"image/gif";
+                    else if ([ext isEqualToString:@"webp"]) mime = @"image/webp";
+                    NSString *b64 = [imgData base64EncodedStringWithOptions:0];
+                    NSString *dataURI = [NSString stringWithFormat:@"%@data:%@;base64,%@%@",
+                                         prefix, mime, b64, suffix];
+                    [htmlContent replaceCharactersInRange:[match range] withString:dataURI];
+                }
+            }
             NSURL *baseURL = [NSURL URLWithString:@"https://localhost/"];
             [webView loadHTMLString:htmlContent baseURL:baseURL];
         } else {
-            // Fallback: try file URL anyway
             NSURL *fileURL = [NSURL fileURLWithPath:filePath];
             [webView loadFileURL:fileURL
                 allowingReadAccessToURL:[fileURL URLByDeletingLastPathComponent]];
@@ -702,12 +727,37 @@ static int pdf_export_main(const char *html_path, const char *pdf_path) {
         NSString *filePath = [NSString stringWithUTF8String:html_path];
         NSString *outPath = [NSString stringWithUTF8String:pdf_path];
         NSError *readErr = nil;
-        NSString *htmlContent = [NSString stringWithContentsOfFile:filePath
+        NSMutableString *htmlContent = [NSMutableString stringWithContentsOfFile:filePath
                                         encoding:NSUTF8StringEncoding
                                         error:&readErr];
         if (!htmlContent) {
             fprintf(stderr, "pdf: cannot read %s\n", html_path);
             return 1;
+        }
+
+        // Convert file:// image references to base64 data URIs
+        NSRegularExpression *fileRegex = [NSRegularExpression
+            regularExpressionWithPattern:@"(src=['\"])file://([^'\"]+)(['\"])"
+            options:0 error:nil];
+        NSArray *matches = [fileRegex matchesInString:htmlContent
+            options:0 range:NSMakeRange(0, htmlContent.length)];
+        for (NSTextCheckingResult *match in [matches reverseObjectEnumerator]) {
+            NSString *prefix = [htmlContent substringWithRange:[match rangeAtIndex:1]];
+            NSString *localPath = [htmlContent substringWithRange:[match rangeAtIndex:2]];
+            NSString *suffix = [htmlContent substringWithRange:[match rangeAtIndex:3]];
+            NSData *imgData = [NSData dataWithContentsOfFile:localPath];
+            if (imgData) {
+                NSString *ext = [localPath pathExtension].lowercaseString;
+                NSString *mime = @"image/png";
+                if ([ext isEqualToString:@"jpg"] || [ext isEqualToString:@"jpeg"])
+                    mime = @"image/jpeg";
+                else if ([ext isEqualToString:@"gif"]) mime = @"image/gif";
+                else if ([ext isEqualToString:@"webp"]) mime = @"image/webp";
+                NSString *b64 = [imgData base64EncodedStringWithOptions:0];
+                NSString *dataURI = [NSString stringWithFormat:@"%@data:%@;base64,%@%@",
+                                     prefix, mime, b64, suffix];
+                [htmlContent replaceCharactersInRange:[match range] withString:dataURI];
+            }
         }
 
         // Create an off-screen WebKit view for rendering
@@ -908,7 +958,15 @@ static int comfyui_ensure(void) {
 static void comfyui_stop(void) {
     if (g_comfyui_pid > 0) {
         kill(g_comfyui_pid, SIGTERM);
-        waitpid(g_comfyui_pid, NULL, WNOHANG);
+        // Give it 2s to shut down gracefully, then force kill
+        for (int i = 0; i < 20; i++) {
+            int status;
+            if (waitpid(g_comfyui_pid, &status, WNOHANG) != 0) goto done;
+            usleep(100000);
+        }
+        kill(g_comfyui_pid, SIGKILL);
+        waitpid(g_comfyui_pid, NULL, 0);
+    done:
         g_comfyui_pid = 0;
     }
 }
@@ -3612,7 +3670,9 @@ static char *build_context_preamble(void) {
         "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
         "artifact types: html|markdown|csv|json|svg|code|text.\n"
         "image_generate creates images locally via Stable Diffusion (SDXL Turbo). Returns a file path.\n"
-        "Use generated images in artifacts: <img src='file://PATH'>. For reports, generate images first, then build the artifact referencing them.\n"
+        "IMPORTANT workflow for images in artifacts: call image_generate FIRST to get the file path, "
+        "THEN create the artifact with <img src='file:///full/path/to/image.png'>. "
+        "Use single quotes around the src. The file:// path will be auto-embedded when displayed.\n"
         "pdf_export converts an artifact to PDF. Use title='latest' for the most recent.\n"
         "Save memories proactively for user prefs, project context, corrections.\n\n");
 
@@ -7313,11 +7373,14 @@ static char *handle_tool_calls(char *response) {
 
         session_save_turn(g.session_id, "tool", combined);
 
-        // For artifact-only batches, skip the follow-up request entirely.
-        // The model already described what it built in the prose before the tool call,
-        // and the user can see the pop-out window. Skipping avoids a costly prefill
-        // (often 2-5 minutes) just for a redundant "Here's your game!" summary.
-        if (had_artifact && batch_count == 1) {
+        // For artifact-only batches, skip the follow-up request entirely —
+        // UNLESS the artifact was truncated/errored. The model already described
+        // what it built in the prose before the tool call, and the user can see
+        // the pop-out window. Skipping avoids a costly prefill (often 2-5 minutes)
+        // just for a redundant "Here's your game!" summary.
+        // But if the artifact was truncated, the model MUST see the error so it
+        // can retry with a shorter version or use append_to for multi-part output.
+        if (had_artifact && batch_count == 1 && !strstr(combined, "ERROR:")) {
             free(combined);
             free(response);
             return strdup("");  // empty response = no more tool calls, loop exits
