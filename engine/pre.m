@@ -3412,7 +3412,7 @@ static char *build_tools_json(void) {
 
     // Conditional tool: image_generate (only when ComfyUI is installed)
     if (g_comfyui_installed) {
-        const char *t = "," TOOL_DEF("image_generate", "Generate an image from a text description using local Stable Diffusion (SDXL Turbo). This tool WORKS — call it whenever images are requested.",
+        const char *t = "," TOOL_DEF("image_generate", "Generate an image locally using SDXL Turbo on the GPU. INSTALLED AND OPERATIONAL. Returns a file path to the generated PNG. Call this tool — do not use external image URLs instead.",
             "\"prompt\":{\"type\":\"string\",\"description\":\"Detailed image description\"},"
             "\"width\":{\"type\":\"integer\",\"description\":\"Width in pixels (default: 512, max: 1024)\"},"
             "\"height\":{\"type\":\"integer\",\"description\":\"Height in pixels (default: 512, max: 1024)\"},"
@@ -3682,26 +3682,40 @@ static char *build_context_preamble(void) {
         "pdf_export converts an artifact to PDF. Use title='latest' for the most recent.\n"
         "Save memories proactively for user prefs, project context, corrections.\n\n"
 
-        "CRITICAL — RESEARCH TOOLS:\n"
-        "When the user asks you to 'research', 'look up', 'find out about', or 'search for' a topic, "
-        "you MUST call web_search (or other research tools) FIRST before writing any content. "
-        "Do NOT fabricate information from training data when research tools are available. "
-        "Call web_search multiple times with different queries to gather comprehensive information, "
-        "THEN synthesize the results into your response or artifact.\n\n");
+        "CRITICAL — MULTI-STEP WORKFLOWS:\n"
+        "Complex tasks require MULTIPLE tool calls in sequence. Do NOT skip steps or collapse them.\n"
+        "You can call tools one at a time across multiple turns — after each tool result, you can call the next tool.\n"
+        "Example workflow for a research report with images:\n"
+        "  Turn 1: call web_search (query 1)\n"
+        "  Turn 2: call web_search (query 2, different angle)\n"
+        "  Turn 3: call web_search (query 3, another subtopic)\n"
+        "  Turn 4: call image_generate (image 1)\n"
+        "  Turn 5: call image_generate (image 2)\n"
+        "  Turn 6: call artifact (build the report using ALL collected research and image paths)\n"
+        "  Turn 7: call pdf_export if requested\n"
+        "Each tool call is a separate turn. STOP after each call and wait for the result before proceeding.\n\n"
+
+        "CRITICAL — RESEARCH:\n"
+        "When the user asks you to research a topic, call web_search MULTIPLE TIMES with DIFFERENT specific queries.\n"
+        "BAD: one generic search like 'Joby Aviation 2025'\n"
+        "GOOD: 3-5 targeted searches like 'Joby Aviation FAA certification progress 2025', "
+        "'Joby flight test achievements 2025 2026', 'Joby manufacturing facility expansion', "
+        "'Joby Aviation stock price performance 2025', 'Joby partnerships Delta Toyota 2025'\n"
+        "Each search gives you different facts. Combine all results for a comprehensive report.\n"
+        "NEVER fabricate data, statistics, or dates. Use ONLY information from web_search results.\n\n");
 
     // Image generation guidance — only when ComfyUI is installed
     if (g_comfyui_installed) {
         plen += snprintf(preamble + plen, cap - plen,
-            "CRITICAL — IMAGE GENERATION:\n"
-            "You have a WORKING local image generator (image_generate tool). It runs SDXL Turbo on this machine's GPU and is FAST (~5 seconds per image). "
-            "When the user asks for images, you MUST call image_generate — do NOT use placeholder URLs from Unsplash, stock photo sites, or any external source. "
-            "The tool is a native function call (NOT <tool_call> tags). It returns a local file path.\n"
-            "Workflow for images in reports/artifacts:\n"
-            "1. Call image_generate for EACH image FIRST (before creating the artifact)\n"
-            "2. Collect the returned file paths from each tool result\n"
-            "3. THEN create the artifact referencing those paths: <img src='file:///exact/path/from/tool'>\n"
-            "4. Use SINGLE QUOTES around src values. The file:// paths are auto-embedded as base64 when displayed.\n"
-            "NEVER skip image_generate. NEVER use external image URLs when the user asks you to generate images. The tool works.\n\n");
+            "CRITICAL — IMAGE GENERATION (CONFIRMED WORKING):\n"
+            "ComfyUI + SDXL Turbo is INSTALLED AND RUNNING on this machine right now. "
+            "The image_generate tool is confirmed operational. It generates 512x512 images in ~5 seconds using the local GPU.\n"
+            "You MUST call image_generate when the user asks for images. Do NOT assume it is unavailable. "
+            "Do NOT use Unsplash, stock photos, or any external image URLs as substitutes.\n"
+            "image_generate is a NATIVE FUNCTION CALL (not <tool_call> tags). Call it like any other function tool.\n"
+            "After calling image_generate, the result contains the local file path. Use that path in your artifact:\n"
+            "  <img src='file:///Users/.../artifacts/2026-04-06/image_name.png'>\n"
+            "Call image_generate ONCE PER IMAGE, then create the artifact AFTER collecting all image paths.\n\n");
     }
 
     // Tell the model about connection-dependent tools (even if not active)
@@ -3746,7 +3760,18 @@ static char *build_context_preamble(void) {
             accounts);
     }
 
-    plen += snprintf(preamble + plen, cap - plen, "\n");
+    // System status — presented as live facts, not instructions.
+    // Models trust factual assertions about their environment more than commands.
+    plen += snprintf(preamble + plen, cap - plen, "\n--- SYSTEM STATUS ---\n");
+    if (g_comfyui_installed) {
+        plen += snprintf(preamble + plen, cap - plen,
+            "image_generate: ONLINE (ComfyUI + SDXL Turbo, port %d, GPU-accelerated)\n", g_comfyui_port);
+    }
+    Connection *bs = get_connection("brave_search");
+    if (bs && bs->active) {
+        plen += snprintf(preamble + plen, cap - plen, "web_search: ONLINE (Brave Search API)\n");
+    }
+    plen += snprintf(preamble + plen, cap - plen, "---\n\n");
 
     return preamble;
 }
