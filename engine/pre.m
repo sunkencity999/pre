@@ -3648,77 +3648,31 @@ static char *build_context_preamble(void) {
     // Tool usage guidance — tool definitions are now provided via Ollama's native
     // tools parameter (structured function calling), so we don't need format instructions.
     // Keep behavioral guidance that the schema can't express.
+    // Tool rules — consolidated into one block to avoid overwhelming the model.
+    // Gemma 4 26B loses instruction-following when there are too many competing
+    // CRITICAL sections. One clear rules block works better than four verbose ones.
     plen += snprintf(preamble + plen, cap - plen,
-        "You have tools available. Most tools are called as functions (the system handles the format). "
-        "After each tool call, STOP and wait for the result.\n\n"
-        "CRITICAL — FILE CREATION RULES:\n"
-        "You must NEVER output raw code, HTML, scripts, or file contents in your response text. "
-        "Do NOT draft code in your response — go directly to the tool call. "
-        "Instead, ALWAYS use a tool to save content to disk:\n"
-        "- For visual content (HTML, markdown, CSV, SVG, diagrams, reports, web pages): use artifact. "
-        "This saves the file and opens it in the browser/viewer automatically. "
-        "Aim for compact artifacts (~3000-4000 tokens / ~10KB). Write clean, minimal code without comments or redundant whitespace. "
-        "For games: focus on core mechanics — the system will handle display. "
-        "In HTML artifacts, load CDN scripts in <head> BEFORE any inline <script> that uses them.\n"
-        "- For executable content (scripts, source code, configs): use file_write. "
-        "This saves the file to disk.\n"
-        "- Briefly describe what you created, then immediately use the tool. Do NOT include any file contents in your chat text.\n\n"
-        "IMPORTANT: artifact and file_write use a text-based format (they are NOT function calls). "
-        "You MUST use this exact XML format for these two tools:\n"
-        "<tool_call>\n"
-        "{\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"...full HTML...\", \"type\": \"html\"}}\n"
-        "</tool_call>\n"
-        "<tool_call>\n"
-        "{\"name\": \"file_write\", \"arguments\": {\"path\": \"...\", \"content\": \"...file contents...\"}}\n"
-        "</tool_call>\n"
-        "For long documents (reports, multi-section content), use append_to to build incrementally:\n"
-        "<tool_call>\n"
-        "{\"name\": \"artifact\", \"arguments\": {\"append_to\": \"Report Title\", \"content\": \"<h2>Next Section</h2>...\", \"type\": \"html\"}}\n"
-        "</tool_call>\n"
-        "Each append_to call adds a new section to the existing artifact. No title needed when appending.\n"
-        "All other tools (bash, file_edit, read_file, memory_save, etc.) are called as functions — do NOT use <tool_call> tags for them.\n\n"
-        "Tool tips:\n"
-        "memory_save types: user|feedback|project|reference. scope: project|global.\n"
-        "file_edit old_string must match exactly once. Paths relative to cwd unless absolute.\n"
-        "artifact types: html|markdown|csv|json|svg|code|text.\n"
-        "pdf_export converts an artifact to PDF. Use title='latest' for the most recent.\n"
-        "Save memories proactively for user prefs, project context, corrections.\n\n"
+        "RULES (follow these exactly):\n"
+        "1. NEVER output code, HTML, or file contents in chat. Use tools instead.\n"
+        "2. artifact and file_write use text-based <tool_call> tags (not function calls):\n"
+        "   <tool_call>\n"
+        "   {\"name\": \"artifact\", \"arguments\": {\"title\": \"...\", \"content\": \"...HTML...\", \"type\": \"html\"}}\n"
+        "   </tool_call>\n"
+        "   All other tools are native function calls.\n"
+        "3. One tool call per turn. STOP after each call and wait for the result.\n"
+        "4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n"
+        "5. For reports with images: web_search first, then image_generate for each image, then artifact last.\n"
+        "6. In HTML artifacts: load CDN scripts in <head>. Aim for ~3000-4000 tokens.\n"
+        "7. For long reports: use append_to to add sections to an existing artifact.\n");
 
-        "CRITICAL — MULTI-STEP WORKFLOWS:\n"
-        "Complex tasks require MULTIPLE tool calls in sequence. Do NOT skip steps or collapse them.\n"
-        "You can call tools one at a time across multiple turns — after each tool result, you can call the next tool.\n"
-        "Example workflow for a research report with images:\n"
-        "  Turn 1: call web_search (query 1)\n"
-        "  Turn 2: call web_search (query 2, different angle)\n"
-        "  Turn 3: call web_search (query 3, another subtopic)\n"
-        "  Turn 4: call image_generate (image 1)\n"
-        "  Turn 5: call image_generate (image 2)\n"
-        "  Turn 6: call artifact (build the report using ALL collected research and image paths)\n"
-        "  Turn 7: call pdf_export if requested\n"
-        "Each tool call is a separate turn. STOP after each call and wait for the result before proceeding.\n\n"
-
-        "CRITICAL — RESEARCH:\n"
-        "When the user asks you to research a topic, call web_search MULTIPLE TIMES with DIFFERENT specific queries.\n"
-        "BAD: one generic search like 'Joby Aviation 2025'\n"
-        "GOOD: 3-5 targeted searches like 'Joby Aviation FAA certification progress 2025', "
-        "'Joby flight test achievements 2025 2026', 'Joby manufacturing facility expansion', "
-        "'Joby Aviation stock price performance 2025', 'Joby partnerships Delta Toyota 2025'\n"
-        "Each search gives you different facts. Combine all results for a comprehensive report.\n"
-        "NEVER fabricate data, statistics, or dates. Use ONLY information from web_search results.\n\n");
-
-    // Image generation guidance — only when ComfyUI is installed
     if (g_comfyui_installed) {
         plen += snprintf(preamble + plen, cap - plen,
-            "CRITICAL — IMAGE GENERATION (CONFIRMED WORKING):\n"
-            "ComfyUI + SDXL Turbo is INSTALLED AND RUNNING on this machine right now. "
-            "The image_generate tool is confirmed operational. It generates 512x512 images in ~5 seconds using the local GPU.\n"
-            "You MUST call image_generate when the user asks for images. Do NOT assume it is unavailable. "
-            "Do NOT use Unsplash, stock photos, or any external image URLs as substitutes.\n"
-            "image_generate is a NATIVE FUNCTION CALL (not <tool_call> tags). Call it like any other function tool.\n"
-            "After calling image_generate, the result contains the local file path. Use that path in your artifact:\n"
-            "  <img src='file:///Users/.../artifacts/2026-04-06/image_name.png'>\n"
-            "Call image_generate ONCE PER IMAGE, then create the artifact AFTER collecting all image paths.\n\n");
+            "8. image_generate is a WORKING native function call. It creates images on the local GPU in ~5 seconds. "
+            "ALWAYS call it when images are requested. NEVER use Unsplash or external URLs instead. "
+            "After generating, use the returned path in artifacts: <img src='file:///path/from/tool'>\n");
     }
+
+    plen += snprintf(preamble + plen, cap - plen, "\n");
 
     // Tell the model about connection-dependent tools (even if not active)
     if (!g_connections_loaded) load_connections();
@@ -9741,16 +9695,29 @@ int main(int argc, char **argv) {
                         }
                     }
                 }
-                // Fallback: find raw <!DOCTYPE or <html
+                // Fallback: find raw <!DOCTYPE, <html, or HTML fragment tags
                 if (!html_content) {
                     char *doctype = strstr(response, "<!DOCTYPE");
                     if (!doctype) doctype = strstr(response, "<html");
+                    // Also detect HTML fragments dumped without a full document wrapper
+                    if (!doctype) doctype = strstr(response, "<article>");
+                    if (!doctype) doctype = strstr(response, "<article ");
                     if (doctype) {
-                        // Take everything from doctype to end of </html> or end of response
+                        // Take everything from doctype to end of </html> or </article> or end of response
                         char *html_end = strstr(doctype, "</html>");
                         if (html_end) html_end += 7;
-                        else html_end = response + strlen(response);
+                        if (!html_end) { html_end = strstr(doctype, "</article>"); if (html_end) html_end += 10; }
+                        if (!html_end) html_end = response + strlen(response);
                         size_t len = html_end - doctype;
+                        // For fragments, also grab any trailing <script> and <style> blocks
+                        if (html_end < response + strlen(response)) {
+                            char *trail = html_end;
+                            while (*trail == '\n' || *trail == ' ') trail++;
+                            if (strncmp(trail, "<script", 7) == 0 || strncmp(trail, "<style", 6) == 0) {
+                                html_end = response + strlen(response); // grab everything
+                                len = html_end - doctype;
+                            }
+                        }
                         html_content = malloc(len + 1);
                         memcpy(html_content, doctype, len);
                         html_content[len] = 0;
@@ -9760,16 +9727,82 @@ int main(int argc, char **argv) {
                 if (html_content && strlen(html_content) > 100) {
                     printf(ANSI_YELLOW "\n  [HTML detected in chat — auto-creating artifact]"
                            ANSI_RESET "\n");
-                    // Extract title from <title>...</title> tag if present
+                    // If it's an HTML fragment (no <!DOCTYPE or <html), wrap it
+                    if (!strstr(html_content, "<!DOCTYPE") && !strstr(html_content, "<html")) {
+                        size_t frag_len = strlen(html_content);
+                        // Check if there's a <style> block to extract
+                        char *style_block = strstr(html_content, "<style>");
+                        char *style_end = style_block ? strstr(style_block, "</style>") : NULL;
+                        char *style_str = "";
+                        size_t style_len = 0;
+                        if (style_block && style_end) {
+                            style_len = (style_end + 8) - style_block;
+                            style_str = style_block;
+                        }
+                        // Check for <script> blocks
+                        char *script_block = strstr(html_content, "<script");
+                        size_t wrap_cap = frag_len + 512;
+                        char *wrapped = malloc(wrap_cap);
+                        int wlen = snprintf(wrapped, wrap_cap,
+                            "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
+                            "<meta name='viewport' content='width=device-width,initial-scale=1'>");
+                        // Copy style into head if found
+                        if (style_len > 0) {
+                            memcpy(wrapped + wlen, style_str, style_len);
+                            wlen += style_len;
+                        }
+                        wlen += snprintf(wrapped + wlen, wrap_cap - wlen, "</head><body>");
+                        // Copy content (skip the style block since we moved it to head)
+                        if (style_block && style_block < script_block) {
+                            // Copy up to style, skip style, copy rest up to script
+                            memcpy(wrapped + wlen, html_content, style_block - html_content);
+                            wlen += style_block - html_content;
+                            char *after_style = style_end ? style_end + 8 : style_block;
+                            size_t rest = frag_len - (after_style - html_content);
+                            memcpy(wrapped + wlen, after_style, rest);
+                            wlen += rest;
+                        } else {
+                            memcpy(wrapped + wlen, html_content, frag_len);
+                            wlen += frag_len;
+                        }
+                        wlen += snprintf(wrapped + wlen, wrap_cap - wlen, "</body></html>");
+                        wrapped[wlen] = 0;
+                        free(html_content);
+                        html_content = wrapped;
+                    }
+                    // Extract title from <title>...</title> tag, or <h1>, or <header> text
                     char auto_title[256] = "Auto-Extracted Content";
+                    // Try <title> first, then <h1>
                     char *title_start = strstr(html_content, "<title>");
+                    int title_tag_len = 7;
+                    char *title_close = "</title>";
+                    if (!title_start) {
+                        title_start = strstr(html_content, "<h1>");
+                        title_tag_len = 4;
+                        title_close = "</h1>";
+                        if (!title_start) {
+                            title_start = strstr(html_content, "<h1 ");
+                            if (title_start) {
+                                char *gt = strchr(title_start, '>');
+                                if (gt) { title_tag_len = (int)(gt + 1 - title_start); }
+                            }
+                        }
+                    }
                     if (title_start) {
-                        title_start += 7;
-                        char *title_end = strstr(title_start, "</title>");
+                        title_start += title_tag_len;
+                        char *title_end = strstr(title_start, title_close);
                         if (title_end && (title_end - title_start) > 0 && (title_end - title_start) < 200) {
                             size_t tlen = title_end - title_start;
                             memcpy(auto_title, title_start, tlen);
                             auto_title[tlen] = 0;
+                            // Strip HTML tags from title (e.g. <strong>)
+                            char clean[256]; int ci2 = 0;
+                            for (int j = 0; auto_title[j] && ci2 < 254; j++) {
+                                if (auto_title[j] == '<') { while (auto_title[j] && auto_title[j] != '>') j++; }
+                                else clean[ci2++] = auto_title[j];
+                            }
+                            clean[ci2] = 0;
+                            strlcpy(auto_title, clean, sizeof(auto_title));
                             // Strip leading/trailing whitespace
                             char *t = auto_title;
                             while (*t == ' ' || *t == '\n' || *t == '\t') t++;
