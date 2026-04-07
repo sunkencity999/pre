@@ -81,7 +81,7 @@
 #define MAX_CONTEXT     262144
 // Actual num_ctx configured in the Modelfile — must match exactly.
 // Sending any different value to Ollama triggers a full model reload (300s+).
-#define MODEL_CTX       32768
+#define MODEL_CTX       65536
 
 typedef struct {
     int port;
