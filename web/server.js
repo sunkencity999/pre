@@ -36,7 +36,7 @@ app.get('/api/sessions', (_req, res) => {
 });
 
 app.get('/api/sessions/:id', (req, res) => {
-  const messages = getSession(req.params.id);
+  const messages = getSession(decodeURIComponent(req.params.id));
   res.json(messages);
 });
 
@@ -47,9 +47,10 @@ app.post('/api/sessions/new', (req, res) => {
 });
 
 app.delete('/api/sessions/:id', (req, res) => {
-  const ok = deleteSession(req.params.id);
+  const id = decodeURIComponent(req.params.id);
+  const ok = deleteSession(id);
   if (!ok) return res.status(404).json({ error: 'Session not found' });
-  res.json({ deleted: req.params.id });
+  res.json({ deleted: id });
 });
 
 app.post('/api/rewind', (req, res) => {
