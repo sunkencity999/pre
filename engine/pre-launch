@@ -73,6 +73,9 @@ fi
 # Start the web GUI server in the background (if node is available)
 WEB_DIR="$PRE_DIR/../web"
 WEB_PORT="${PRE_WEB_PORT:-7749}"
+WEB_PID=""
+WEB_STARTED_BY_US=false
+
 if [ -f "$WEB_DIR/server.js" ] && command -v node >/dev/null 2>&1; then
     # Check if already running on that port
     if ! curl -sf "http://localhost:${WEB_PORT}/api/status" >/dev/null 2>&1; then
@@ -82,13 +85,25 @@ if [ -f "$WEB_DIR/server.js" ] && command -v node >/dev/null 2>&1; then
         sleep 1
         if kill -0 "$WEB_PID" 2>/dev/null; then
             echo "  Web GUI running at http://localhost:${WEB_PORT}"
+            WEB_STARTED_BY_US=true
         else
             echo "  Web GUI failed to start (run 'cd $WEB_DIR && npm install' first)"
+            WEB_PID=""
         fi
     else
         echo "  Web GUI already running at http://localhost:${WEB_PORT}"
     fi
 fi
 
+# Cleanup: kill the web server when PRE exits (Ctrl+C, normal exit, etc.)
+cleanup() {
+    if [ -n "$WEB_PID" ] && $WEB_STARTED_BY_US; then
+        kill "$WEB_PID" 2>/dev/null
+        wait "$WEB_PID" 2>/dev/null
+    fi
+}
+trap cleanup EXIT
+
 # Launch PRE with current directory as working dir, forward all args
-exec "$PRE_BIN" --port "$PORT" --dir "$(pwd)" "$@"
+# Not using exec — we need the trap to fire on exit for cleanup.
+"$PRE_BIN" --port "$PORT" --dir "$(pwd)" "$@"

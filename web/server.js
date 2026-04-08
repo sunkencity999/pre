@@ -158,6 +158,18 @@ wss.on('connection', (ws) => {
   });
 });
 
+// ── Graceful shutdown ──
+
+function shutdown() {
+  console.log('\n  PRE Web GUI shutting down...');
+  wss.clients.forEach(ws => ws.close());
+  server.close();
+  process.exit(0);
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
 // ── Start ──
 
 server.listen(PORT, () => {
