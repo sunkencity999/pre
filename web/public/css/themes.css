@@ -1,0 +1,139 @@
+/* PRE Web GUI — Theme system via CSS custom properties */
+
+/* ── Dark Theme (default) ── */
+html[data-theme="dark"] {
+  --bg: #0a0a0a;
+  --surface: #141414;
+  --surface-hover: #1e1e1e;
+  --surface-active: #252525;
+  --border: #2a2a2a;
+  --border-light: #333;
+  --text: #e8e8e8;
+  --text-secondary: #999;
+  --text-muted: #666;
+  --primary: #6cb4ee;
+  --primary-hover: #89c4f4;
+  --primary-bg: rgba(108, 180, 238, 0.1);
+  --accent: #a78bfa;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --code-bg: #1a1a1a;
+  --code-border: #333;
+  --msg-user-bg: rgba(108, 180, 238, 0.08);
+  --msg-assistant-bg: transparent;
+  --thinking-bg: rgba(167, 139, 250, 0.06);
+  --thinking-border: rgba(167, 139, 250, 0.2);
+  --tool-bg: rgba(74, 222, 128, 0.06);
+  --tool-border: rgba(74, 222, 128, 0.2);
+  --input-bg: #1a1a1a;
+  --input-border: #333;
+  --input-focus: #6cb4ee;
+  --shadow: rgba(0, 0, 0, 0.4);
+  --overlay: rgba(0, 0, 0, 0.6);
+}
+
+/* ── Light Theme ── */
+html[data-theme="light"] {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-hover: #f5f5f5;
+  --surface-active: #ebebeb;
+  --border: #e0e0e0;
+  --border-light: #eee;
+  --text: #1a1a1a;
+  --text-secondary: #666;
+  --text-muted: #999;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --primary-bg: rgba(37, 99, 235, 0.08);
+  --accent: #7c3aed;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --code-bg: #f4f4f5;
+  --code-border: #e0e0e0;
+  --msg-user-bg: rgba(37, 99, 235, 0.05);
+  --msg-assistant-bg: transparent;
+  --thinking-bg: rgba(124, 58, 237, 0.05);
+  --thinking-border: rgba(124, 58, 237, 0.2);
+  --tool-bg: rgba(22, 163, 74, 0.05);
+  --tool-border: rgba(22, 163, 74, 0.2);
+  --input-bg: #ffffff;
+  --input-border: #d0d0d0;
+  --input-focus: #2563eb;
+  --shadow: rgba(0, 0, 0, 0.1);
+  --overlay: rgba(255, 255, 255, 0.8);
+}
+
+/* ── Evangelion Theme ── */
+html[data-theme="evangelion"] {
+  --bg: #0d0014;
+  --surface: #1a0a2e;
+  --surface-hover: #241440;
+  --surface-active: #2e1a50;
+  --border: #3d1f6d;
+  --border-light: #4a2880;
+  --text: #e8c547;
+  --text-secondary: #c49a2a;
+  --text-muted: #8a6d1a;
+  --primary: #ff6600;
+  --primary-hover: #ff8533;
+  --primary-bg: rgba(255, 102, 0, 0.12);
+  --accent: #00ff88;
+  --success: #00ff88;
+  --warning: #ff6600;
+  --danger: #cc0000;
+  --code-bg: #150a24;
+  --code-border: #3d1f6d;
+  --msg-user-bg: rgba(255, 102, 0, 0.08);
+  --msg-assistant-bg: transparent;
+  --thinking-bg: rgba(0, 255, 136, 0.05);
+  --thinking-border: rgba(0, 255, 136, 0.2);
+  --tool-bg: rgba(255, 102, 0, 0.08);
+  --tool-border: rgba(255, 102, 0, 0.3);
+  --input-bg: #150a24;
+  --input-border: #3d1f6d;
+  --input-focus: #ff6600;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --overlay: rgba(13, 0, 20, 0.8);
+}
+
+/* Evangelion: hexagonal grid background */
+html[data-theme="evangelion"] body {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg fill='%233d1f6d' fill-opacity='0.08'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Evangelion: scanline effect on focused elements */
+html[data-theme="evangelion"] .chat-input:focus {
+  box-shadow: 0 0 0 2px var(--primary),
+    inset 0 0 30px rgba(255, 102, 0, 0.05);
+  animation: eva-scanline 4s linear infinite;
+}
+
+@keyframes eva-scanline {
+  0% { background-position: 0 0; }
+  100% { background-position: 0 100%; }
+}
+
+/* Evangelion: NERV-style logo */
+html[data-theme="evangelion"] .logo {
+  color: var(--primary);
+  text-shadow: 0 0 20px rgba(255, 102, 0, 0.4);
+  letter-spacing: 8px;
+}
+
+html[data-theme="evangelion"] .logo-sub {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  font-size: 0.65rem;
+}
+
+/* Evangelion: glowing borders */
+html[data-theme="evangelion"] .sidebar {
+  border-right-color: rgba(255, 102, 0, 0.3);
+}
+html[data-theme="evangelion"] .topbar {
+  border-bottom-color: rgba(255, 102, 0, 0.2);
+}

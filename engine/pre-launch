@@ -70,5 +70,25 @@ if [ ! -x "$PRE_BIN" ]; then
     exit 1
 fi
 
+# Start the web GUI server in the background (if node is available)
+WEB_DIR="$PRE_DIR/../web"
+WEB_PORT="${PRE_WEB_PORT:-7749}"
+if [ -f "$WEB_DIR/server.js" ] && command -v node >/dev/null 2>&1; then
+    # Check if already running on that port
+    if ! curl -sf "http://localhost:${WEB_PORT}/api/status" >/dev/null 2>&1; then
+        PRE_CWD="$(pwd)" PRE_WEB_PORT="$WEB_PORT" node "$WEB_DIR/server.js" >/dev/null 2>&1 &
+        WEB_PID=$!
+        # Verify it started
+        sleep 1
+        if kill -0 "$WEB_PID" 2>/dev/null; then
+            echo "  Web GUI running at http://localhost:${WEB_PORT}"
+        else
+            echo "  Web GUI failed to start (run 'cd $WEB_DIR && npm install' first)"
+        fi
+    else
+        echo "  Web GUI already running at http://localhost:${WEB_PORT}"
+    fi
+fi
+
 # Launch PRE with current directory as working dir, forward all args
 exec "$PRE_BIN" --port "$PORT" --dir "$(pwd)" "$@"

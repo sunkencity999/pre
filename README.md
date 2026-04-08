@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant that actually works. No cloud. No API keys. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 262K context, 38+ integrated tools, persistent memory, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 38+ integrated tools, persistent memory, local image generation, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -18,7 +18,7 @@ Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, con
 
 - **Speed without sacrifice.** You get the knowledge and reasoning quality of a 26B-parameter model at the computational cost of a ~4B model. On Apple Silicon with q4_K_M quantization (~17 GB on disk), this translates to **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
 
-- **Context without collapse.** Gemma 4's native 262K token context window is not a marketing number — PRE actually uses it. Long agentic workflows (read 20 files, search a codebase, edit several, run tests, iterate) consume tens of thousands of tokens. Models that top out at 8K or 32K choke on the second tool call. 262K means PRE can hold an entire debugging session, a full codebase exploration, or a multi-step refactoring in a single coherent conversation.
+- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **65K token window** — large enough for extended multi-step workflows (read 20 files, chain tool calls, iterate) while cold-loading in just 1.5 seconds. Models that top out at 8K choke on the second tool call. 65K with auto-compaction means PRE can hold an entire debugging session, a full codebase exploration, or a multi-step refactoring in a single coherent conversation.
 
 - **Strong instruction following.** MoE models with dedicated routing learn to follow structured tool-call formats reliably. Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable: the model calls tools incorrectly and the whole loop breaks down.
 
@@ -30,7 +30,7 @@ PRE doesn't abstract away the hardware — it leans into it. Every layer of the 
 
 **Raw socket streaming, not buffered I/O.** Most LLM clients use `fgets()` or equivalent stdio-buffered reads to consume server-sent events. This adds latency — sometimes hundreds of milliseconds per token — because the C runtime waits to fill its internal buffer before returning data. PRE uses raw `recv()` on the TCP socket with a 64KB manual ring buffer and `memchr()`-based newline scanning. Every NDJSON chunk from Ollama is parsed and rendered the instant it arrives. The difference is visceral: tokens appear one at a time as the model generates them, not in jerky batches.
 
-**Dynamic context window scaling.** Setting `num_ctx=262144` at model load forces Ollama to pre-allocate a KV cache for 262K tokens — gigabytes of memory that takes minutes to initialize and wastes capacity when your conversation is only 2K tokens. PRE solves this with **dynamic per-request context sizing**: the Modelfile sets a small default (`num_ctx=8192`) for fast startup, and PRE sends `num_ctx` as a per-request option, doubling from 8K → 16K → 32K → ... → 262K as the conversation actually grows. First messages get sub-second TTFT. Long sessions get the full 262K when they need it.
+**Fixed context window with fast startup.** Changing `num_ctx` at runtime triggers a full model unload/reload in Ollama — 300+ seconds for large models. PRE avoids this entirely: the Modelfile sets `num_ctx=65536` once, `pre-launch` pre-warms the model with a real request (forcing full KV cache allocation), and every request from the code sends the exact same `num_ctx=65536`. The model cold-loads in ~1.5 seconds on M4 Max 128GB, and subsequent requests benefit from Ollama's KV cache prefix reuse with sub-second TTFT. Auto-compaction at 75% keeps conversations within the 65K budget.
 
 **KV cache prefix reuse.** Ollama caches the KV state of previously processed tokens. If the prefix of a new request matches a previous one, those tokens don't need re-processing — only the new tokens go through the model. PRE exploits this by always sending the system prompt as the first `role:system` message in the messages array, identically formatted every turn. After the first exchange, the system prompt (tool descriptions, project context, memories) is essentially free — the KV cache already has it. This is why multi-turn conversations maintain fast TTFT even with a large system prompt.
 
@@ -51,7 +51,7 @@ The difference between a chatbot and an agent is the **tool-call loop**. A chatb
 3. **Sufficient context** — the conversation must hold the system prompt, tool definitions, all previous turns, tool results, and still have room for the model to reason
 4. **Autonomy with safety** — most actions should just execute; only genuinely dangerous ones should ask
 
-PRE delivers all four. The model produces well-formed `<tool_call>` JSON. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 262K context holds extended multi-step sessions. And the permission model is designed for power users: **35 of 38 tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
+PRE delivers all four. The model produces well-formed tool calls via Ollama's native structured function calling. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 65K context with auto-compaction holds extended multi-step sessions. And the permission model is designed for power users: **35 of 38+ tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
 
 This means PRE can do things like:
 
@@ -77,6 +77,7 @@ These aren't demos. These are workflows that complete in under a minute because 
   - [Channels](#channels)
   - [Context Management](#context-management)
 - [Best Practices](#best-practices)
+- [Web GUI](#web-gui)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -144,11 +145,13 @@ PRE is not a chatbot — it's a local agent with deep system access.
 
 **Connect to external services** — Optional integrations with Brave Search, GitHub, Google (Gmail, Drive, Docs), Wolfram Alpha, and Telegram via `/connections`. Google uses built-in OAuth — just sign in, no Cloud Console setup. API keys for the rest. Multi-account Google is supported (`/connections add google work`). Tokens stored locally.
 
+**Use from your browser** — PRE includes a built-in web GUI at `http://localhost:7749` that launches automatically alongside the CLI. Three themes (Dark, Light, Evangelion), Calendas Plus serif typography, real-time streaming, full tool execution, session management — all sharing the same sessions and memory as the CLI. No framework, no build step, just `node server.js`.
+
 **Chat from your phone** — Configure a Telegram bot and PRE automatically bridges it when you launch. Full system access from Telegram — same 35 tools, same memory, same agentic workflows. No separate process to manage.
 
 **Personalize your agent** — On first launch, PRE asks you to name your assistant. The name appears in the banner, system prompt, and Telegram bot. Change it anytime with `/name`.
 
-**Generate images locally** — `image_generate` tool creates images via ComfyUI + SDXL Turbo running on Apple Silicon (MPS). The model can create custom images for reports, presentations, and artifacts — no cloud API required. Optional install via `install.sh`.
+**Generate images locally** — `image_generate` tool creates photorealistic images via ComfyUI running on Apple Silicon (MPS). The installer offers two checkpoints: **Juggernaut XL v9** (recommended — 25-step, 1024x1024, photorealistic faces and scenes) or **SDXL Turbo** (fast — 4-step, 512x512, speed-optimized). No cloud API required. Optional install via `install.sh`.
 
 **Build rich reports** — Multi-part artifacts let the model build long documents across multiple tool calls. Each `append_to` call adds a new section to an existing artifact. Combined with image generation and `/pdf` export, PRE can produce complete visual reports.
 
@@ -214,7 +217,7 @@ pre-launch --dir /path/to/project  # Override working directory
 pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
-The launcher checks that Ollama is running (starts it if not), creates `pre-gemma4` from the Modelfile if needed, pre-warms the model into GPU memory for fast TTFT, and launches the PRE binary.
+The launcher checks that Ollama is running (starts it if not), creates `pre-gemma4` from the Modelfile if needed, pre-warms the model into GPU memory with a real request (matching `num_ctx=65536` for full KV cache allocation), starts the web GUI server on port 7749 (if Node.js is available), and launches the PRE binary.
 
 ---
 
@@ -355,7 +358,7 @@ PRE has 32 built-in tools plus up to 6 connection-dependent tools (38 total) tha
 | # | Tool | Args | Description |
 |---|------|------|-------------|
 | 26 | `artifact` | `title`, `content`, `type`, `append_to`? | Create/append rich HTML artifacts in pop-out viewer |
-| 27 | `image_generate` | `prompt`, `width`?, `height`?, `style`? | Generate images locally via SDXL Turbo (MPS) |
+| 27 | `image_generate` | `prompt`, `width`?, `height`?, `style`? | Generate images locally via ComfyUI (Juggernaut XL or SDXL Turbo, MPS) |
 | 28 | `pdf_export` | `title`, `path`? | Export an artifact to PDF via WebKit |
 
 #### Memory
@@ -521,13 +524,13 @@ All tokens are stored locally in `~/.pre/connections.json` and refreshed automat
 
 ### Context Management
 
-PRE dynamically manages Gemma 4's 262K token context window. The context budget scales with your conversation — small allocations for quick exchanges, full 262K for deep multi-step sessions.
+PRE manages Gemma 4's context window with a **fixed 65K token allocation** (set once in the Modelfile and matched exactly in every request). This avoids Ollama's model reload penalty — changing `num_ctx` at runtime triggers a full unload/reload cycle (300+ seconds for large models). Instead, PRE allocates 65K at startup, pre-warms the KV cache with a real request, and all subsequent requests reuse the same allocation with sub-second TTFT.
 
-**Dynamic context scaling** — PRE starts each session with an 8K context window and doubles it automatically (8K → 16K → 32K → ... → 262K) as the conversation grows. This means fast startup and sub-second TTFT on early turns, with no hard ceiling as the session deepens.
+**Fixed 65K context** — Large enough for extended multi-step agentic sessions (read 20 files, chain tool calls, iterate) while cold-loading in ~1.5 seconds on M4 Max 128GB. Auto-compaction keeps conversations within budget.
 
-**Context bar** — Shown after every response (color-coded: grey → yellow at 75% → red at 90%). Also available via `/context`.
+**Context bar** — Shown after every response (color-coded: grey → yellow at 50% → red at 75%). Also available via `/context`.
 
-**Auto-compaction** — When estimated tokens exceed 75% of the budget, older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
+**Auto-compaction** — When estimated tokens exceed 75% of the 65K budget (~49K tokens), older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
 
 **Server-reported tokens** — PRE uses Ollama's native API which reports exact prompt and generation token counts from the server, giving you ground-truth context usage instead of client-side estimates.
 
@@ -574,6 +577,56 @@ PRE dynamically manages Gemma 4's 262K token context window. The context budget 
 1. **`!` for quick commands.** `!git status`, `!docker ps` — runs immediately, output not sent to model.
 2. **`/run` to feed output to model.** Runs the command and asks if you want the model to see it.
 3. **`bash` tool for model-driven commands.** The model calls `bash` autonomously when it needs to run something.
+
+---
+
+## Web GUI
+
+PRE includes a built-in browser interface that provides full access to all PRE features through a modern, responsive web application.
+
+### How It Works
+
+The web GUI is a **Node.js (Express + WebSocket) backend** with a **vanilla JS SPA frontend** — no React, no Vue, no bundler. It talks directly to Ollama, reads/writes the same JSONL session files as the CLI, executes tools server-side, and streams responses via WebSocket. Sessions are fully interchangeable between CLI and web.
+
+### Features
+
+- **Real-time streaming** — Tokens appear as the model generates them, with a thinking block, streaming cursor, and live tool status cards
+- **Full tool execution** — All 37+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **Three themes** — Dark, Light, and Evangelion (NERV-inspired orange-on-purple with hexagonal grid background and scan-line animations)
+- **Calendas Plus typography** — Serif display font for headings, system-ui stack for body text
+- **Session management** — Sidebar with session list, create/switch sessions, shared with CLI
+- **Context tracking** — Live context window usage bar in the topbar
+- **Tool confirmation** — Dangerous tools (process_kill, applescript, memory_delete) show a confirmation dialog before executing
+- **Responsive layout** — Three-panel design (sidebar, chat, artifact panel) with mobile hamburger drawer at <768px
+
+### Auto-Launch
+
+The web GUI starts automatically when you run `pre-launch` (requires Node.js). It runs in the background on port **7749** (configurable via `PRE_WEB_PORT`). If the server is already running, the launcher detects it and skips.
+
+### Manual Launch
+
+```bash
+cd pre/web
+npm install          # First time only
+node server.js       # Starts on http://localhost:7749
+
+# Or with custom settings:
+PRE_WEB_PORT=8080 PRE_CWD=/path/to/project node server.js
+```
+
+### Architecture
+
+```
+Browser (localhost:7749)
+  ├── WebSocket ──► Express + ws server
+  │                   ├── Ollama NDJSON streaming client
+  │                   ├── Tool dispatcher (48 aliases, 37 tools)
+  │                   ├── Session JSONL read/write (shared with CLI)
+  │                   └── System prompt builder (memory, connections, rules)
+  └── REST API ──► /api/sessions, /api/status, /api/rewind
+```
+
+The web GUI never exposes raw API keys to the browser — all tool execution and credential access happens server-side.
 
 ---
 
@@ -624,27 +677,28 @@ The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that share
 │ ~10000 lines│                     │                   │
 │  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
 └──┬──────┬───┘                     │  MoE, q4_K_M      │
-   │      │                         │  ~70 tok/s         │
-   │      │ fork/exec               └──────────▲────────┘
-   │      │                                    │
+   │      │                         │  num_ctx=65536     │
+   │      │ fork/exec               │  ~70 tok/s         │
+   │      │                         └──────────▲────────┘
    │  ┌───▼──────────┐  /api/chat (non-stream) │
    │  │ pre-telegram  │ ───────────────────────┘
-   │  │ (telegram.m)  │
-   │  │ Telegram Bot  │  ◄──► Telegram Bot API
-   │  └───────────────┘       (long-poll)
-   │
-   │ auto-start/stop
-   │
-┌──▼──────────────┐
-│    ComfyUI      │  localhost:8188
-│  SDXL Turbo     │  image_generate tool
-│  (MPS/Metal)    │  4-step diffusion, 512x512
-└─────────────────┘
+   │  │ (telegram.m)  │                         │
+   │  │ Telegram Bot  │  ◄──► Telegram Bot API  │
+   │  └───────────────┘       (long-poll)       │
+   │                                            │
+   │ auto-start/stop          /api/chat NDJSON  │
+   │                    ┌───────────────────────┘
+┌──▼──────────────┐  ┌──┴──────────────┐
+│    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
+│ Juggernaut XL   │  │  (Node.js/WS)   │  3 themes, streaming
+│  (MPS/Metal)    │  │  vanilla JS SPA  │  full tool execution
+│ 25-step, 1024px │  │  shared sessions │  Calendas Plus typography
+└─────────────────┘  └─────────────────┘
 
   ~/.pre/
   ├── identity.json       # Agent name
   ├── connections.json    # API keys and OAuth tokens
-  ├── sessions/           # Conversation JSONL files
+  ├── sessions/           # Conversation JSONL files (shared by CLI + web)
   ├── history             # Input history (arrow-key recall)
   ├── checkpoints/        # File backups for /undo
   ├── artifacts/          # HTML artifacts and generated images
@@ -671,11 +725,11 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 |-------|-------------|--------|
 | **Model selection** | Gemma 4 26B-A4B MoE — 3.8B active params of 26B total | 26B quality at ~4B speed |
 | **Quantization** | q4_K_M (~17 GB) — sweet spot of quality vs. memory | Fits comfortably in unified memory |
-| **Context allocation** | Dynamic per-request `num_ctx` (8K → 262K) | Sub-second startup, scales on demand |
+| **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Prompt compression** | Function-signature tool format (~800 tokens for 35 tools) | More room for conversation, faster prefill |
-| **Model pre-warming** | `keep_alive: "24h"` + warmup request at launch | No cold-start penalty |
+| **Model pre-warming** | `keep_alive: "24h"` + real warmup request (with matching `num_ctx`) at launch | Full KV cache pre-allocated, no cold-start penalty |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth performance numbers |
 | **Hybrid tool calling** | Native Ollama `tools` API for small tools, text-based for artifacts | Reliable structured calls + large content generation |
 | **Artifact compaction** | Strip HTML from session after saving to disk | Prevents prefill stalls on follow-up turns |
@@ -687,12 +741,12 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines). It handles:
 - Ollama native API client with raw `recv()` NDJSON streaming
-- Dynamic context window sizing with per-request `num_ctx`
+- Fixed `num_ctx=65536` matching Modelfile (avoids Ollama reload penalty)
 - System prompt as `role:system` message for KV cache prefix reuse
 - Streaming markdown renderer with ANSI formatting
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` for large content
 - 38+ tool implementations with two-tier permissions
-- Local image generation via ComfyUI + SDXL Turbo (MPS-accelerated)
+- Local image generation via ComfyUI + Juggernaut XL/SDXL Turbo (MPS-accelerated, checkpoint-adaptive workflow)
 - Multi-part artifacts with incremental append mode
 - PDF export via native WebKit rendering
 - Cron registry for recurring scheduled tasks (`/cron`, persisted in `~/.pre/cron.json`)
@@ -703,7 +757,7 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 - Persistent memory with per-project scoping
 - Channel-based conversation management
 - Project detection and PRE.md loading
-- Context compaction and token budget management (up to 262K)
+- Context compaction and token budget management (65K fixed context)
 - Artifact session compaction (strips HTML from session after saving to disk)
 - Model unload on exit (frees GPU memory on Ctrl+C)
 - File checkpointing and undo
@@ -729,6 +783,7 @@ PRE's performance comes from a stack of reinforcing optimizations, not any singl
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PRE_PORT` | `11434` | Ollama server port |
+| `PRE_WEB_PORT` | `7749` | Web GUI server port |
 | `EDITOR` | `vi` | Editor for `/edit` command |
 
 ### CLI Options
@@ -775,13 +830,29 @@ pre/
 ├── install.sh              # Automated installer
 ├── system.md               # Model system prompt reference
 ├── engine/
-│   ├── pre.m               # PRE CLI (single-file, ~6000 lines)
+│   ├── pre.m               # PRE CLI (single-file, ~10000 lines)
 │   ├── telegram.m          # Telegram bot bridge (~2000 lines)
 │   ├── linenoise.c/h       # Terminal line editor (patched: Ctrl+V, ANSI-aware)
 │   ├── Makefile             # Build: make pre telegram
-│   ├── Modelfile            # Ollama model config (pre-gemma4)
-│   ├── pre-launch           # Universal launcher script
+│   ├── Modelfile            # Ollama model config (pre-gemma4, num_ctx=65536)
+│   ├── pre-launch           # Universal launcher script (starts CLI + web GUI)
 │   └── launch-telegram      # Standalone Telegram launcher (optional)
+├── web/                     # Web GUI (Node.js + vanilla JS)
+│   ├── server.js            # Express + WebSocket server
+│   ├── package.json
+│   ├── src/
+│   │   ├── ollama.js        # Ollama NDJSON streaming client
+│   │   ├── sessions.js      # JSONL read/write (shared with CLI)
+│   │   ├── tools.js         # Tool dispatcher + execution loop
+│   │   ├── tools-defs.js    # 37 tool definitions for Ollama
+│   │   ├── context.js       # System prompt builder
+│   │   ├── constants.js     # MODEL_CTX=65536, paths
+│   │   └── tools/           # Tool implementations (bash, files, web, memory, system)
+│   └── public/
+│       ├── index.html       # SPA shell
+│       ├── fonts/           # Calendas Plus (regular, italic, bold)
+│       ├── css/             # base, themes (dark/light/evangelion), chat, sidebar, components, animations
+│       └── js/              # app, ws, chat, markdown, themes
 ├── docs/
 │   └── *.md                 # Research notes from Flash-MoE era
 └── benchmark_results/       # Performance benchmarks
@@ -799,6 +870,7 @@ PRE is built and maintained by **Christopher Bradford** — systems administrato
 - **Better rendering** — Syntax highlighting in code blocks, image display in terminal
 - **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
 - **New connections** — Slack, Discord, Notion, Linear, and other service integrations
+- **Web GUI** — Sidebar features (channels, artifacts viewer), image generation UI, cron management, slash command palette
 - **Telegram enhancements** — Inline keyboards, photo/document handling, group chat support
 - **Documentation** — Tutorials, use-case guides, video walkthroughs
 

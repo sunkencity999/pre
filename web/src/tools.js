@@ -1,0 +1,226 @@
+// PRE Web GUI — Tool dispatcher + execution loop
+// Mirrors the CLI's execute_tool() + tool loop from pre.m
+
+const { streamChat } = require('./ollama');
+const { buildSystemPrompt } = require('./context');
+const { buildToolDefs } = require('./tools-defs');
+const { appendMessage, getSessionMessages } = require('./sessions');
+const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
+
+// Tool implementations
+const bashTool = require('./tools/bash');
+const filesTool = require('./tools/files');
+const webTool = require('./tools/web');
+const memoryTool = require('./tools/memory');
+const systemTool = require('./tools/system');
+
+// Tool name aliases — models hallucinate wrong names frequently
+const ALIASES = {
+  shell: 'bash', run: 'bash', terminal: 'bash', sh: 'bash',
+  cmd: 'bash', execute: 'bash', exec: 'bash', command: 'bash',
+  run_command: 'bash', shell_exec: 'bash',
+  file_read: 'read_file', read: 'read_file', cat: 'read_file',
+  view_file: 'read_file', get_file: 'read_file',
+  write_file: 'file_write', write: 'file_write', create_file: 'file_write',
+  save_file: 'file_write', save: 'file_write',
+  edit_file: 'file_edit', edit: 'file_edit', replace: 'file_edit', patch: 'file_edit',
+  ls: 'list_dir', list: 'list_dir', dir: 'list_dir', list_directory: 'list_dir',
+  search: 'grep', find: 'glob', rg: 'grep', ripgrep: 'grep',
+  find_files: 'glob', search_files: 'grep',
+  fetch: 'web_fetch', curl: 'web_fetch', http: 'web_fetch',
+  browse: 'web_fetch', web: 'web_fetch',
+  create_artifact: 'artifact', html: 'artifact', render: 'artifact', display: 'artifact',
+  copy: 'clipboard_write', paste: 'clipboard_read',
+  remember: 'memory_save', recall: 'memory_search', forget: 'memory_delete',
+};
+
+// Tools that require user confirmation before execution
+const CONFIRM_TOOLS = new Set([
+  'process_kill', 'applescript', 'memory_delete',
+]);
+
+// Dispatch a tool call to its handler
+async function executeTool(name, args, cwd) {
+  // Resolve aliases
+  name = ALIASES[name] || name;
+
+  switch (name) {
+    // Shell
+    case 'bash': return bashTool.bash(args, cwd);
+
+    // Files
+    case 'read_file': return filesTool.readFile(args, cwd);
+    case 'list_dir': return filesTool.listDir(args, cwd);
+    case 'glob': return filesTool.glob(args, cwd);
+    case 'grep': return filesTool.grep(args, cwd);
+    case 'file_write': return filesTool.fileWrite(args, cwd);
+    case 'file_edit': return filesTool.fileEdit(args, cwd);
+
+    // Web
+    case 'web_fetch': return webTool.webFetch(args);
+    case 'web_search': return webTool.webSearch(args);
+
+    // Memory
+    case 'memory_save': return memoryTool.save(args);
+    case 'memory_search': return memoryTool.search(args);
+    case 'memory_list': return memoryTool.list();
+    case 'memory_delete': return memoryTool.del(args);
+
+    // System
+    case 'system_info': return systemTool.systemInfo();
+    case 'process_list': return systemTool.processList(args);
+    case 'process_kill': return systemTool.processKill(args);
+    case 'hardware_info': return systemTool.hardwareInfo();
+    case 'disk_usage': return systemTool.diskUsage(args);
+    case 'net_info': return systemTool.netInfo();
+    case 'net_connections': return systemTool.netConnections(args);
+    case 'service_status': return systemTool.serviceStatus(args);
+    case 'display_info': return systemTool.displayInfo();
+    case 'clipboard_read': return systemTool.clipboardRead();
+    case 'clipboard_write': return systemTool.clipboardWrite(args);
+    case 'open_app': return systemTool.openApp(args);
+    case 'notify': return systemTool.notify(args);
+    case 'screenshot': return systemTool.screenshot(args);
+    case 'window_list': return systemTool.windowList();
+    case 'window_focus': return systemTool.windowFocus(args);
+    case 'applescript': return systemTool.applescript(args);
+
+    default:
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info`;
+  }
+}
+
+/**
+ * Run the full tool execution loop for a chat turn.
+ * Streams the response, executes tool calls, sends follow-ups.
+ *
+ * @param {Object} opts
+ * @param {string} opts.sessionId
+ * @param {string} opts.cwd - Working directory
+ * @param {Function} opts.send - Send WS message to client
+ * @param {AbortSignal} opts.signal
+ * @param {Function} opts.onConfirmRequest - Ask client to confirm dangerous tool
+ * @returns {Promise<void>}
+ */
+async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest }) {
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+    if (signal?.aborted) break;
+
+    const systemPrompt = buildSystemPrompt(cwd);
+    const history = getSessionMessages(sessionId);
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history,
+    ];
+    const tools = buildToolDefs();
+
+    // Increase budget for follow-up turns (tool results need room for next call)
+    const maxTokens = turn === 0 ? 8192 : 16384;
+
+    const result = await streamChat({
+      messages,
+      tools,
+      maxTokens,
+      signal,
+      onToken: (event) => send(event),
+    });
+
+    // Update token counts
+    tokensIn += result.stats.prompt_eval_count || 0;
+    tokensOut += result.stats.eval_count || 0;
+
+    // Save assistant message
+    if (result.response || result.toolCalls) {
+      const assistantMsg = { role: 'assistant', content: result.response || '' };
+      if (result.toolCalls) {
+        assistantMsg.tool_calls = result.toolCalls;
+      }
+      appendMessage(sessionId, assistantMsg);
+    }
+
+    // No tool calls — we're done
+    if (!result.toolCalls || result.toolCalls.length === 0) {
+      send({
+        type: 'done',
+        stats: { ...result.stats },
+        context: {
+          used: tokensIn + tokensOut,
+          max: MODEL_CTX,
+          pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX),
+        },
+      });
+      return;
+    }
+
+    // Execute tool calls
+    send({ type: 'done_partial', stats: result.stats });
+
+    const toolResults = [];
+    for (const tc of result.toolCalls) {
+      const toolName = ALIASES[tc.function?.name] || tc.function?.name || 'unknown';
+      const toolArgs = tc.function?.arguments || {};
+      const toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+      // Notify client about tool call
+      send({
+        type: 'tool_call',
+        name: toolName,
+        args: toolArgs,
+        id: toolId,
+        status: 'running',
+      });
+
+      // Check if confirmation is needed
+      if (CONFIRM_TOOLS.has(toolName)) {
+        if (onConfirmRequest) {
+          const approved = await onConfirmRequest(toolId, toolName, toolArgs);
+          if (!approved) {
+            send({ type: 'tool_result', id: toolId, name: toolName, output: 'Skipped by user', status: 'skipped' });
+            toolResults.push({ name: toolName, output: 'Tool execution skipped by user.' });
+            continue;
+          }
+        }
+      }
+
+      // Execute the tool
+      let output;
+      try {
+        output = await executeTool(toolName, toolArgs, cwd);
+      } catch (err) {
+        output = `Error: ${err.message}`;
+      }
+
+      // Truncate very large outputs
+      const MAX_OUTPUT = 32000;
+      if (output.length > MAX_OUTPUT) {
+        output = output.slice(0, MAX_OUTPUT) + `\n\n[...truncated ${output.length - MAX_OUTPUT} bytes]`;
+      }
+
+      send({
+        type: 'tool_result',
+        id: toolId,
+        name: toolName,
+        output: output.slice(0, 2000), // Send abbreviated to client
+        status: 'done',
+      });
+
+      toolResults.push({ name: toolName, output });
+    }
+
+    // Save tool results to session (combined format matching CLI)
+    const combinedResult = toolResults
+      .map(r => `<tool_response name="${r.name}">\n${r.output}</tool_response>`)
+      .join('\n');
+    appendMessage(sessionId, { role: 'tool', content: combinedResult });
+
+    // Start next iteration (model sees tool results and may call more tools)
+  }
+
+  // Hit max tool turns
+  send({ type: 'error', message: `Tool loop reached maximum of ${MAX_TOOL_TURNS} turns` });
+}
+
+module.exports = { executeTool, runToolLoop, ALIASES, CONFIRM_TOOLS };

@@ -1,0 +1,14 @@
+{
+  "name": "pre-web",
+  "version": "1.0.0",
+  "description": "PRE Web GUI — browser interface for Personal Reasoning Engine",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --dev"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}

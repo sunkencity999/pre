@@ -1,0 +1,176 @@
+/* PRE Web GUI — Buttons, inputs, modals, toasts */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.btn-icon {
+  padding: 6px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn-icon:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+
+.btn-send {
+  padding: 6px 10px;
+  border-radius: 8px;
+  min-width: 36px;
+}
+
+/* Panel header */
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-family: 'Calendas Plus', Georgia, serif;
+  font-weight: 700;
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Toast notifications */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  padding: 12px 20px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+  box-shadow: 0 4px 20px var(--shadow);
+  animation: slideInRight 0.3s ease;
+}
+.toast.error {
+  border-color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+}
+.toast.success {
+  border-color: var(--success);
+  background: rgba(74, 222, 128, 0.1);
+}
+
+/* Confirmation dialog */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeSlideIn 0.2s ease;
+}
+
+.confirm-dialog {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 480px;
+  width: 90%;
+  box-shadow: 0 20px 60px var(--shadow);
+}
+
+.confirm-title {
+  font-family: 'Calendas Plus', Georgia, serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  color: var(--warning);
+}
+
+.confirm-tool {
+  font-family: 'SF Mono', monospace;
+  font-size: 0.9rem;
+  color: var(--primary);
+  margin-bottom: 8px;
+}
+
+.confirm-args {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 0.8rem;
+  max-height: 200px;
+  overflow: auto;
+}
+.confirm-args code {
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* Tool card status indicators */
+.tool-card-status.status-done { color: var(--success); }
+.tool-card-status.status-skipped { color: var(--warning); }
+.tool-card-status.status-running { color: var(--primary); animation: pulse 1s infinite; }
