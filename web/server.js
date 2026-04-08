@@ -11,7 +11,7 @@ const { healthCheck } = require('./src/ollama');
 const { runToolLoop } = require('./src/tools');
 const {
   listSessions, getSession, appendMessage,
-  createSession, rewindSession,
+  createSession, deleteSession, rewindSession,
 } = require('./src/sessions');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 
@@ -44,6 +44,12 @@ app.post('/api/sessions/new', (req, res) => {
   const { project, channel } = req.body || {};
   const id = createSession(project || 'web', channel || 'general');
   res.json({ id });
+});
+
+app.delete('/api/sessions/:id', (req, res) => {
+  const ok = deleteSession(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Session not found' });
+  res.json({ deleted: req.params.id });
 });
 
 app.post('/api/rewind', (req, res) => {

@@ -95,6 +95,16 @@ function createSession(project = 'web', channel = 'general') {
 }
 
 /**
+ * Delete a session file
+ */
+function deleteSession(sessionId) {
+  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  if (!fs.existsSync(filePath)) return false;
+  fs.unlinkSync(filePath);
+  return true;
+}
+
+/**
  * Rewind a session by removing the last N turns (user + assistant pairs)
  */
 function rewindSession(sessionId, turns = 1) {
@@ -119,6 +129,7 @@ module.exports = {
   getSession,
   appendMessage,
   createSession,
+  deleteSession,
   rewindSession,
   getSessionMessages,
 };

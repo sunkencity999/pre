@@ -155,19 +155,47 @@
       list.innerHTML = '';
 
       for (const session of sessions.slice(0, 20)) {
-        const item = document.createElement('button');
+        const item = document.createElement('div');
         item.className = 'session-item' + (session.id === currentSession ? ' active' : '');
-        item.innerHTML = `
+
+        const info = document.createElement('button');
+        info.className = 'session-item-info';
+        info.innerHTML = `
           <div class="session-item-name">${escapeHtml(session.channel || 'general')}</div>
           <div class="session-item-preview">${escapeHtml(session.preview || 'New session')}</div>
           <div class="session-item-time">${formatTime(session.modified)}</div>
         `;
-        item.addEventListener('click', () => {
+        info.addEventListener('click', () => {
           currentSession = session.id;
           WS.send({ type: 'switch_session', sessionId: currentSession });
           loadSessionList();
           if (window.innerWidth <= 768) sidebar.classList.remove('open');
         });
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'session-delete-btn';
+        deleteBtn.title = 'Delete session';
+        deleteBtn.innerHTML = '&times;';
+        deleteBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Delete session "${session.channel || session.id}"?`)) return;
+          try {
+            await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
+            if (session.id === currentSession) {
+              currentSession = 'web:general';
+              await fetch('/api/sessions/new', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project: 'web', channel: 'general' }),
+              });
+              WS.send({ type: 'switch_session', sessionId: currentSession });
+            }
+            loadSessionList();
+          } catch {}
+        });
+
+        item.appendChild(info);
+        item.appendChild(deleteBtn);
         list.appendChild(item);
       }
     } catch {}

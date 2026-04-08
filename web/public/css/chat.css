@@ -18,14 +18,28 @@
   flex: 1;
 }
 
+.context-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.context-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
 .context-bar {
-  position: relative;
-  width: 140px;
+  width: 100px;
   height: 6px;
   background: var(--border);
   border-radius: 3px;
   overflow: hidden;
-  cursor: default;
 }
 
 .context-fill {
@@ -38,9 +52,6 @@
 .context-fill.danger { background: var(--danger); }
 
 .context-label {
-  position: absolute;
-  right: 0;
-  top: -18px;
   font-size: 0.7rem;
   color: var(--text-muted);
   white-space: nowrap;
