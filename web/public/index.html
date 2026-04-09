@@ -19,17 +19,18 @@
       <h1 class="logo">PRE</h1>
       <span class="logo-sub">Personal Reasoning Engine</span>
     </div>
-    <div class="sidebar-search">
-      <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
-      <input type="text" id="session-search" placeholder="Search sessions..." autocomplete="off">
-    </div>
-    <div class="sidebar-section">
-      <div class="sidebar-label">Sessions</div>
-      <div id="session-list" class="session-list"></div>
+    <div class="sidebar-toolbar">
+      <div class="sidebar-search">
+        <svg class="sidebar-search-icon" width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+        <input type="text" id="session-search" placeholder="Search sessions..." autocomplete="off">
+      </div>
       <div class="sidebar-actions">
         <button id="new-session-btn" class="btn btn-ghost btn-sm">+ Session</button>
         <button id="new-project-btn" class="btn btn-ghost btn-sm">+ Project</button>
       </div>
+    </div>
+    <div class="sidebar-section">
+      <div id="session-list" class="session-list"></div>
     </div>
     <div class="sidebar-footer">
       <div class="footer-row">

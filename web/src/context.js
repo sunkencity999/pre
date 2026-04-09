@@ -104,7 +104,8 @@ function buildSystemPrompt(cwd) {
   if (comfyui) {
     prompt += `8. image_generate is a WORKING native function call. It creates photorealistic images on the local GPU in ~30-45 seconds. `
       + `ALWAYS call it when images are requested. NEVER use Unsplash or external URLs instead. `
-      + `After generating, use the returned path in artifacts: <img src='file:///path/from/tool'>\n`;
+      + `The image is automatically displayed in the chat after generation — just respond naturally describing what was created. `
+      + `For reports/artifacts that need the image embedded, use the returned /artifacts/ path as the src.\n`;
   }
 
   // Report quality

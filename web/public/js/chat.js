@@ -313,6 +313,26 @@ const Chat = (() => {
     scrollToBottom();
   }
 
+  function addImageCard(prompt, imgPath) {
+    const container = messagesEl();
+    const card = document.createElement('div');
+    card.className = 'image-card';
+    card.innerHTML = `
+      <div class="image-card-preview">
+        <img src="${Markdown.escapeHtml(imgPath)}" alt="${Markdown.escapeHtml(prompt)}" loading="lazy">
+      </div>
+      <div class="image-card-footer">
+        <span class="image-card-prompt">${Markdown.escapeHtml(prompt.length > 120 ? prompt.slice(0, 120) + '...' : prompt)}</span>
+        <div class="image-card-actions">
+          <a href="${Markdown.escapeHtml(imgPath)}" target="_blank" class="btn btn-ghost btn-sm">Full size</a>
+          <a href="${Markdown.escapeHtml(imgPath)}" download class="btn btn-primary btn-sm">Download</a>
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+    scrollToBottom();
+  }
+
   function addError(message) {
     const container = messagesEl();
     const errEl = document.createElement('div');
@@ -469,6 +489,7 @@ const Chat = (() => {
     updateToolCard,
     addDocumentCard,
     addArtifactCard,
+    addImageCard,
     addError,
     loadHistory,
     updateContextBar,

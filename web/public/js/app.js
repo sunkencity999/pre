@@ -68,6 +68,10 @@
         Chat.addDocumentCard(msg.title, msg.path, msg.artifactType);
         break;
 
+      case 'image_generated':
+        Chat.addImageCard(msg.prompt, msg.path);
+        break;
+
       case 'memory_saved':
         if (msg.memories && msg.memories.length > 0) {
           const names = msg.memories.map(m => m.name).join(', ');

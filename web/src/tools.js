@@ -68,6 +68,7 @@ const jiraTool = require('./tools/jira');
 const confluenceTool = require('./tools/confluence');
 const smartsheetTool = require('./tools/smartsheet');
 const slackTool = require('./tools/slack');
+const imageTool = require('./tools/image');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -97,6 +98,9 @@ const ALIASES = {
   wiki: 'confluence', confluence_search: 'confluence', confluence_page: 'confluence',
   spreadsheet: 'smartsheet', ss: 'smartsheet', smartsheets: 'smartsheet',
   slack_send: 'slack', slack_message: 'slack', send_slack: 'slack',
+  generate_image: 'image_generate', create_image: 'image_generate', img: 'image_generate',
+  image: 'image_generate', image_gen: 'image_generate', gen_image: 'image_generate',
+  draw: 'image_generate', paint: 'image_generate', dalle: 'image_generate',
 };
 
 // Tools that require user confirmation before execution
@@ -176,6 +180,9 @@ async function executeTool(name, args, cwd) {
     // Telegram
     case 'telegram': return telegramTool.telegram(args);
 
+    // Image generation
+    case 'image_generate': return imageTool.imageGenerate(args);
+
     // Documents
     case 'document': {
       // Parse sheets if passed as JSON string
@@ -186,7 +193,7 @@ async function executeTool(name, args, cwd) {
     }
 
     default:
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
@@ -322,6 +329,18 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         output = await executeTool(toolName, toolArgs, cwd);
       } catch (err) {
         output = `Error: ${err.message}`;
+      }
+
+      // Notify client about generated images so they can display inline
+      if (toolName === 'image_generate' && output && output.includes('/artifacts/')) {
+        const urlMatch = output.match(/View at: (\/artifacts\/[^\s]+)/);
+        if (urlMatch) {
+          send({
+            type: 'image_generated',
+            prompt: toolArgs.prompt || '',
+            path: urlMatch[1],
+          });
+        }
       }
 
       // Notify client about artifacts/documents so they can display download cards

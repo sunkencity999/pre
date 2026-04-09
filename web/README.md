@@ -15,6 +15,7 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
 - **Full tool execution** — 45+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
+- **Local image generation** — ComfyUI + Stable Diffusion XL on Apple Silicon GPU, inline image preview in chat
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
@@ -42,6 +43,41 @@ All integrations are configured through the Settings panel (gear icon in sidebar
 | **Smartsheet** | API Access Token | Sheets (CRUD), rows (add/update/delete), columns, workspaces, search, comments |
 | **Slack** | Bot User OAuth Token | Channels, message history, send/reply/update, reactions, search, users |
 | **Wolfram Alpha** | API Key | Computational queries |
+
+## Image Generation
+
+PRE includes local image generation via ComfyUI + Stable Diffusion XL, running entirely on Apple Silicon GPU. No cloud APIs, no data leaves your machine.
+
+### Setup
+
+Image generation is set up during `install.sh` (Step 8b). If you skipped it, re-run the installer — it will detect existing components and only install what's missing.
+
+**Requirements:** ~8GB disk, Python 3.10-3.13, 48GB+ unified memory recommended
+
+### How It Works
+
+1. Ask PRE to generate an image (e.g., "generate a photo of Twin Lakes Beach at sunset")
+2. The `image_generate` tool starts ComfyUI automatically on first use (port 8188)
+3. A workflow is submitted with the appropriate parameters for your checkpoint
+4. The generated PNG is saved to `~/.pre/artifacts/{date}/` and displayed inline in chat
+
+### Model Options
+
+| Model | Speed | Quality | Resolution |
+|-------|-------|---------|------------|
+| **Juggernaut XL v9** (default) | ~30-45s | Photorealistic, excellent faces | 1024x1024 |
+| **SDXL Turbo** | ~5s | Good for drafts | 512x512 |
+
+Switch models by editing the `checkpoint` field in `~/.pre/comfyui.json`.
+
+### Architecture
+
+ComfyUI runs as a background process, started on-demand by either the CLI or web GUI:
+
+- **CLI** (`pre.m`) — `comfyui_ensure()` starts ComfyUI before generating
+- **Web GUI** (`src/tools/image.js`) — `startComfyUI()` spawns the server and polls until ready
+- Both write to the same artifacts directory and share `~/.pre/comfyui.json` config
+- ComfyUI is **not** started by `pre-launch` — it only runs when needed to save GPU memory
 
 ## Memory System
 
@@ -145,6 +181,7 @@ src/
     memory.js              save, search, list, delete
     system.js              17 system tools (info, processes, clipboard, etc.)
     artifact.js            Interactive HTML artifacts
+    image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)
     google.js              Gmail, Google Drive, Google Docs
     telegram.js            Telegram Bot API

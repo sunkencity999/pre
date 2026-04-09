@@ -74,24 +74,47 @@ fi
 WEB_DIR="$PRE_DIR/../web"
 WEB_PORT="${PRE_WEB_PORT:-7749}"
 WEB_PID=""
+WEB_PID_FILE="$HOME/.pre/web-gui.pid"
 WEB_STARTED_BY_US=false
 
 if [ -f "$WEB_DIR/server.js" ] && command -v node >/dev/null 2>&1; then
-    # Check if already running on that port
-    if ! curl -sf "http://localhost:${WEB_PORT}/api/status" >/dev/null 2>&1; then
-        PRE_CWD="$(pwd)" PRE_WEB_PORT="$WEB_PORT" node "$WEB_DIR/server.js" >/dev/null 2>&1 &
-        WEB_PID=$!
-        # Verify it started
-        sleep 1
-        if kill -0 "$WEB_PID" 2>/dev/null; then
-            echo "  Web GUI running at http://localhost:${WEB_PORT}"
-            WEB_STARTED_BY_US=true
-        else
-            echo "  Web GUI failed to start (run 'cd $WEB_DIR && npm install' first)"
-            WEB_PID=""
+    # Kill any orphaned web server from a previous session
+    if [ -f "$WEB_PID_FILE" ]; then
+        OLD_PID=$(cat "$WEB_PID_FILE" 2>/dev/null)
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            echo "  Stopping previous web GUI (PID $OLD_PID)..."
+            kill "$OLD_PID" 2>/dev/null
+            sleep 1
+            # Force kill if still alive
+            kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null
         fi
+        rm -f "$WEB_PID_FILE"
+    fi
+
+    # Also check for any stray node server.js on our port (belt and suspenders)
+    STALE_PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
+    if [ -n "$STALE_PID" ]; then
+        # Verify it's actually our server before killing
+        if ps -p "$STALE_PID" -o command= 2>/dev/null | grep -q "node.*server.js"; then
+            echo "  Stopping orphaned web GUI (PID $STALE_PID)..."
+            kill "$STALE_PID" 2>/dev/null
+            sleep 1
+        fi
+    fi
+
+    # Start fresh web GUI server
+    PRE_CWD="$(pwd)" PRE_WEB_PORT="$WEB_PORT" node "$WEB_DIR/server.js" >/dev/null 2>&1 &
+    WEB_PID=$!
+    echo "$WEB_PID" > "$WEB_PID_FILE"
+    # Verify it started
+    sleep 1
+    if kill -0 "$WEB_PID" 2>/dev/null; then
+        echo "  Web GUI running at http://localhost:${WEB_PORT}"
+        WEB_STARTED_BY_US=true
     else
-        echo "  Web GUI already running at http://localhost:${WEB_PORT}"
+        echo "  Web GUI failed to start (run 'cd $WEB_DIR && npm install' first)"
+        WEB_PID=""
+        rm -f "$WEB_PID_FILE"
     fi
 fi
 
@@ -100,6 +123,7 @@ cleanup() {
     if [ -n "$WEB_PID" ] && $WEB_STARTED_BY_US; then
         kill "$WEB_PID" 2>/dev/null
         wait "$WEB_PID" 2>/dev/null
+        rm -f "$WEB_PID_FILE"
     fi
 }
 trap cleanup EXIT

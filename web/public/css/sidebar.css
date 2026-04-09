@@ -21,9 +21,14 @@
   letter-spacing: 1px;
 }
 
+/* Pinned toolbar (search + action buttons, never scrolls) */
+.sidebar-toolbar {
+  padding: 12px 16px 0;
+  flex-shrink: 0;
+}
+
 .sidebar-search {
   position: relative;
-  padding: 12px 16px 0;
 }
 
 .sidebar-search-icon {
@@ -170,7 +175,8 @@
 .sidebar-actions {
   display: flex;
   gap: 6px;
-  margin-top: 8px;
+  margin-top: 10px;
+  margin-bottom: 4px;
 }
 .sidebar-actions .btn {
   flex: 1;
