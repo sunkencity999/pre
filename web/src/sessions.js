@@ -25,10 +25,11 @@ function saveMeta(meta) {
 }
 
 /**
- * List all sessions with metadata
+ * List all sessions with metadata, optionally filtered by project
  */
-function listSessions() {
+function listSessions(filterProjectSlug) {
   const meta = loadMeta();
+  const projectMap = meta._projectMap || {};
   const files = fs.readdirSync(SESSIONS_DIR)
     .filter(f => f.endsWith('.jsonl'))
     .map(f => {
@@ -60,6 +61,7 @@ function listSessions() {
         project,
         channel,
         displayName: meta[id] || null,
+        projectSlug: projectMap[id] || null,
         preview,
         turnCount,
         modified: stat.mtime.toISOString(),
@@ -68,7 +70,85 @@ function listSessions() {
     })
     .sort((a, b) => new Date(b.modified) - new Date(a.modified));
 
+  if (filterProjectSlug !== undefined) {
+    return files.filter(s => s.projectSlug === filterProjectSlug);
+  }
   return files;
+}
+
+// ── Project management ──
+
+function listProjects() {
+  const meta = loadMeta();
+  const projects = meta._projects || {};
+  const projectMap = meta._projectMap || {};
+  // Count sessions per project
+  const counts = {};
+  for (const slug of Object.values(projectMap)) {
+    counts[slug] = (counts[slug] || 0) + 1;
+  }
+  return Object.entries(projects)
+    .map(([slug, p]) => ({
+      slug,
+      name: p.name,
+      created: p.created,
+      order: p.order ?? 0,
+      sessionCount: counts[slug] || 0,
+    }))
+    .sort((a, b) => a.order - b.order);
+}
+
+function createProject(name) {
+  const meta = loadMeta();
+  if (!meta._projects) meta._projects = {};
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+    || `project-${Date.now().toString(36)}`;
+  // Avoid duplicates
+  let finalSlug = slug;
+  if (meta._projects[finalSlug]) {
+    finalSlug = `${slug}-${Date.now().toString(36)}`;
+  }
+  meta._projects[finalSlug] = {
+    name: name.trim(),
+    created: new Date().toISOString(),
+    order: Object.keys(meta._projects).length,
+  };
+  saveMeta(meta);
+  return { slug: finalSlug, name: name.trim() };
+}
+
+function renameProject(slug, newName) {
+  const meta = loadMeta();
+  if (!meta._projects || !meta._projects[slug]) return false;
+  meta._projects[slug].name = newName.trim();
+  saveMeta(meta);
+  return true;
+}
+
+function deleteProject(slug) {
+  const meta = loadMeta();
+  if (!meta._projects || !meta._projects[slug]) return false;
+  delete meta._projects[slug];
+  // Ungroup all sessions in this project
+  if (meta._projectMap) {
+    for (const [sid, ps] of Object.entries(meta._projectMap)) {
+      if (ps === slug) delete meta._projectMap[sid];
+    }
+  }
+  saveMeta(meta);
+  return true;
+}
+
+function moveSessionToProject(sessionId, projectSlug) {
+  const meta = loadMeta();
+  if (!meta._projectMap) meta._projectMap = {};
+  if (projectSlug) {
+    meta._projectMap[sessionId] = projectSlug;
+  } else {
+    delete meta._projectMap[sessionId];
+  }
+  saveMeta(meta);
+  return true;
 }
 
 /**
@@ -101,7 +181,7 @@ function appendMessage(sessionId, message) {
 /**
  * Create a new session, return its ID
  */
-function createSession(project = 'web', channel = 'general', forceNew = false) {
+function createSession(project = 'web', channel = 'general', forceNew = false, projectSlug = null) {
   let id = `${project}:${channel}`;
   let filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
   // If forceNew and base ID exists, append a timestamp to make it unique
@@ -112,6 +192,10 @@ function createSession(project = 'web', channel = 'general', forceNew = false) {
   }
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, '');
+  }
+  // Assign to project if specified
+  if (projectSlug) {
+    moveSessionToProject(id, projectSlug);
   }
   return id;
 }
@@ -137,12 +221,12 @@ function deleteSession(sessionId) {
   const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
-  // Clean up display name
+  // Clean up display name and project mapping
   const meta = loadMeta();
-  if (meta[sessionId]) {
-    delete meta[sessionId];
-    saveMeta(meta);
-  }
+  let changed = false;
+  if (meta[sessionId]) { delete meta[sessionId]; changed = true; }
+  if (meta._projectMap && meta._projectMap[sessionId]) { delete meta._projectMap[sessionId]; changed = true; }
+  if (changed) saveMeta(meta);
   return true;
 }
 
@@ -175,4 +259,9 @@ module.exports = {
   renameSession,
   rewindSession,
   getSessionMessages,
+  listProjects,
+  createProject,
+  renameProject,
+  deleteProject,
+  moveSessionToProject,
 };

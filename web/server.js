@@ -12,6 +12,7 @@ const { runToolLoop } = require('./src/tools');
 const {
   listSessions, getSession, appendMessage,
   createSession, deleteSession, renameSession, rewindSession,
+  listProjects, createProject, renameProject, deleteProject, moveSessionToProject,
 } = require('./src/sessions');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 
@@ -55,8 +56,8 @@ app.get('/api/sessions/:id', (req, res) => {
 });
 
 app.post('/api/sessions/new', (req, res) => {
-  const { project, channel } = req.body || {};
-  const id = createSession(project || 'web', channel || 'general', true);
+  const { project, channel, projectSlug } = req.body || {};
+  const id = createSession(project || 'web', channel || 'general', true, projectSlug || null);
   res.json({ id });
 });
 
@@ -79,6 +80,42 @@ app.post('/api/rewind', (req, res) => {
   if (!sessionId) return res.status(400).json({ error: 'sessionId required' });
   const remaining = rewindSession(sessionId, turns || 1);
   res.json({ remaining: remaining.length });
+});
+
+// ── Projects API ──
+
+app.get('/api/projects', (_req, res) => {
+  res.json(listProjects());
+});
+
+app.post('/api/projects', (req, res) => {
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  const project = createProject(name);
+  res.json(project);
+});
+
+app.post('/api/projects/:slug/rename', (req, res) => {
+  const slug = decodeURIComponent(req.params.slug);
+  const { name } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
+  const ok = renameProject(slug, name);
+  if (!ok) return res.status(404).json({ error: 'Project not found' });
+  res.json({ slug, name: name.trim() });
+});
+
+app.delete('/api/projects/:slug', (req, res) => {
+  const slug = decodeURIComponent(req.params.slug);
+  const ok = deleteProject(slug);
+  if (!ok) return res.status(404).json({ error: 'Project not found' });
+  res.json({ deleted: slug });
+});
+
+app.post('/api/sessions/:id/move', (req, res) => {
+  const id = decodeURIComponent(req.params.id);
+  const { projectSlug } = req.body || {};
+  moveSessionToProject(id, projectSlug || null);
+  res.json({ id, projectSlug: projectSlug || null });
 });
 
 app.get('/api/status', async (_req, res) => {
