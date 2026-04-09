@@ -14,13 +14,33 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 ## Features
 
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
-- **Full tool execution** — all 37+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
+- **Full tool execution** — 45+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
+- **Projects** — group related sessions into collapsible project folders with drag-and-drop
+- **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
 - **Three themes** — Dark, Light, and Evangelion (NERV-inspired)
 - **Calendas Plus typography** — serif display font for headings
+- **Thinking indicator** — animated bouncing dots during model's first-token latency
 - **Tool confirmation dialogs** — dangerous tools require approval
 - **Context tracking** — live context window usage bar
+- **Auto-generated titles** — sessions are named from the first message
 - **Responsive** — three-panel desktop, hamburger drawer on mobile
+
+## Integrations
+
+All integrations are configured through the Settings panel (gear icon in sidebar footer). Credentials are stored in `~/.pre/connections.json` and never exposed to the browser.
+
+| Service | Auth | Actions |
+|---------|------|---------|
+| **Brave Search** | API Key | Web search |
+| **GitHub** | Personal Access Token | Repos, issues, PRs, user profile |
+| **Google** (Gmail, Drive, Docs) | OAuth 2.0 | Email search/read/send/draft, Drive list/search/upload, Docs create/read/append |
+| **Telegram** | Bot Token + Chat ID | Send/receive messages, auto-detects chat ID |
+| **Jira Server** | URL + Personal Access Token | Search, issues (CRUD), comments, transitions, assignments, projects |
+| **Confluence Server** | URL + Personal Access Token | Search (CQL), pages (CRUD), spaces, child pages, comments |
+| **Smartsheet** | API Access Token | Sheets (CRUD), rows (add/update/delete), columns, workspaces, search, comments |
+| **Slack** | Bot User OAuth Token | Channels, message history, send/reply/update, reactions, search, users |
+| **Wolfram Alpha** | API Key | Computational queries |
 
 ## Architecture
 
@@ -28,10 +48,11 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 server.js                  Express + WebSocket, REST API
 src/
   ollama.js                Ollama /api/chat NDJSON streaming
-  sessions.js              JSONL read/write (shared with CLI)
+  sessions.js              JSONL read/write + project management
   tools.js                 Tool dispatcher + execution loop
-  tools-defs.js            37 tool definitions for Ollama
+  tools-defs.js            45+ tool definitions for Ollama
   context.js               System prompt builder
+  connections.js            Connection management, Google OAuth, Telegram setup
   constants.js             MODEL_CTX=65536, paths
   tools/
     bash.js                Shell execution (stderr capture)
@@ -39,6 +60,15 @@ src/
     web.js                 web_fetch, web_search (Brave API)
     memory.js              save, search, list, delete
     system.js              17 system tools (info, processes, clipboard, etc.)
+    artifact.js            Interactive HTML artifacts
+    document.js            Document export (txt, xml, docx, xlsx, pdf)
+    google.js              Gmail, Google Drive, Google Docs
+    telegram.js            Telegram Bot API
+    github.js              GitHub REST API
+    jira.js                Jira Server REST API v2
+    confluence.js          Confluence Server REST API
+    smartsheet.js          Smartsheet REST API 2.0
+    slack.js               Slack Web API
 public/
   index.html               SPA shell
   fonts/                   Calendas Plus (regular, italic, bold)

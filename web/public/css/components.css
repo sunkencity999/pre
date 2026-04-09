@@ -267,3 +267,101 @@
   display: flex;
   gap: 8px;
 }
+
+/* Settings / Connections panel */
+.settings-section {
+  margin-bottom: 24px;
+}
+.settings-section-title {
+  font-family: 'Calendas Plus', Georgia, serif;
+  font-size: 1rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
+.connection-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  background: var(--surface);
+  transition: border-color 0.2s ease;
+}
+.connection-card.active {
+  border-color: var(--success);
+}
+
+.connection-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.connection-card-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.connection-card-info {
+  flex: 1;
+  min-width: 0;
+}
+.connection-card-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.connection-card-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.connection-card-status.connected {
+  color: var(--success);
+}
+
+.connection-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.connection-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.connection-input-group input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+}
+.connection-input-group input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+.connection-input-group input::placeholder {
+  color: var(--text-muted);
+}
+.connection-input-row {
+  display: flex;
+  gap: 6px;
+}
+.connection-input-row input {
+  flex: 1;
+}
+.connection-input-row .btn {
+  flex-shrink: 0;
+}

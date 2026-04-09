@@ -60,6 +60,13 @@ const memoryTool = require('./tools/memory');
 const systemTool = require('./tools/system');
 const artifactTool = require('./tools/artifact');
 const documentTool = require('./tools/document');
+const googleTool = require('./tools/google');
+const telegramTool = require('./tools/telegram');
+const githubTool = require('./tools/github');
+const jiraTool = require('./tools/jira');
+const confluenceTool = require('./tools/confluence');
+const smartsheetTool = require('./tools/smartsheet');
+const slackTool = require('./tools/slack');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -81,6 +88,14 @@ const ALIASES = {
   generate_document: 'document', export: 'document', write_document: 'document',
   copy: 'clipboard_write', paste: 'clipboard_read',
   remember: 'memory_save', recall: 'memory_search', forget: 'memory_delete',
+  email: 'gmail', mail: 'gmail', send_email: 'gmail',
+  google_drive: 'gdrive', drive: 'gdrive',
+  google_docs: 'gdocs', docs: 'gdocs',
+  tg: 'telegram', send_telegram: 'telegram', telegram_send: 'telegram',
+  jira_search: 'jira', jira_issue: 'jira', jira_create: 'jira',
+  wiki: 'confluence', confluence_search: 'confluence', confluence_page: 'confluence',
+  spreadsheet: 'smartsheet', ss: 'smartsheet', smartsheets: 'smartsheet',
+  slack_send: 'slack', slack_message: 'slack', send_slack: 'slack',
 };
 
 // Tools that require user confirmation before execution
@@ -137,6 +152,29 @@ async function executeTool(name, args, cwd) {
     // Artifacts
     case 'artifact': return artifactTool.createArtifact(args);
 
+    // GitHub
+    case 'github': return githubTool.github(args);
+
+    // Jira
+    case 'jira': return jiraTool.jira(args);
+
+    // Confluence
+    case 'confluence': return confluenceTool.confluence(args);
+
+    // Smartsheet
+    case 'smartsheet': return smartsheetTool.smartsheet(args);
+
+    // Slack
+    case 'slack': return slackTool.slack(args);
+
+    // Google
+    case 'gmail': return googleTool.gmail(args);
+    case 'gdrive': return googleTool.gdrive(args);
+    case 'gdocs': return googleTool.gdocs(args);
+
+    // Telegram
+    case 'telegram': return telegramTool.telegram(args);
+
     // Documents
     case 'document': {
       // Parse sheets if passed as JSON string
@@ -147,7 +185,7 @@ async function executeTool(name, args, cwd) {
     }
 
     default:
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
@@ -195,7 +233,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     tokensOut += result.stats.eval_count || 0;
 
     // Fallback: parse <tool_call> tags from text if no native tool calls
-    if ((!result.toolCalls || result.toolCalls.length === 0) && result.response) {
+    const hasNative = result.toolCalls && result.toolCalls.length > 0;
+    const hasTag = result.response && result.response.includes('<tool_call>');
+    console.log(`[tool-loop] turn=${turn} hasNative=${hasNative} hasTag=${hasTag} responseLen=${(result.response||'').length}`);
+    if (!hasNative && result.response) {
       const textCalls = parseTextToolCalls(result.response);
       if (textCalls) {
         console.log(`[tool-loop] Parsed ${textCalls.length} text tool call(s):`, textCalls.map(c => c.function?.name));

@@ -154,10 +154,11 @@ function buildToolDefs() {
 
   if (conns.github) {
     tools.push(tool('github', 'Interact with GitHub', {
-      action: { type: 'string', description: 'Action: search_repos|list_issues|read_issue|list_prs|user' },
+      action: { type: 'string', description: 'Action: list_repos|search_repos|list_issues|read_issue|list_prs|read_pr|user' },
       repo: { type: 'string', description: 'Repository (owner/name)' },
       query: { type: 'string', description: 'Search query' },
       number: { type: 'integer', description: 'Issue/PR number' },
+      username: { type: 'string', description: 'GitHub username (omit for authenticated user)' },
       state: { type: 'string', description: 'State filter: open|closed|all' },
     }, ['action']));
   }
@@ -191,10 +192,82 @@ function buildToolDefs() {
     }, ['action']));
   }
 
+  if (conns.jira) {
+    tools.push(tool('jira', 'Interact with Jira Server', {
+      action: { type: 'string', description: 'Action: search|get_issue|create_issue|comment|transition|assign|list_projects|get_project|my_issues' },
+      key: { type: 'string', description: 'Issue key (e.g. PROJ-123)' },
+      project: { type: 'string', description: 'Project key (e.g. PROJ)' },
+      jql: { type: 'string', description: 'JQL query for search' },
+      summary: { type: 'string', description: 'Issue summary' },
+      description: { type: 'string', description: 'Issue description' },
+      type: { type: 'string', description: 'Issue type (default: Task)' },
+      priority: { type: 'string', description: 'Priority name' },
+      assignee: { type: 'string', description: 'Assignee username' },
+      status: { type: 'string', description: 'Target status for transition' },
+      body: { type: 'string', description: 'Comment body text' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['action']));
+  }
+
+  if (conns.confluence) {
+    tools.push(tool('confluence', 'Interact with Confluence Server wiki', {
+      action: { type: 'string', description: 'Action: search|get_page|create_page|update_page|list_spaces|get_space|get_children|get_comments|add_comment' },
+      id: { type: 'string', description: 'Page or content ID' },
+      title: { type: 'string', description: 'Page title' },
+      space: { type: 'string', description: 'Space key' },
+      cql: { type: 'string', description: 'CQL query for search (e.g. type=page AND text~"keyword")' },
+      query: { type: 'string', description: 'Search query text' },
+      content: { type: 'string', description: 'Page content (Confluence storage format HTML or plain text)' },
+      parent_id: { type: 'string', description: 'Parent page ID for creating child pages' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['action']));
+  }
+
+  if (conns.smartsheet) {
+    tools.push(tool('smartsheet', 'Interact with Smartsheet', {
+      action: { type: 'string', description: 'Action: list_sheets|get_sheet|search|create_sheet|add_rows|update_rows|delete_rows|get_columns|add_column|list_workspaces|get_workspace|add_comment|me' },
+      id: { type: 'string', description: 'Sheet, workspace, or row ID' },
+      name: { type: 'string', description: 'Sheet name (for get_sheet lookup or create_sheet)' },
+      query: { type: 'string', description: 'Search query' },
+      columns: { type: 'string', description: 'Comma-separated column names, or JSON array of {title, type} objects' },
+      rows: { type: 'string', description: 'Pipe-delimited rows (val1|val2\\nval3|val4), or JSON array' },
+      row_ids: { type: 'string', description: 'Comma-separated row IDs for deletion' },
+      title: { type: 'string', description: 'Column title (for add_column)' },
+      type: { type: 'string', description: 'Column type: TEXT_NUMBER, DATE, CONTACT_LIST, PICKLIST, CHECKBOX, etc.' },
+      options: { type: 'string', description: 'Comma-separated picklist options' },
+      text: { type: 'string', description: 'Comment text' },
+      workspace_id: { type: 'string', description: 'Workspace ID (for creating sheets in a workspace)' },
+      count: { type: 'integer', description: 'Max results (default: 25)' },
+    }, ['action']));
+  }
+
+  if (conns.slack) {
+    tools.push(tool('slack', 'Interact with Slack', {
+      action: { type: 'string', description: 'Action: list_channels|get_channel|history|send|reply|update|react|search|list_users|get_user|me' },
+      channel: { type: 'string', description: 'Channel name (#general) or ID (C0123456)' },
+      text: { type: 'string', description: 'Message text' },
+      thread_ts: { type: 'string', description: 'Thread timestamp for replies' },
+      ts: { type: 'string', description: 'Message timestamp (for update/react)' },
+      emoji: { type: 'string', description: 'Emoji name for reactions (e.g. thumbsup)' },
+      query: { type: 'string', description: 'Search query' },
+      user: { type: 'string', description: 'User ID or @username' },
+      count: { type: 'integer', description: 'Max results (default varies by action)' },
+    }, ['action']));
+  }
+
   if (conns.wolfram) {
     tools.push(tool('wolfram', 'Query Wolfram Alpha for computation/facts', {
       query: { type: 'string', description: 'Query for Wolfram Alpha' },
     }, ['query']));
+  }
+
+  if (conns.telegram) {
+    tools.push(tool('telegram', 'Send messages via Telegram bot', {
+      action: { type: 'string', description: 'Action: send|get_me|get_updates|get_chat' },
+      chat_id: { type: 'string', description: 'Chat ID to send to (auto-detected from recent messages if omitted)' },
+      text: { type: 'string', description: 'Message text to send' },
+      parse_mode: { type: 'string', description: 'Parse mode: Markdown|HTML (default: Markdown)' },
+    }, ['action']));
   }
 
   return tools;

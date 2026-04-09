@@ -640,4 +640,443 @@
       document.getElementById('right-panel').classList.add('hidden');
     });
   }
+
+  // ── Settings panel ──
+  const SERVICE_ICONS = {
+    brave_search: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L3 7v10l9 5 9-5V7L12 2zm0 2.18l6.66 3.7L12 11.56 5.34 7.88 12 4.18z"/></svg>',
+    github: '<svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>',
+    google: '<svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>',
+    wolfram: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L2 7v10l10 5 10-5V7L12 2z"/></svg>',
+    telegram: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.479.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>',
+    jira: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 11.513H0a5.218 5.218 0 0 0 5.232 5.215h2.13v2.057A5.215 5.215 0 0 0 12.575 24V12.518a1.005 1.005 0 0 0-1.005-1.005zm5.723-5.756H5.736a5.215 5.215 0 0 0 5.215 5.214h2.129v2.058a5.218 5.218 0 0 0 5.215 5.214V6.758a1.001 1.001 0 0 0-1.001-1.001zM23.013 0H11.455a5.215 5.215 0 0 0 5.215 5.215h2.129v2.057A5.215 5.215 0 0 0 24.013 12.5V1.005A1.005 1.005 0 0 0 23.013 0z"/></svg>',
+    confluence: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M.87 18.257c-.248.382-.53.875-.763 1.245a.764.764 0 0 0 .255 1.04l4.965 3.054a.764.764 0 0 0 1.058-.26c.199-.332.494-.833.812-1.39 1.398-2.45 2.818-2.16 5.348-.875l4.947 2.51a.764.764 0 0 0 1.013-.382l2.227-5.093a.764.764 0 0 0-.357-1.006c-1.24-.63-3.45-1.76-4.986-2.537-5.14-2.602-9.01-2.269-14.519 3.694zm22.26-12.514c.249-.383.531-.876.764-1.246a.764.764 0 0 0-.256-1.04L18.674.403a.764.764 0 0 0-1.058.26c-.2.332-.494.833-.813 1.39-1.397 2.45-2.817 2.16-5.347.875L6.509.418A.764.764 0 0 0 5.496.8L3.27 5.893a.764.764 0 0 0 .357 1.006c1.24.63 3.45 1.76 4.985 2.537 5.14 2.602 9.01 2.27 14.52-3.693z"/></svg>',
+    smartsheet: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M22.157 0H1.843A1.843 1.843 0 0 0 0 1.843v20.314A1.843 1.843 0 0 0 1.843 24h20.314A1.843 1.843 0 0 0 24 22.157V1.843A1.843 1.843 0 0 0 22.157 0zM5.5 7h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5z"/></svg>',
+    slack: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.27 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.163 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.163 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.163 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.27a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.315A2.528 2.528 0 0 1 24 15.163a2.528 2.528 0 0 1-2.522 2.523h-6.315z"/></svg>',
+  };
+
+  document.getElementById('settings-btn').addEventListener('click', () => {
+    openSettingsPanel();
+  });
+
+  async function openSettingsPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Settings';
+    panel.classList.remove('hidden');
+
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/connections');
+      const connections = await res.json();
+      renderConnectionsPanel(content, connections);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load connections</p>';
+    }
+  }
+
+  function renderConnectionsPanel(container, connections) {
+    let html = '<div class="settings-section">';
+    html += '<div class="settings-section-title">Connections</div>';
+
+    for (const conn of connections) {
+      const icon = SERVICE_ICONS[conn.service] || '';
+      const statusClass = conn.active ? 'connected' : '';
+      const statusText = conn.active ? 'Connected' : 'Not configured';
+
+      html += `<div class="connection-card ${conn.active ? 'active' : ''}" data-service="${conn.service}">`;
+      html += `<div class="connection-card-header">`;
+      html += `<div class="connection-card-icon">${icon}</div>`;
+      html += `<div class="connection-card-info">`;
+      html += `<div class="connection-card-name">${escapeHtml(conn.label)}</div>`;
+      html += `<div class="connection-card-status ${statusClass}">`;
+      if (conn.active && conn.masked) {
+        html += `${statusText} &middot; ${escapeHtml(conn.masked)}`;
+      } else if (conn.active && conn.type === 'oauth') {
+        html += `${statusText}`;
+      } else {
+        html += statusText;
+      }
+      html += `</div></div></div>`;
+
+      // Action area
+      html += `<div class="connection-card-actions" id="conn-actions-${conn.service}">`;
+      if (conn.type === 'api_key') {
+        if (conn.active) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.editKey('${conn.service}')">Edit</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.addKey('${conn.service}')">Add API Key</button>`;
+        }
+      } else if (conn.type === 'oauth') {
+        if (conn.active) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.reconnectGoogle()">Reconnect</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else if (conn.hasCredentials) {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.authorizeGoogle()">Authorize</button>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.editGoogleCreds()">Edit Credentials</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupGoogle()">Setup</button>`;
+        }
+      } else if (conn.type === 'jira') {
+        if (conn.active) {
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)}</div>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupJira()">Edit</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupJira()">Setup</button>`;
+        }
+      } else if (conn.type === 'confluence') {
+        if (conn.active) {
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)}</div>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupConfluence()">Edit</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupConfluence()">Setup</button>`;
+        }
+      } else if (conn.type === 'slack') {
+        if (conn.active) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupSlack()">Edit</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupSlack()">Setup</button>`;
+        }
+      } else if (conn.type === 'telegram') {
+        if (conn.active) {
+          const chatStatus = conn.chatId
+            ? `<span style="color:var(--success)">Chat ID: ${escapeHtml(conn.chatId)}</span>`
+            : `<span style="color:var(--warning)">No chat ID — send a message to the bot or set it below</span>`;
+          html += `<div style="font-size:0.8rem;margin-bottom:6px">${chatStatus}</div>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupTelegram()">Configure</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupTelegram()">Setup</button>`;
+        }
+      }
+      html += `</div></div>`;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  // Global Settings object for onclick handlers
+  window.Settings = {
+    async addKey(service) {
+      const actionsEl = document.getElementById(`conn-actions-${service}`);
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <div class="connection-input-row">
+            <input type="password" id="key-input-${service}" placeholder="Paste API key..." autocomplete="off">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveKey('${service}')">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById(`key-input-${service}`).focus();
+    },
+
+    editKey(service) {
+      this.addKey(service);
+    },
+
+    async saveKey(service) {
+      const input = document.getElementById(`key-input-${service}`);
+      const key = input?.value.trim();
+      if (!key) return;
+      try {
+        await fetch(`/api/connections/${service}/key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    async removeConn(service) {
+      if (!confirm(`Remove ${service} connection?`)) return;
+      await fetch(`/api/connections/${service}`, { method: 'DELETE' });
+      this.refresh();
+    },
+
+    setupGoogle() {
+      const actionsEl = document.getElementById('conn-actions-google');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            Create OAuth credentials at
+            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" style="color:var(--primary)">Google Cloud Console</a>.
+            Enable Gmail, Drive, and Docs APIs. Set redirect URI to
+            <code style="font-size:0.75rem">http://localhost:7749/oauth/callback</code>
+          </p>
+          <input type="text" id="google-client-id" placeholder="Client ID" autocomplete="off">
+          <input type="password" id="google-client-secret" placeholder="Client Secret" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveGoogleCreds()">Save & Authorize</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('google-client-id').focus();
+    },
+
+    editGoogleCreds() {
+      this.setupGoogle();
+    },
+
+    async saveGoogleCreds() {
+      const clientId = document.getElementById('google-client-id')?.value.trim();
+      const clientSecret = document.getElementById('google-client-secret')?.value.trim();
+      if (!clientId || !clientSecret) return;
+      try {
+        await fetch('/api/connections/google/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clientId, clientSecret }),
+        });
+        this.authorizeGoogle();
+      } catch {}
+    },
+
+    async authorizeGoogle() {
+      try {
+        const res = await fetch('/api/connections/google/auth-url');
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+          // Show a waiting message
+          const actionsEl = document.getElementById('conn-actions-google');
+          if (actionsEl) {
+            actionsEl.innerHTML = `
+              <div style="font-size:0.8rem;color:var(--text-muted);display:flex;align-items:center;gap:8px">
+                <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
+                Waiting for authorization... Complete sign-in in the opened tab.
+              </div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="Settings.refresh()">Done</button>
+            `;
+          }
+        }
+      } catch {}
+    },
+
+    reconnectGoogle() {
+      this.authorizeGoogle();
+    },
+
+    setupJira() {
+      const actionsEl = document.getElementById('conn-actions-jira');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            Enter your Jira Server URL and a
+            <a href="https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html" target="_blank" style="color:var(--primary)">Personal Access Token</a>.
+          </p>
+          <input type="text" id="jira-url-input" placeholder="Jira URL (e.g. https://jira.company.com)" autocomplete="off">
+          <input type="password" id="jira-token-input" placeholder="Personal Access Token" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveJira()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('jira-url-input').focus();
+    },
+
+    async saveJira() {
+      const url = document.getElementById('jira-url-input')?.value.trim();
+      const token = document.getElementById('jira-token-input')?.value.trim();
+      if (!url || !token) return;
+      try {
+        await fetch('/api/connections/jira/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, token }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    setupConfluence() {
+      const actionsEl = document.getElementById('conn-actions-confluence');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            Enter your Confluence Server URL and a
+            <a href="https://confluence.atlassian.com/enterprise/using-personal-access-tokens-1026032365.html" target="_blank" style="color:var(--primary)">Personal Access Token</a>.
+          </p>
+          <input type="text" id="confluence-url-input" placeholder="Confluence URL (e.g. https://confluence.company.com)" autocomplete="off">
+          <input type="password" id="confluence-token-input" placeholder="Personal Access Token" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveConfluence()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('confluence-url-input').focus();
+    },
+
+    async saveConfluence() {
+      const url = document.getElementById('confluence-url-input')?.value.trim();
+      const token = document.getElementById('confluence-token-input')?.value.trim();
+      if (!url || !token) return;
+      try {
+        await fetch('/api/connections/confluence/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, token }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    setupSlack() {
+      const actionsEl = document.getElementById('conn-actions-slack');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            1. Create a Slack App at <a href="https://api.slack.com/apps" target="_blank" style="color:var(--primary)">api.slack.com/apps</a>.<br>
+            2. Under <strong>OAuth & Permissions</strong>, add bot scopes: <code style="font-size:0.75rem">channels:read</code>, <code style="font-size:0.75rem">channels:history</code>, <code style="font-size:0.75rem">chat:write</code>, <code style="font-size:0.75rem">reactions:write</code>, <code style="font-size:0.75rem">users:read</code>, <code style="font-size:0.75rem">search:read</code>.<br>
+            3. Install to your workspace and copy the <strong>Bot User OAuth Token</strong>.
+          </p>
+          <div class="connection-input-row">
+            <input type="password" id="slack-token-input" placeholder="Bot User OAuth Token (xoxb-...)" autocomplete="off">
+          </div>
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveSlack()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('slack-token-input').focus();
+    },
+
+    async saveSlack() {
+      const token = document.getElementById('slack-token-input')?.value.trim();
+      if (!token) return;
+      try {
+        await fetch('/api/connections/slack/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: token }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    setupTelegram() {
+      const actionsEl = document.getElementById('conn-actions-telegram');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            1. Create a bot with <a href="https://t.me/BotFather" target="_blank" style="color:var(--primary)">@BotFather</a> on Telegram.
+            Copy the bot token below.
+          </p>
+          <div class="connection-input-row">
+            <input type="password" id="tg-token-input" placeholder="Bot token (e.g. 123456:ABC-DEF...)" autocomplete="off">
+            <button class="btn btn-ghost btn-sm" onclick="Settings.testTelegram()">Test</button>
+          </div>
+          <div id="tg-test-result" style="font-size:0.8rem;min-height:1.2em"></div>
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            2. Your Chat ID — send any message to the bot, then click "Detect", or enter it manually.
+            Find your ID via <a href="https://t.me/userinfobot" target="_blank" style="color:var(--primary)">@userinfobot</a>.
+          </p>
+          <div class="connection-input-row">
+            <input type="text" id="tg-chatid-input" placeholder="Chat ID (e.g. 6902857843)" autocomplete="off">
+            <button class="btn btn-ghost btn-sm" onclick="Settings.detectTelegramChat()">Detect</button>
+          </div>
+          <div id="tg-chat-result" style="font-size:0.8rem;min-height:1.2em"></div>
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveTelegram()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('tg-token-input').focus();
+    },
+
+    async testTelegram() {
+      const token = document.getElementById('tg-token-input')?.value.trim();
+      const resultEl = document.getElementById('tg-test-result');
+      if (!token) { resultEl.innerHTML = '<span style="color:var(--danger)">Enter a token first</span>'; return; }
+      resultEl.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+      try {
+        const res = await fetch('/api/connections/telegram/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          resultEl.innerHTML = `<span style="color:var(--success)">Bot: @${escapeHtml(data.bot.username)} (${escapeHtml(data.bot.first_name)})</span>`;
+        } else {
+          resultEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(data.error)}</span>`;
+        }
+      } catch {
+        resultEl.innerHTML = '<span style="color:var(--danger)">Test failed</span>';
+      }
+    },
+
+    async detectTelegramChat() {
+      const token = document.getElementById('tg-token-input')?.value.trim();
+      const resultEl = document.getElementById('tg-chat-result');
+      const chatInput = document.getElementById('tg-chatid-input');
+      if (!token) { resultEl.innerHTML = '<span style="color:var(--danger)">Enter bot token first</span>'; return; }
+      resultEl.innerHTML = '<span style="color:var(--text-muted)">Checking for messages...</span>';
+      try {
+        // Use the bot token to call getUpdates directly
+        const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates?limit=5`);
+        const data = await res.json();
+        if (data.ok && data.result && data.result.length > 0) {
+          const lastMsg = data.result.reverse().find(u => u.message);
+          if (lastMsg) {
+            const chatId = lastMsg.message.chat.id;
+            const from = lastMsg.message.from?.first_name || 'Unknown';
+            chatInput.value = chatId;
+            resultEl.innerHTML = `<span style="color:var(--success)">Found: ${escapeHtml(from)} (${chatId})</span>`;
+          } else {
+            resultEl.innerHTML = '<span style="color:var(--warning)">No messages found. Send a message to the bot first.</span>';
+          }
+        } else {
+          resultEl.innerHTML = '<span style="color:var(--warning)">No messages yet. Send a message to the bot first.</span>';
+        }
+      } catch {
+        resultEl.innerHTML = '<span style="color:var(--danger)">Detection failed</span>';
+      }
+    },
+
+    async saveTelegram() {
+      const token = document.getElementById('tg-token-input')?.value.trim();
+      const chatId = document.getElementById('tg-chatid-input')?.value.trim();
+      if (!token) return;
+      try {
+        // Save the bot token
+        await fetch('/api/connections/telegram/key', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key: token }),
+        });
+        // Save chat_id if provided
+        if (chatId) {
+          await fetch('/api/connections/telegram/chat-id', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatId }),
+          });
+        }
+        this.refresh();
+      } catch {}
+    },
+
+    async refresh() {
+      openSettingsPanel();
+    },
+  };
 })();

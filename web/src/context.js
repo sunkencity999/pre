@@ -44,9 +44,13 @@ function getActiveConnections() {
       google: !!data.google_client_id,
       wolfram: !!data.wolfram_key,
       telegram: !!data.telegram_key,
+      jira: !!data.jira_url && !!data.jira_token,
+      confluence: !!data.confluence_url && !!data.confluence_token,
+      smartsheet: !!data.smartsheet_token,
+      slack: !!data.slack_token,
     };
   } catch {
-    return { brave: false, github: false, google: false, wolfram: false, telegram: false };
+    return { brave: false, github: false, google: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false };
   }
 }
 

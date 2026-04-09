@@ -292,10 +292,16 @@
   border-top: 1px solid var(--border);
 }
 
+.footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
 .theme-switcher {
   display: flex;
   gap: 4px;
-  margin-bottom: 10px;
 }
 
 .theme-btn {

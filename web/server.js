@@ -14,6 +14,13 @@ const {
   createSession, deleteSession, renameSession, rewindSession,
   listProjects, createProject, renameProject, deleteProject, moveSessionToProject,
 } = require('./src/sessions');
+const {
+  listConnections, setApiKey, removeConnection,
+  setGoogleCredentials, getGoogleAuthUrl, exchangeGoogleCode,
+  setTelegramChatId, testTelegramToken,
+  setJiraConfig,
+  setConfluenceConfig,
+} = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
@@ -116,6 +123,89 @@ app.post('/api/sessions/:id/move', (req, res) => {
   const { projectSlug } = req.body || {};
   moveSessionToProject(id, projectSlug || null);
   res.json({ id, projectSlug: projectSlug || null });
+});
+
+// ── Connections API ──
+
+app.get('/api/connections', (_req, res) => {
+  res.json(listConnections());
+});
+
+app.post('/api/connections/:service/key', (req, res) => {
+  const service = req.params.service;
+  const { key } = req.body || {};
+  if (!key) return res.status(400).json({ error: 'key required' });
+  const ok = setApiKey(service, key);
+  if (!ok) return res.status(400).json({ error: 'Invalid service' });
+  res.json({ service, active: true });
+});
+
+app.delete('/api/connections/:service', (req, res) => {
+  const service = req.params.service;
+  removeConnection(service);
+  res.json({ service, active: false });
+});
+
+app.post('/api/connections/telegram/test', async (req, res) => {
+  const { token } = req.body || {};
+  if (!token) return res.status(400).json({ error: 'token required' });
+  try {
+    const bot = await testTelegramToken(token);
+    res.json({ success: true, bot });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/connections/telegram/chat-id', (req, res) => {
+  const { chatId } = req.body || {};
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  setTelegramChatId(chatId);
+  res.json({ success: true, chatId });
+});
+
+app.post('/api/connections/jira/config', (req, res) => {
+  const { url, token } = req.body || {};
+  if (!url || !token) return res.status(400).json({ error: 'url and token required' });
+  setJiraConfig(url, token);
+  res.json({ success: true });
+});
+
+app.post('/api/connections/confluence/config', (req, res) => {
+  const { url, token } = req.body || {};
+  if (!url || !token) return res.status(400).json({ error: 'url and token required' });
+  setConfluenceConfig(url, token);
+  res.json({ success: true });
+});
+
+app.post('/api/connections/google/credentials', (req, res) => {
+  const { clientId, clientSecret } = req.body || {};
+  if (!clientId || !clientSecret) return res.status(400).json({ error: 'clientId and clientSecret required' });
+  setGoogleCredentials(clientId, clientSecret);
+  res.json({ success: true });
+});
+
+app.get('/api/connections/google/auth-url', (req, res) => {
+  const url = getGoogleAuthUrl(PORT);
+  if (!url) return res.status(400).json({ error: 'Google credentials not configured' });
+  res.json({ url });
+});
+
+// Google OAuth callback — receives the authorization code
+app.get('/oauth/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) {
+    return res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Authorization Failed</h2><p>${error}</p><p>You can close this tab.</p></div></body></html>`);
+  }
+  if (!code) {
+    return res.status(400).send('Missing authorization code');
+  }
+  try {
+    await exchangeGoogleCode(code, PORT);
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#4ade80">Google Connected!</h2><p>Gmail, Drive, and Docs are now available.</p><p>You can close this tab and return to PRE.</p><script>setTimeout(()=>window.close(),3000)</script></div></body></html>`);
+  } catch (err) {
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Token Exchange Failed</h2><p>${err.message}</p><p>You can close this tab.</p></div></body></html>`);
+  }
 });
 
 app.get('/api/status', async (_req, res) => {
