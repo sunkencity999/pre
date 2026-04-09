@@ -300,9 +300,56 @@ Rules:
 
 // ── Auto-extraction ──
 
+// Throttling state: avoid hammering the GPU after every turn
+const extractionState = {
+  turnsSinceLastExtract: 0,
+  lastExtractTime: 0,
+  running: false,
+};
+
+const EXTRACT_EVERY_N_TURNS = 3;       // Only run extraction every N conversation turns
+const EXTRACT_COOLDOWN_MS = 60 * 1000; // Minimum 60s between extractions
+const EXTRACT_MIN_USER_CHARS = 50;     // Skip if user messages are too short (just commands)
+
+/**
+ * Check whether extraction should run this turn.
+ * Returns false if throttled, the model is busy, or there's nothing substantive.
+ */
+function shouldExtract(messages) {
+  // Don't run concurrent extractions
+  if (extractionState.running) {
+    console.log('[memory-extract] Skipped: already running');
+    return false;
+  }
+
+  extractionState.turnsSinceLastExtract++;
+
+  // Frequency gate
+  if (extractionState.turnsSinceLastExtract < EXTRACT_EVERY_N_TURNS) {
+    return false;
+  }
+
+  // Cooldown gate
+  const elapsed = Date.now() - extractionState.lastExtractTime;
+  if (elapsed < EXTRACT_COOLDOWN_MS) {
+    return false;
+  }
+
+  // Content gate: need substantive user messages in recent window
+  const recentUserMsgs = messages.slice(-6)
+    .filter(m => m.role === 'user')
+    .map(m => m.content || '');
+  const totalChars = recentUserMsgs.reduce((sum, c) => sum + c.length, 0);
+  if (totalChars < EXTRACT_MIN_USER_CHARS) {
+    return false;
+  }
+
+  return true;
+}
+
 /**
  * Extract memories from a conversation using a lightweight LLM pass.
- * Runs after each assistant response to capture implicit memory-worthy facts.
+ * Runs after qualifying assistant responses to capture implicit memory-worthy facts.
  *
  * @param {Array} messages - Recent conversation messages
  * @param {Array} existingMemories - Already saved memories (to avoid duplicates)
@@ -357,7 +404,7 @@ Be conservative — only extract what will genuinely help in future conversation
         { role: 'system', content: extractionPrompt },
         { role: 'user', content: `Extract memories from this conversation:\n\n${conversationText}` },
       ],
-      maxTokens: 2048,
+      maxTokens: 1024,
     });
 
     const response = result.response || '';
@@ -383,8 +430,18 @@ Be conservative — only extract what will genuinely help in future conversation
 /**
  * Run auto-extraction: analyze recent messages and save any new memories.
  * Designed to run in the background after a conversation turn.
+ * Throttled to avoid GPU contention — runs every 3 turns with 60s cooldown.
  */
 async function autoExtract(messages, projectDir) {
+  // Throttle check
+  if (!shouldExtract(messages)) {
+    return [];
+  }
+
+  extractionState.running = true;
+  extractionState.turnsSinceLastExtract = 0;
+  extractionState.lastExtractTime = Date.now();
+
   try {
     const existing = getAllMemories(projectDir);
     const extracted = await extractMemories(messages, existing);
@@ -416,6 +473,8 @@ async function autoExtract(messages, projectDir) {
   } catch (err) {
     console.log(`[memory-extract] Auto-extract error: ${err.message}`);
     return [];
+  } finally {
+    extractionState.running = false;
   }
 }
 

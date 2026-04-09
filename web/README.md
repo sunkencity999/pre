@@ -45,23 +45,85 @@ All integrations are configured through the Settings panel (gear icon in sidebar
 
 ## Memory System
 
-PRE has a persistent, file-based memory system shared between the CLI and web GUI. Memories survive across sessions and are automatically injected into the system prompt.
+PRE has a persistent, file-based memory system shared between the CLI (`pre.m`) and web GUI. Memories survive across sessions and are automatically injected into the system prompt so the model remembers who you are, how you work, and what's going on.
 
-**Storage:** `~/.pre/memory/*.md` — one fact per file, YAML frontmatter + markdown body. `MEMORY.md` serves as a human-readable index.
+### How It Works
 
-**Memory types:**
-- **user** — Who the user is (role, preferences, expertise)
-- **feedback** — How to work (corrections, confirmed approaches)
-- **project** — What's happening (decisions, deadlines, context not in code/git)
-- **reference** — Where to look (external system pointers, URLs)
+Memories are stored as individual Markdown files in `~/.pre/memory/`, each with YAML frontmatter:
 
-**Auto-extraction:** After each conversation turn, a lightweight LLM pass analyzes recent messages and silently saves memory-worthy facts. Duplicate detection prevents redundant saves.
+```markdown
+---
+name: user_role
+description: User is a systems admin and AI engineer at Joby Aviation
+type: user
+scope: global
+created: 2026-04-09
+---
 
-**Age annotations:** When memories are injected into context, stale memories (>7 days) get a warning so the model knows to verify before acting on them.
+Christopher is a Systems Administrator at Joby Aviation and AI Engineer
+based in Boulder Creek, CA. Focus areas include fine-tuning transformers,
+aviation domain models, and system administration.
+```
 
-**GUI browser:** Click the memory icon (sidebar footer) to browse, search, create, and delete memories. Memories are grouped by type with color coding.
+`MEMORY.md` serves as a human-readable index of all memories (auto-maintained).
 
-**Context injection priority:** feedback > user > project > reference (behavioral guidance first).
+### Memory Types
+
+| Type | Purpose | Example |
+|------|---------|---------|
+| **user** | Who the user is — role, preferences, expertise | "Deep Go expertise, new to React" |
+| **feedback** | How to work — corrections and confirmed approaches | "Don't mock the database in integration tests" |
+| **project** | What's happening — decisions, deadlines, context | "Auth rewrite driven by legal compliance" |
+| **reference** | Where to look — external system pointers | "Pipeline bugs tracked in Linear project INGEST" |
+
+### Three Ways to Create Memories
+
+1. **Automatic extraction** — After every ~3 conversation turns, a background LLM pass silently analyzes recent messages and saves anything worth remembering. Most turns produce nothing; the model is instructed to be conservative.
+
+2. **Model-initiated** — Ask the model to "remember that I prefer..." or it may proactively save feedback when you correct its approach. Uses the `memory_save` tool.
+
+3. **Manual via GUI** — Click the memory icon (sidebar footer) to open the browser. Click "+ New" to create a memory with name, type, description, and content.
+
+### Auto-Extraction Performance
+
+Auto-extraction is **throttled to minimize GPU impact**:
+
+- Runs every **3 turns** (not every turn)
+- **60-second cooldown** between extractions
+- Skipped if user messages are trivially short (<50 chars)
+- Skipped if an extraction is already running
+- Uses a small token budget (1024 max output)
+- Runs fully in the background — never blocks the response
+
+On Apple Silicon M4 Max with Gemma 4 26B, a typical extraction takes 3-8 seconds and runs while the user is reading the response. If you send another message during extraction, your query takes priority — Ollama queues requests, and the next response won't be delayed.
+
+### Age Annotations
+
+When memories are injected into the system prompt, stale memories get a warning:
+
+- **<7 days** — no annotation
+- **1-4 weeks** — `[2 weeks old — verify before acting on it]`
+- **>30 days** — `[3 months old — may be outdated, verify against current state]`
+
+This prevents the model from confidently acting on information that may have changed.
+
+### Context Injection
+
+Memories are injected into the system prompt in priority order: **feedback** (behavioral guidance) > **user** (who you are) > **project** (what's happening) > **reference** (where to look). Up to 30 memories, 30 lines each.
+
+### GUI Memory Browser
+
+The memory icon in the sidebar footer opens a right panel with:
+
+- All memories grouped by type with color coding (blue/amber/green/purple)
+- Click any memory to view its full content, metadata, and age
+- Create new memories with the "+ New" button
+- Delete memories with confirmation
+- Modification dates and scope (global/project) displayed on each card
+
+### CLI Compatibility
+
+The web GUI reads and writes the same `~/.pre/memory/` directory as the CLI. Memories created in one are immediately available in the other. Both maintain the `MEMORY.md` index (and the legacy `index.md` for backwards compatibility).
 
 ## Architecture
 
