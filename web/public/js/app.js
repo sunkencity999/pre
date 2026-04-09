@@ -64,6 +64,10 @@
         Chat.addArtifactCard(msg.title, msg.path, msg.artifactType);
         break;
 
+      case 'document':
+        Chat.addDocumentCard(msg.title, msg.path, msg.artifactType);
+        break;
+
       case 'session_renamed':
         if (msg.sessionId === currentSession) {
           currentDisplayName = msg.name;

@@ -210,7 +210,37 @@ if [ -x "$ENGINE_DIR/pre-telegram" ]; then
 fi
 
 # ============================================================================
-# Step 6: Install pre-launch command
+# Step 6: Web GUI dependencies
+# ============================================================================
+step "Setting up Web GUI"
+
+WEB_DIR="$REPO_DIR/web"
+if [ -f "$WEB_DIR/package.json" ]; then
+    if command -v node &>/dev/null; then
+        NODE_VER=$(node --version)
+        NODE_MAJOR=$(echo "$NODE_VER" | sed 's/v//' | cut -d. -f1)
+        if [ "$NODE_MAJOR" -ge 18 ]; then
+            ok "  Node.js: $NODE_VER"
+            echo "  Installing web dependencies..."
+            cd "$WEB_DIR"
+            npm install --silent 2>&1 | tail -3
+            ok "  Web GUI dependencies installed (express, ws, docx, exceljs, pdfkit)"
+            cd "$REPO_DIR"
+        else
+            warn "  Node.js $NODE_VER is too old — need v18+. Web GUI will not be available."
+            warn "  Install a newer version: brew install node"
+        fi
+    else
+        warn "  Node.js not found — Web GUI will not be available."
+        warn "  Install Node.js: brew install node"
+        echo -e "  ${DIM}The CLI works without Node.js. Web GUI is optional.${RESET}"
+    fi
+else
+    warn "  Web GUI not found at $WEB_DIR — skipping."
+fi
+
+# ============================================================================
+# Step 7: Install pre-launch command
 # ============================================================================
 step "Installing pre-launch command"
 
@@ -239,16 +269,18 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
 fi
 
 # ============================================================================
-# Step 7: Set up ~/.pre/ directories
+# Step 8: Set up ~/.pre/ directories
 # ============================================================================
 step "Setting up PRE data directories"
 
 mkdir -p "$HOME/.pre/sessions"
 mkdir -p "$HOME/.pre/memory"
 mkdir -p "$HOME/.pre/checkpoints"
+mkdir -p "$HOME/.pre/artifacts"
 ok "  Created ~/.pre/sessions/"
 ok "  Created ~/.pre/memory/"
 ok "  Created ~/.pre/checkpoints/"
+ok "  Created ~/.pre/artifacts/"
 
 # Migrate from old Flash-MoE layout if present
 if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
@@ -260,7 +292,7 @@ if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
 fi
 
 # ============================================================================
-# Step 7b: ComfyUI setup (optional — local image generation)
+# Step 8b: ComfyUI setup (optional — local image generation)
 # ============================================================================
 step "Image Generation Setup (optional)"
 
@@ -437,7 +469,7 @@ CFGEOF
 fi
 
 # ============================================================================
-# Step 8: Pre-warm the model
+# Step 9: Pre-warm the model
 # ============================================================================
 step "Pre-warming model into GPU memory"
 
@@ -465,8 +497,9 @@ echo -e "${BOLD}${GREEN}║${RESET}${BOLD}  PRE installation complete!          
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo -e "  ${BOLD}Launch:${RESET}"
-echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE from any directory"
+echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE (CLI + Web GUI)"
 echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
+echo -e "    Web GUI auto-starts at ${CYAN}http://localhost:7749${RESET}"
 echo ""
 echo -e "  ${BOLD}First Launch:${RESET}"
 echo -e "    PRE will ask you to name your agent and optionally"
@@ -489,6 +522,7 @@ echo -e "  ${BOLD}Data:${RESET}"
 echo -e "    ${DIM}~/.pre/identity.json${RESET}  Agent name"
 echo -e "    ${DIM}~/.pre/sessions/${RESET}      Session history"
 echo -e "    ${DIM}~/.pre/memory/${RESET}        Persistent memory"
+echo -e "    ${DIM}~/.pre/artifacts/${RESET}     Generated documents & artifacts"
 echo -e "    ${DIM}~/.pre/telegram.log${RESET}   Telegram bot log"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."

@@ -104,6 +104,13 @@ function buildToolDefs() {
       script: { type: 'string', description: 'AppleScript code to execute' },
     }, ['script']),
 
+    tool('document', 'Create a downloadable document file. Supports txt, xml, docx, xlsx, and pdf formats. For xlsx with structured data, pass a sheets array with {name, headers, rows}.', {
+      title: { type: 'string', description: 'Document title / filename' },
+      content: { type: 'string', description: 'Document content (text, markdown, XML, or pipe-delimited table for xlsx)' },
+      format: { type: 'string', description: 'File format: txt, xml, docx, xlsx, or pdf' },
+      sheets: { type: 'string', description: 'For xlsx: JSON array of {name, headers, rows} objects for multi-sheet workbooks' },
+    }, ['title', 'content', 'format']),
+
     tool('artifact', 'Create an interactive HTML artifact (webpage, game, visualization, dashboard) that can be viewed in the browser', {
       title: { type: 'string', description: 'Title for the artifact' },
       content: { type: 'string', description: 'Full HTML content of the artifact' },

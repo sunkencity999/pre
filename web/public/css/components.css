@@ -219,3 +219,51 @@
   border-radius: 6px;
   text-decoration: none;
 }
+
+/* Document download card */
+.document-card {
+  max-width: 420px;
+  margin: 12px auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.document-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--surface-hover);
+  border-bottom: 1px solid var(--border);
+}
+.document-card-icon {
+  color: var(--primary);
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.document-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.document-card-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.document-card-format {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.document-card-actions {
+  padding: 10px 16px;
+  display: flex;
+  gap: 8px;
+}

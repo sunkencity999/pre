@@ -59,6 +59,7 @@ const webTool = require('./tools/web');
 const memoryTool = require('./tools/memory');
 const systemTool = require('./tools/system');
 const artifactTool = require('./tools/artifact');
+const documentTool = require('./tools/document');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -76,6 +77,8 @@ const ALIASES = {
   fetch: 'web_fetch', curl: 'web_fetch', http: 'web_fetch',
   browse: 'web_fetch', web: 'web_fetch',
   create_artifact: 'artifact', html: 'artifact', render: 'artifact', display: 'artifact',
+  create_document: 'document', doc: 'document', make_document: 'document',
+  generate_document: 'document', export: 'document', write_document: 'document',
   copy: 'clipboard_write', paste: 'clipboard_read',
   remember: 'memory_save', recall: 'memory_search', forget: 'memory_delete',
 };
@@ -133,6 +136,15 @@ async function executeTool(name, args, cwd) {
 
     // Artifacts
     case 'artifact': return artifactTool.createArtifact(args);
+
+    // Documents
+    case 'document': {
+      // Parse sheets if passed as JSON string
+      if (args.sheets && typeof args.sheets === 'string') {
+        try { args.sheets = JSON.parse(args.sheets); } catch {}
+      }
+      return documentTool.createDocument(args);
+    }
 
     default:
       return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info`;
@@ -259,15 +271,16 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         output = `Error: ${err.message}`;
       }
 
-      // Notify client about artifacts so they can display them
-      if (toolName === 'artifact' && output && output.includes('/artifacts/')) {
+      // Notify client about artifacts/documents so they can display download cards
+      if ((toolName === 'artifact' || toolName === 'document') && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/\/artifacts\/[^\s]+/);
         if (urlMatch) {
+          const isDoc = toolName === 'document';
           send({
-            type: 'artifact',
-            title: toolArgs.title || 'Artifact',
+            type: isDoc ? 'document' : 'artifact',
+            title: toolArgs.title || (isDoc ? 'Document' : 'Artifact'),
             path: urlMatch[0],
-            artifactType: toolArgs.type || 'html',
+            artifactType: isDoc ? (toolArgs.format || 'txt') : (toolArgs.type || 'html'),
           });
         }
       }

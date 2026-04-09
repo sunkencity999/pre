@@ -32,8 +32,16 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Serve artifacts (for iframe viewing)
-app.use('/artifacts', express.static(ARTIFACTS_DIR));
+// Serve artifacts (for iframe viewing and document downloads)
+app.use('/artifacts', express.static(ARTIFACTS_DIR, {
+  setHeaders: (res, filePath) => {
+    // Force download for document types
+    const ext = path.extname(filePath).toLowerCase();
+    if (['.docx', '.xlsx', '.pdf', '.txt', '.xml'].includes(ext)) {
+      res.set('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+    }
+  },
+}));
 
 // ── REST API ──
 
