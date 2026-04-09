@@ -317,31 +317,67 @@
     sessionStorage.setItem('pre-expanded-projects', JSON.stringify(state));
   }
 
+  // ── Session search ──
+  let allSessions = [];
+  let allProjects = [];
+  const searchInput = document.getElementById('session-search');
+
+  searchInput.addEventListener('input', () => {
+    renderSessionList(searchInput.value.trim());
+  });
+
+  // Escape clears the search
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      renderSessionList('');
+      searchInput.blur();
+    }
+  });
+
   async function loadSessionList() {
     try {
       const [sessionsRes, projectsRes] = await Promise.all([
         fetch('/api/sessions'),
         fetch('/api/projects'),
       ]);
-      const sessions = await sessionsRes.json();
-      const projects = await projectsRes.json();
+      allSessions = await sessionsRes.json();
+      allProjects = await projectsRes.json();
+      renderSessionList(searchInput.value.trim());
+    } catch {}
+  }
 
-      const list = document.getElementById('session-list');
-      list.innerHTML = '';
+  function renderSessionList(searchQuery) {
+    const query = (searchQuery || '').toLowerCase();
 
-      const expandedState = getExpandedProjects();
+    // Filter sessions by search query
+    let sessions = allSessions;
+    if (query) {
+      sessions = allSessions.filter(s => {
+        const name = (s.displayName || s.channel || '').toLowerCase();
+        const preview = (s.preview || '').toLowerCase();
+        const id = (s.id || '').toLowerCase();
+        return name.includes(query) || preview.includes(query) || id.includes(query);
+      });
+    }
 
-      // Group sessions by projectSlug
-      const grouped = {};
-      const ungrouped = [];
-      for (const s of sessions) {
-        if (s.projectSlug) {
-          if (!grouped[s.projectSlug]) grouped[s.projectSlug] = [];
-          grouped[s.projectSlug].push(s);
-        } else {
-          ungrouped.push(s);
-        }
+    const projects = allProjects;
+    const list = document.getElementById('session-list');
+    list.innerHTML = '';
+
+    const expandedState = getExpandedProjects();
+
+    // Group sessions by projectSlug
+    const grouped = {};
+    const ungrouped = [];
+    for (const s of sessions) {
+      if (s.projectSlug) {
+        if (!grouped[s.projectSlug]) grouped[s.projectSlug] = [];
+        grouped[s.projectSlug].push(s);
+      } else {
+        ungrouped.push(s);
       }
+    }
 
       // Render ungrouped drop zone (hidden until drag starts)
       const ungroupedDrop = document.createElement('div');
@@ -474,6 +510,13 @@
         sessionsContainer.className = 'project-sessions';
 
         const projectSessions = grouped[proj.slug] || [];
+
+        // During search, skip empty projects and force-expand those with matches
+        if (query && projectSessions.length === 0) continue;
+        if (query && projectSessions.length > 0) {
+          group.classList.add('expanded');
+        }
+
         for (const session of projectSessions) {
           sessionsContainer.appendChild(buildSessionItem(session));
         }
@@ -488,13 +531,21 @@
         const label = document.createElement('div');
         label.className = 'sidebar-label';
         label.style.marginTop = '8px';
-        label.textContent = 'Recent';
+        label.textContent = query ? 'Matches' : 'Recent';
         list.appendChild(label);
       }
-      for (const session of ungrouped.slice(0, 20)) {
+      const maxShown = query ? 50 : 20;
+      for (const session of ungrouped.slice(0, maxShown)) {
         list.appendChild(buildSessionItem(session));
       }
-    } catch {}
+
+      // No results message
+      if (query && sessions.length === 0) {
+        const noResults = document.createElement('div');
+        noResults.style.cssText = 'color:var(--text-muted);font-size:0.82rem;padding:16px 0;text-align:center';
+        noResults.textContent = `No sessions matching "${searchQuery}"`;
+        list.appendChild(noResults);
+      }
   }
 
   // Inline rename helper for sidebar items

@@ -21,6 +21,40 @@
   letter-spacing: 1px;
 }
 
+.sidebar-search {
+  position: relative;
+  padding: 12px 16px 0;
+}
+
+.sidebar-search-icon {
+  position: absolute;
+  left: 26px;
+  top: 50%;
+  transform: translateY(-25%);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.sidebar-search input {
+  width: 100%;
+  padding: 7px 10px 7px 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.82rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.sidebar-search input:focus {
+  border-color: var(--primary);
+}
+
+.sidebar-search input::placeholder {
+  color: var(--text-muted);
+}
+
 .sidebar-section {
   flex: 1;
   overflow-y: auto;
