@@ -18,6 +18,7 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
+- **Persistent memory** — file-based memory system with auto-extraction, age annotations, and a GUI browser
 - **Three themes** — Dark, Light, and Evangelion (NERV-inspired)
 - **Calendas Plus typography** — serif display font for headings
 - **Thinking indicator** — animated bouncing dots during model's first-token latency
@@ -42,6 +43,26 @@ All integrations are configured through the Settings panel (gear icon in sidebar
 | **Slack** | Bot User OAuth Token | Channels, message history, send/reply/update, reactions, search, users |
 | **Wolfram Alpha** | API Key | Computational queries |
 
+## Memory System
+
+PRE has a persistent, file-based memory system shared between the CLI and web GUI. Memories survive across sessions and are automatically injected into the system prompt.
+
+**Storage:** `~/.pre/memory/*.md` — one fact per file, YAML frontmatter + markdown body. `MEMORY.md` serves as a human-readable index.
+
+**Memory types:**
+- **user** — Who the user is (role, preferences, expertise)
+- **feedback** — How to work (corrections, confirmed approaches)
+- **project** — What's happening (decisions, deadlines, context not in code/git)
+- **reference** — Where to look (external system pointers, URLs)
+
+**Auto-extraction:** After each conversation turn, a lightweight LLM pass analyzes recent messages and silently saves memory-worthy facts. Duplicate detection prevents redundant saves.
+
+**Age annotations:** When memories are injected into context, stale memories (>7 days) get a warning so the model knows to verify before acting on them.
+
+**GUI browser:** Click the memory icon (sidebar footer) to browse, search, create, and delete memories. Memories are grouped by type with color coding.
+
+**Context injection priority:** feedback > user > project > reference (behavioral guidance first).
+
 ## Architecture
 
 ```
@@ -52,6 +73,7 @@ src/
   tools.js                 Tool dispatcher + execution loop
   tools-defs.js            45+ tool definitions for Ollama
   context.js               System prompt builder
+  memory.js                 Enhanced memory system (save, extract, age, context injection)
   connections.js            Connection management, Google OAuth, Telegram setup
   constants.js             MODEL_CTX=65536, paths
   tools/

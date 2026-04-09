@@ -6,6 +6,7 @@ const { buildSystemPrompt } = require('./context');
 const { buildToolDefs } = require('./tools-defs');
 const { appendMessage, getSessionMessages, renameSession } = require('./sessions');
 const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
+const { autoExtract } = require('./memory');
 
 /**
  * Generate a short session title from the first user message.
@@ -272,6 +273,16 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       if (needsTitle && userMessage) {
         generateSessionTitle(sessionId, userMessage, send);
       }
+      // Auto-extract memories in background (don't block response)
+      const historyForExtract = getSessionMessages(sessionId);
+      autoExtract(historyForExtract).then(saved => {
+        if (saved.length > 0) {
+          console.log(`[memory-extract] Auto-saved ${saved.length} memory(ies)`);
+          send({ type: 'memory_saved', memories: saved.map(m => ({ name: m.name, type: m.type })) });
+        }
+      }).catch(err => {
+        console.log(`[memory-extract] Background error: ${err.message}`);
+      });
       return;
     }
 

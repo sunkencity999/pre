@@ -68,6 +68,13 @@
         Chat.addDocumentCard(msg.title, msg.path, msg.artifactType);
         break;
 
+      case 'memory_saved':
+        if (msg.memories && msg.memories.length > 0) {
+          const names = msg.memories.map(m => m.name).join(', ');
+          console.log(`[memory] Auto-saved: ${names}`);
+        }
+        break;
+
       case 'session_renamed':
         if (msg.sessionId === currentSession) {
           currentDisplayName = msg.name;
@@ -657,6 +664,157 @@
   document.getElementById('settings-btn').addEventListener('click', () => {
     openSettingsPanel();
   });
+
+  // ── Memory browser panel ──
+  document.getElementById('memory-btn').addEventListener('click', () => {
+    openMemoryPanel();
+  });
+
+  async function openMemoryPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Memory';
+    panel.classList.remove('hidden');
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/memory');
+      const memories = await res.json();
+      renderMemoryPanel(content, memories);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load memories</p>';
+    }
+  }
+
+  function renderMemoryPanel(container, memories) {
+    const typeColors = {
+      user: 'var(--primary)',
+      feedback: '#f59e0b',
+      project: '#10b981',
+      reference: '#8b5cf6',
+    };
+
+    let html = '<div class="settings-section">';
+    html += '<div class="settings-section-title" style="display:flex;justify-content:space-between;align-items:center">';
+    html += `<span>Memories (${memories.length})</span>`;
+    html += '<button class="btn btn-ghost btn-sm" onclick="Memory.create()">+ New</button>';
+    html += '</div>';
+
+    if (memories.length === 0) {
+      html += '<p style="color:var(--text-muted);font-size:0.85rem;padding:12px 0">No memories saved yet. Memories are automatically extracted from conversations, or you can create them manually.</p>';
+    }
+
+    // Group by type
+    const groups = { feedback: [], user: [], project: [], reference: [] };
+    for (const m of memories) {
+      (groups[m.type] || groups.project).push(m);
+    }
+
+    for (const [type, mems] of Object.entries(groups)) {
+      if (mems.length === 0) continue;
+      const color = typeColors[type] || 'var(--text-muted)';
+      html += `<div style="margin-top:12px">`;
+      html += `<div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:${color};margin-bottom:6px">${type} (${mems.length})</div>`;
+
+      for (const m of mems) {
+        const age = m.age ? `<span style="font-size:0.7rem;color:var(--text-muted)"> ${escapeHtml(m.age)}</span>` : '';
+        html += `<div class="connection-card" style="margin-bottom:8px;cursor:pointer" onclick="Memory.view('${escapeHtml(m.filename)}')">`;
+        html += `<div style="padding:8px 12px">`;
+        html += `<div style="font-size:0.85rem;font-weight:500">${escapeHtml(m.name)}${age}</div>`;
+        html += `<div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px">${escapeHtml(m.description)}</div>`;
+        html += `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px">${escapeHtml(m.modified)} &middot; ${escapeHtml(m.scope)}</div>`;
+        html += `</div></div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  window.Memory = {
+    async view(filename) {
+      const panel = document.getElementById('panel-content');
+      panel.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+      try {
+        const res = await fetch(`/api/memory/${encodeURIComponent(filename)}`);
+        const m = await res.json();
+        const typeColors = { user: 'var(--primary)', feedback: '#f59e0b', project: '#10b981', reference: '#8b5cf6' };
+        const color = typeColors[m.type] || 'var(--text-muted)';
+        let html = '<div class="settings-section">';
+        html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">`;
+        html += `<button class="btn btn-ghost btn-sm" onclick="Memory.back()">&larr; Back</button>`;
+        html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Memory.del('${escapeHtml(filename)}')">Delete</button>`;
+        html += `</div>`;
+        html += `<h3 style="margin:0 0 8px 0;font-size:1.05rem">${escapeHtml(m.name)}</h3>`;
+        html += `<div style="display:flex;gap:8px;margin-bottom:12px;font-size:0.78rem">`;
+        html += `<span style="color:${color};text-transform:uppercase;font-weight:600">${m.type}</span>`;
+        html += `<span style="color:var(--text-muted)">${escapeHtml(m.scope)}</span>`;
+        html += `<span style="color:var(--text-muted)">${escapeHtml(m.modified)}</span>`;
+        if (m.age) html += `<span style="color:var(--text-muted)">${escapeHtml(m.age)}</span>`;
+        html += `</div>`;
+        html += `<div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px">${escapeHtml(m.description)}</div>`;
+        html += `<div style="font-size:0.85rem;white-space:pre-wrap;line-height:1.5;padding:12px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border)">${escapeHtml(m.body)}</div>`;
+        html += '</div>';
+        panel.innerHTML = html;
+      } catch {
+        panel.innerHTML = '<p style="color:var(--danger)">Failed to load memory</p>';
+      }
+    },
+
+    async del(filename) {
+      if (!confirm('Delete this memory?')) return;
+      try {
+        await fetch(`/api/memory/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        openMemoryPanel();
+      } catch {}
+    },
+
+    create() {
+      const panel = document.getElementById('panel-content');
+      let html = '<div class="settings-section">';
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="Memory.back()">&larr; Back</button>`;
+      html += `</div>`;
+      html += `<div class="connection-input-group">`;
+      html += `<input type="text" id="mem-name" placeholder="Memory name" autocomplete="off">`;
+      html += `<select id="mem-type" style="padding:6px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text)">
+        <option value="user">user</option>
+        <option value="feedback">feedback</option>
+        <option value="project" selected>project</option>
+        <option value="reference">reference</option>
+      </select>`;
+      html += `<input type="text" id="mem-desc" placeholder="One-line description" autocomplete="off">`;
+      html += `<textarea id="mem-content" rows="6" placeholder="Memory content..." style="width:100%;padding:8px;border-radius:4px;border:1px solid var(--border);background:var(--surface);color:var(--text);resize:vertical;font-family:inherit;font-size:0.85rem"></textarea>`;
+      html += `<div class="connection-input-row">`;
+      html += `<button class="btn btn-primary btn-sm" onclick="Memory.save()">Save</button>`;
+      html += `<button class="btn btn-ghost btn-sm" onclick="Memory.back()">Cancel</button>`;
+      html += `</div></div></div>`;
+      panel.innerHTML = html;
+      document.getElementById('mem-name').focus();
+    },
+
+    async save() {
+      const name = document.getElementById('mem-name')?.value.trim();
+      const type = document.getElementById('mem-type')?.value;
+      const description = document.getElementById('mem-desc')?.value.trim();
+      const content = document.getElementById('mem-content')?.value.trim();
+      if (!name || !content) return;
+      try {
+        await fetch('/api/memory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, type, description, content }),
+        });
+        openMemoryPanel();
+      } catch {}
+    },
+
+    back() {
+      openMemoryPanel();
+    },
+  };
 
   async function openSettingsPanel() {
     const panel = document.getElementById('right-panel');

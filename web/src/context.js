@@ -4,33 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { PRE_DIR, MEMORY_DIR, CONNECTIONS_FILE, COMFYUI_FILE } = require('./constants');
-
-/**
- * Build memory context from ~/.pre/memory/
- */
-function buildMemoryContext() {
-  if (!fs.existsSync(MEMORY_DIR)) return '';
-  const files = fs.readdirSync(MEMORY_DIR).filter(f => f.endsWith('.md'));
-  if (files.length === 0) return '';
-
-  let ctx = '<memory>\n';
-  for (const file of files.slice(0, 20)) { // cap at 20 memories
-    try {
-      const content = fs.readFileSync(path.join(MEMORY_DIR, file), 'utf-8');
-      // Parse frontmatter
-      const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-      if (match) {
-        const body = match[2].trim();
-        const nameMatch = match[1].match(/name:\s*(.+)/);
-        const name = nameMatch ? nameMatch[1].trim() : file;
-        ctx += `[${name}] ${body}\n\n`;
-      }
-    } catch {}
-  }
-  ctx += '</memory>\n';
-  return ctx;
-}
+const { PRE_DIR, CONNECTIONS_FILE, COMFYUI_FILE } = require('./constants');
+const { buildMemoryContext: buildMemCtx, buildMemoryInstructions } = require('./memory');
 
 /**
  * Check which connections are active
@@ -72,7 +47,8 @@ function isComfyUIInstalled() {
 function buildSystemPrompt(cwd) {
   const connections = getActiveConnections();
   const comfyui = isComfyUIInstalled();
-  const memory = buildMemoryContext();
+  const memory = buildMemCtx();
+  const memoryInstructions = buildMemoryInstructions();
 
   // Directory listing
   let filesList = '';
@@ -105,6 +81,7 @@ function buildSystemPrompt(cwd) {
     + `All data stays on this machine. You have persistent memory across sessions.\n\n`;
 
   if (memory) prompt += memory + '\n';
+  prompt += memoryInstructions + '\n';
 
   prompt += `<context>\nWorking directory: ${cwd}\nFiles:\n${filesList}</context>\n\n`;
   prompt += `Today is ${dateStr}. Use this when interpreting relative dates.\n\n`;

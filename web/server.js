@@ -14,6 +14,7 @@ const {
   createSession, deleteSession, renameSession, rewindSession,
   listProjects, createProject, renameProject, deleteProject, moveSessionToProject,
 } = require('./src/sessions');
+const memorySystem = require('./src/memory');
 const {
   listConnections, setApiKey, removeConnection,
   setGoogleCredentials, getGoogleAuthUrl, exchangeGoogleCode,
@@ -206,6 +207,46 @@ app.get('/oauth/callback', async (req, res) => {
   } catch (err) {
     res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Token Exchange Failed</h2><p>${err.message}</p><p>You can close this tab.</p></div></body></html>`);
   }
+});
+
+// ── Memory API ──
+
+app.get('/api/memory', (req, res) => {
+  const query = req.query.q || '';
+  if (query) {
+    const results = memorySystem.searchMemories(query);
+    res.json(results.map(m => ({
+      filename: m.filename,
+      name: m.name,
+      description: m.description,
+      type: m.type,
+      scope: m.scope,
+      body: m.body,
+      age: memorySystem.memoryAge(m.mtimeMs),
+      modified: new Date(m.mtimeMs).toISOString().slice(0, 10),
+    })));
+  } else {
+    res.json(memorySystem.listForAPI());
+  }
+});
+
+app.get('/api/memory/:filename', (req, res) => {
+  const memory = memorySystem.getMemory(req.params.filename);
+  if (!memory) return res.status(404).json({ error: 'Memory not found' });
+  res.json(memory);
+});
+
+app.post('/api/memory', (req, res) => {
+  const { name, type, description, content, scope } = req.body || {};
+  const result = memorySystem.saveMemory({ name, type, description, content, scope });
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+
+app.delete('/api/memory/:filename', (req, res) => {
+  const result = memorySystem.deleteMemory(req.params.filename);
+  if (result.error) return res.status(404).json({ error: result.error });
+  res.json(result);
 });
 
 app.get('/api/status', async (_req, res) => {
