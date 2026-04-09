@@ -9,10 +9,26 @@ if (!fs.existsSync(SESSIONS_DIR)) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
+// Session display names stored in a metadata file
+const META_FILE = path.join(SESSIONS_DIR, '.meta.json');
+
+function loadMeta() {
+  try {
+    return JSON.parse(fs.readFileSync(META_FILE, 'utf-8'));
+  } catch {
+    return {};
+  }
+}
+
+function saveMeta(meta) {
+  fs.writeFileSync(META_FILE, JSON.stringify(meta, null, 2));
+}
+
 /**
  * List all sessions with metadata
  */
 function listSessions() {
+  const meta = loadMeta();
   const files = fs.readdirSync(SESSIONS_DIR)
     .filter(f => f.endsWith('.jsonl'))
     .map(f => {
@@ -43,6 +59,7 @@ function listSessions() {
         id,
         project,
         channel,
+        displayName: meta[id] || null,
         preview,
         turnCount,
         modified: stat.mtime.toISOString(),
@@ -84,14 +101,33 @@ function appendMessage(sessionId, message) {
 /**
  * Create a new session, return its ID
  */
-function createSession(project = 'web', channel = 'general') {
-  const id = `${project}:${channel}`;
-  const filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
-  // Don't overwrite existing session
+function createSession(project = 'web', channel = 'general', forceNew = false) {
+  let id = `${project}:${channel}`;
+  let filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
+  // If forceNew and base ID exists, append a timestamp to make it unique
+  if (forceNew && fs.existsSync(filePath)) {
+    const suffix = Date.now().toString(36);
+    id = `${project}:${channel}-${suffix}`;
+    filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
+  }
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, '');
   }
   return id;
+}
+
+/**
+ * Rename a session (display name only — file stays the same)
+ */
+function renameSession(sessionId, newName) {
+  const meta = loadMeta();
+  if (newName && newName.trim()) {
+    meta[sessionId] = newName.trim();
+  } else {
+    delete meta[sessionId];
+  }
+  saveMeta(meta);
+  return true;
 }
 
 /**
@@ -101,6 +137,12 @@ function deleteSession(sessionId) {
   const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
+  // Clean up display name
+  const meta = loadMeta();
+  if (meta[sessionId]) {
+    delete meta[sessionId];
+    saveMeta(meta);
+  }
   return true;
 }
 
@@ -130,6 +172,7 @@ module.exports = {
   appendMessage,
   createSession,
   deleteSession,
+  renameSession,
   rewindSession,
   getSessionMessages,
 };

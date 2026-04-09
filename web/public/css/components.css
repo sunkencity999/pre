@@ -174,3 +174,48 @@
 .tool-card-status.status-done { color: var(--success); }
 .tool-card-status.status-skipped { color: var(--warning); }
 .tool-card-status.status-running { color: var(--primary); animation: pulse 1s infinite; }
+
+/* Artifact card */
+.artifact-card {
+  max-width: 800px;
+  margin: 12px auto;
+  border: 1px solid var(--primary);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 0 12px rgba(108, 180, 238, 0.1);
+}
+.artifact-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--primary-bg);
+  border-bottom: 1px solid var(--border);
+}
+.artifact-card-icon {
+  color: var(--primary);
+  font-size: 1.1rem;
+}
+.artifact-card-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  flex: 1;
+}
+.artifact-card-type {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.artifact-card-actions {
+  padding: 10px 16px;
+  display: flex;
+  gap: 8px;
+}
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  text-decoration: none;
+}

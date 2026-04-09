@@ -96,6 +96,28 @@
   margin-bottom: 2px;
 }
 
+.session-rename-input {
+  width: 100%;
+  padding: 2px 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--primary);
+  border-radius: 4px;
+  outline: none;
+  margin-bottom: 2px;
+}
+
+.session-rename-input.topbar-rename {
+  font-size: inherit;
+  padding: 2px 8px;
+  width: auto;
+  min-width: 120px;
+  max-width: 300px;
+}
+
 .session-item-preview {
   font-size: 0.75rem;
   color: var(--text-muted);

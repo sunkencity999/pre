@@ -104,6 +104,12 @@ function buildToolDefs() {
       script: { type: 'string', description: 'AppleScript code to execute' },
     }, ['script']),
 
+    tool('artifact', 'Create an interactive HTML artifact (webpage, game, visualization, dashboard) that can be viewed in the browser', {
+      title: { type: 'string', description: 'Title for the artifact' },
+      content: { type: 'string', description: 'Full HTML content of the artifact' },
+      type: { type: 'string', description: 'Type: html, svg, or markdown (default: html)' },
+    }, ['title', 'content']),
+
     tool('pdf_export', 'Export an artifact to PDF for sharing', {
       title: { type: 'string', description: "Artifact title to export (or 'latest')" },
       path: { type: 'string', description: 'Output PDF path (optional)' },

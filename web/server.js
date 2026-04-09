@@ -11,7 +11,7 @@ const { healthCheck } = require('./src/ollama');
 const { runToolLoop } = require('./src/tools');
 const {
   listSessions, getSession, appendMessage,
-  createSession, deleteSession, rewindSession,
+  createSession, deleteSession, renameSession, rewindSession,
 } = require('./src/sessions');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 
@@ -22,8 +22,14 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
+// Serve static files (no caching in dev to avoid stale JS/CSS)
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res) => {
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  },
+}));
 app.use(express.json({ limit: '10mb' }));
 
 // Serve artifacts (for iframe viewing)
@@ -42,7 +48,7 @@ app.get('/api/sessions/:id', (req, res) => {
 
 app.post('/api/sessions/new', (req, res) => {
   const { project, channel } = req.body || {};
-  const id = createSession(project || 'web', channel || 'general');
+  const id = createSession(project || 'web', channel || 'general', true);
   res.json({ id });
 });
 
@@ -51,6 +57,13 @@ app.delete('/api/sessions/:id', (req, res) => {
   const ok = deleteSession(id);
   if (!ok) return res.status(404).json({ error: 'Session not found' });
   res.json({ deleted: id });
+});
+
+app.post('/api/sessions/:id/rename', (req, res) => {
+  const id = decodeURIComponent(req.params.id);
+  const { name } = req.body || {};
+  renameSession(id, name);
+  res.json({ id, name: name || null });
 });
 
 app.post('/api/rewind', (req, res) => {
@@ -107,6 +120,7 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'message') {
+      console.log(`[ws] Received message: ${msg.content?.slice(0, 80)}...`);
       const userContent = msg.content;
       if (!userContent || !userContent.trim()) return;
 

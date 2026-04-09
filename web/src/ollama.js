@@ -134,4 +134,109 @@ function healthCheck() {
   });
 }
 
-module.exports = { streamChat, healthCheck };
+/**
+ * Parse <tool_call> tags from model text output.
+ * Fallback for when model outputs tool calls as text instead of native API.
+ * Returns array of tool calls in Ollama format, or null if none found.
+ */
+function parseTextToolCalls(text) {
+  if (!text) return null;
+  const calls = [];
+  let scan = text;
+  let idx;
+
+  while ((idx = scan.indexOf('<tool_call>')) !== -1) {
+    scan = scan.slice(idx + 11); // skip past <tool_call>
+
+    let body;
+    const closeIdx = scan.indexOf('</tool_call>');
+    if (closeIdx !== -1) {
+      body = scan.slice(0, closeIdx).trim();
+      scan = scan.slice(closeIdx + 12);
+    } else {
+      // No closing tag — try brace matching
+      const braceStart = scan.indexOf('{');
+      if (braceStart === -1) break;
+      let depth = 0;
+      let inStr = false;
+      let end = -1;
+      for (let i = braceStart; i < scan.length; i++) {
+        const c = scan[i];
+        if (inStr) {
+          if (c === '\\') { i++; continue; }
+          if (c === '"') inStr = false;
+          continue;
+        }
+        if (c === '"') { inStr = true; continue; }
+        if (c === '{') depth++;
+        if (c === '}') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) break;
+      body = scan.slice(braceStart, end + 1).trim();
+      scan = scan.slice(end + 1);
+    }
+
+    // Parse the JSON
+    try {
+      const obj = JSON.parse(body);
+      const name = obj.name;
+      const args = obj.arguments || obj.parameters || obj.params || {};
+      // If no nested args object, treat all non-name keys as args
+      let finalArgs = args;
+      if (typeof args === 'string') {
+        try { finalArgs = JSON.parse(args); } catch { finalArgs = { input: args }; }
+      } else if (args === obj.arguments && Object.keys(args).length === 0) {
+        finalArgs = {};
+        for (const [k, v] of Object.entries(obj)) {
+          if (k !== 'name') finalArgs[k] = v;
+        }
+      }
+      if (name) {
+        calls.push({
+          function: { name, arguments: finalArgs },
+        });
+      }
+    } catch {
+      // Try to find raw JSON without tags
+      continue;
+    }
+  }
+
+  // Fallback: raw JSON with "name" and "arguments" but no <tool_call> tags
+  if (calls.length === 0 && text.includes('"name"') && (text.includes('"arguments"') || text.includes('"parameters"'))) {
+    const jsonMatch = text.match(/\{[^{}]*"name"\s*:\s*"[^"]+?"[^{}]*(?:"arguments"|"parameters"|"params")\s*:\s*\{[\s\S]*?\}\s*\}/);
+    if (jsonMatch) {
+      try {
+        const obj = JSON.parse(jsonMatch[0]);
+        if (obj.name) {
+          calls.push({
+            function: {
+              name: obj.name,
+              arguments: obj.arguments || obj.parameters || obj.params || {},
+            },
+          });
+        }
+      } catch {}
+    }
+  }
+
+  return calls.length > 0 ? calls : null;
+}
+
+/**
+ * Strip <tool_call> tags and their content from response text,
+ * returning only the natural language portion.
+ */
+function stripToolCallText(text) {
+  if (!text) return '';
+  // Remove <tool_call>...</tool_call> blocks
+  let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').trim();
+  // Remove unclosed <tool_call> blocks (model got cut off)
+  const unclosedIdx = cleaned.indexOf('<tool_call>');
+  if (unclosedIdx !== -1) {
+    cleaned = cleaned.slice(0, unclosedIdx).trim();
+  }
+  return cleaned;
+}
+
+module.exports = { streamChat, healthCheck, parseTextToolCalls, stripToolCallText };

@@ -27,6 +27,9 @@ const Chat = (() => {
     roleSpan.className = 'message-role';
     roleSpan.textContent = role === 'user' ? 'You' : 'PRE';
     header.appendChild(roleSpan);
+    if (role === 'assistant') {
+      header.appendChild(createCopyBtn(() => content));
+    }
     msgEl.appendChild(header);
 
     // Thinking block
@@ -97,6 +100,7 @@ const Chat = (() => {
     roleSpan.className = 'message-role';
     roleSpan.textContent = 'PRE';
     header.appendChild(roleSpan);
+    header.appendChild(createCopyBtn(() => streamContent));
     msgEl.appendChild(header);
 
     // Thinking block (collapsible, starts open during stream)
@@ -150,8 +154,8 @@ const Chat = (() => {
    * End streaming — finalize the message
    */
   function endStream(stats, context) {
-    if (!currentStreamEl) return;
     isStreaming = false;
+    if (!currentStreamEl) return;
 
     // Remove streaming cursor
     currentStreamEl.classList.remove('streaming-cursor');
@@ -258,6 +262,24 @@ const Chat = (() => {
     return card;
   }
 
+  function addArtifactCard(title, path, type) {
+    const container = messagesEl();
+    const card = document.createElement('div');
+    card.className = 'artifact-card';
+    card.innerHTML = `
+      <div class="artifact-card-header">
+        <span class="artifact-card-icon">&#9672;</span>
+        <span class="artifact-card-title">${Markdown.escapeHtml(title)}</span>
+        <span class="artifact-card-type">${Markdown.escapeHtml(type || 'html')}</span>
+      </div>
+      <div class="artifact-card-actions">
+        <a href="${Markdown.escapeHtml(path)}" target="_blank" class="btn btn-primary btn-sm">Open in new tab</a>
+      </div>
+    `;
+    container.appendChild(card);
+    scrollToBottom();
+  }
+
   function addError(message) {
     const container = messagesEl();
     const errEl = document.createElement('div');
@@ -324,6 +346,25 @@ const Chat = (() => {
     });
   }
 
+  function createCopyBtn(getContent) {
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.title = 'Copy response';
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(getContent());
+        btn.classList.add('copied');
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+        }, 2000);
+      } catch {}
+    });
+    return btn;
+  }
+
   function setTypingIndicator(text) {
     const el = document.getElementById('typing-indicator');
     if (!el) return;
@@ -343,6 +384,7 @@ const Chat = (() => {
     endStream,
     addToolCall,
     updateToolCard,
+    addArtifactCard,
     addError,
     loadHistory,
     updateContextBar,

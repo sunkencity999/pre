@@ -1,7 +1,7 @@
 // PRE Web GUI — Tool dispatcher + execution loop
 // Mirrors the CLI's execute_tool() + tool loop from pre.m
 
-const { streamChat } = require('./ollama');
+const { streamChat, parseTextToolCalls, stripToolCallText } = require('./ollama');
 const { buildSystemPrompt } = require('./context');
 const { buildToolDefs } = require('./tools-defs');
 const { appendMessage, getSessionMessages } = require('./sessions');
@@ -13,6 +13,7 @@ const filesTool = require('./tools/files');
 const webTool = require('./tools/web');
 const memoryTool = require('./tools/memory');
 const systemTool = require('./tools/system');
+const artifactTool = require('./tools/artifact');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -85,6 +86,9 @@ async function executeTool(name, args, cwd) {
     case 'window_focus': return systemTool.windowFocus(args);
     case 'applescript': return systemTool.applescript(args);
 
+    // Artifacts
+    case 'artifact': return artifactTool.createArtifact(args);
+
     default:
       return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info`;
   }
@@ -131,6 +135,19 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest }) {
     // Update token counts
     tokensIn += result.stats.prompt_eval_count || 0;
     tokensOut += result.stats.eval_count || 0;
+
+    // Fallback: parse <tool_call> tags from text if no native tool calls
+    if ((!result.toolCalls || result.toolCalls.length === 0) && result.response) {
+      const textCalls = parseTextToolCalls(result.response);
+      if (textCalls) {
+        console.log(`[tool-loop] Parsed ${textCalls.length} text tool call(s):`, textCalls.map(c => c.function?.name));
+        result.toolCalls = textCalls;
+        // Strip tool call text from displayed response
+        result.response = stripToolCallText(result.response);
+        // Notify client about parsed tool calls
+        send({ type: 'tool_calls', calls: textCalls });
+      }
+    }
 
     // Save assistant message
     if (result.response || result.toolCalls) {
@@ -191,6 +208,19 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest }) {
         output = await executeTool(toolName, toolArgs, cwd);
       } catch (err) {
         output = `Error: ${err.message}`;
+      }
+
+      // Notify client about artifacts so they can display them
+      if (toolName === 'artifact' && output && output.includes('/artifacts/')) {
+        const urlMatch = output.match(/\/artifacts\/[^\s]+/);
+        if (urlMatch) {
+          send({
+            type: 'artifact',
+            title: toolArgs.title || 'Artifact',
+            path: urlMatch[0],
+            artifactType: toolArgs.type || 'html',
+          });
+        }
       }
 
       // Truncate very large outputs

@@ -103,6 +103,8 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 # Launch PRE with current directory as working dir, forward all args
 # Not using exec — we need the trap to fire on exit for cleanup.

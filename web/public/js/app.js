@@ -56,6 +56,10 @@
         showConfirmDialog(msg.id, msg.tool, msg.args);
         break;
 
+      case 'artifact':
+        Chat.addArtifactCard(msg.title, msg.path, msg.artifactType);
+        break;
+
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
@@ -155,21 +159,35 @@
       list.innerHTML = '';
 
       for (const session of sessions.slice(0, 20)) {
+        if (session.id === currentSession) {
+          currentDisplayName = session.displayName || null;
+          updateSessionName();
+        }
         const item = document.createElement('div');
         item.className = 'session-item' + (session.id === currentSession ? ' active' : '');
+
+        const displayLabel = session.displayName || session.channel || 'general';
 
         const info = document.createElement('button');
         info.className = 'session-item-info';
         info.innerHTML = `
-          <div class="session-item-name">${escapeHtml(session.channel || 'general')}</div>
+          <div class="session-item-name">${escapeHtml(displayLabel)}</div>
           <div class="session-item-preview">${escapeHtml(session.preview || 'New session')}</div>
           <div class="session-item-time">${formatTime(session.modified)}</div>
         `;
         info.addEventListener('click', () => {
+          if (session.id === currentSession) return; // already active, allow dblclick
           currentSession = session.id;
           WS.send({ type: 'switch_session', sessionId: currentSession });
           loadSessionList();
           if (window.innerWidth <= 768) sidebar.classList.remove('open');
+        });
+
+        // Double-click to rename
+        info.addEventListener('dblclick', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          startInlineRename(info, session);
         });
 
         const deleteBtn = document.createElement('button');
@@ -201,11 +219,101 @@
     } catch {}
   }
 
+  let currentDisplayName = null;
+
+  // Inline rename helper for sidebar items
+  function startInlineRename(infoEl, session) {
+    const nameEl = infoEl.querySelector('.session-item-name');
+    if (!nameEl) return;
+    const currentName = nameEl.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'session-rename-input';
+    input.value = currentName;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let saved = false;
+    const save = async () => {
+      if (saved) return;
+      saved = true;
+      const newName = input.value.trim();
+      try {
+        await fetch(`/api/sessions/${encodeURIComponent(session.id)}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: newName || null }),
+        });
+      } catch {}
+      loadSessionList();
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+      if (ev.key === 'Escape') { loadSessionList(); }
+    });
+    input.addEventListener('blur', save);
+  }
+
+  // Topbar session name — click to rename
+  function setupTopbarRename() {
+    const el = document.getElementById('session-name');
+    if (!el) return;
+    el.style.cursor = 'pointer';
+    el.title = 'Click to rename session';
+    el.addEventListener('click', () => {
+      const currentName = el.textContent;
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'session-rename-input topbar-rename';
+      input.value = currentName;
+      el.replaceWith(input);
+      input.focus();
+      input.select();
+
+      let saved = false;
+      const save = async () => {
+        if (saved) return;
+        saved = true;
+        const newName = input.value.trim();
+        try {
+          await fetch(`/api/sessions/${encodeURIComponent(currentSession)}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName || null }),
+          });
+        } catch {}
+        // Restore the span
+        const newEl = document.createElement('span');
+        newEl.id = 'session-name';
+        input.replaceWith(newEl);
+        loadSessionList();
+        setupTopbarRename();
+      };
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); save(); }
+        if (ev.key === 'Escape') {
+          const newEl = document.createElement('span');
+          newEl.id = 'session-name';
+          newEl.textContent = currentName;
+          input.replaceWith(newEl);
+          setupTopbarRename();
+        }
+      });
+      input.addEventListener('blur', save);
+    });
+  }
+  setupTopbarRename();
+
   function updateSessionName() {
     const el = document.getElementById('session-name');
     if (el) {
-      const parts = currentSession.split(':');
-      el.textContent = parts[1] || parts[0] || 'general';
+      if (currentDisplayName) {
+        el.textContent = currentDisplayName;
+      } else {
+        const parts = currentSession.split(':');
+        el.textContent = parts[1] || parts[0] || 'general';
+      }
     }
   }
 
