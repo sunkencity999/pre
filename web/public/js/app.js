@@ -136,6 +136,9 @@
     // Add user message to UI
     Chat.addMessage('user', content);
 
+    // Show thinking indicator immediately (removed when first token arrives)
+    Chat.showThinkingIndicator();
+
     // Send to server
     WS.send({ type: 'message', content });
 

@@ -82,6 +82,7 @@ const Chat = (() => {
    * Start streaming a new assistant message
    */
   function startStream() {
+    hideThinkingIndicator();
     const container = messagesEl();
     const welcome = container.querySelector('.welcome');
     if (welcome) welcome.remove();
@@ -155,6 +156,7 @@ const Chat = (() => {
    */
   function endStream(stats, context) {
     isStreaming = false;
+    hideThinkingIndicator();
     if (!currentStreamEl) return;
 
     // Remove streaming cursor
@@ -427,6 +429,36 @@ const Chat = (() => {
     }
   }
 
+  /** Show a thinking placeholder in the chat area while waiting for TTFT */
+  function showThinkingIndicator() {
+    hideThinkingIndicator();
+    const container = messagesEl();
+    const welcome = container.querySelector('.welcome');
+    if (welcome) welcome.remove();
+
+    const el = document.createElement('div');
+    el.className = 'message assistant';
+    el.id = 'thinking-indicator-msg';
+    el.innerHTML = `
+      <div class="message-header">
+        <span class="message-role">PRE</span>
+      </div>
+      <div class="thinking-indicator-content">
+        <div class="thinking-indicator-dots">
+          <span></span><span></span><span></span>
+        </div>
+        <span class="thinking-indicator-label">Thinking</span>
+      </div>
+    `;
+    container.appendChild(el);
+    scrollToBottom();
+  }
+
+  function hideThinkingIndicator() {
+    const el = document.getElementById('thinking-indicator-msg');
+    if (el) el.remove();
+  }
+
   return {
     addMessage,
     startStream,
@@ -440,6 +472,7 @@ const Chat = (() => {
     addError,
     loadHistory,
     updateContextBar,
+    showThinkingIndicator,
     get isStreaming() { return isStreaming; },
   };
 })();
