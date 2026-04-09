@@ -7,8 +7,12 @@
   // Connect WebSocket
   WS.connect();
 
-  // Track current session
-  let currentSession = 'web:general';
+  // Track current session — restore across refreshes, default to most recent
+  let currentSession = sessionStorage.getItem('pre-session') || null;
+  function setCurrentSession(id) {
+    currentSession = id;
+    if (id) sessionStorage.setItem('pre-session', id);
+  }
 
   // ── WebSocket message handler ──
   WS.on('message', (msg) => {
@@ -60,6 +64,14 @@
         Chat.addArtifactCard(msg.title, msg.path, msg.artifactType);
         break;
 
+      case 'session_renamed':
+        if (msg.sessionId === currentSession) {
+          currentDisplayName = msg.name;
+          updateSessionName();
+        }
+        loadSessionList();
+        break;
+
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
@@ -67,14 +79,26 @@
 
       case 'session_history':
         Chat.loadHistory(msg.messages);
-        currentSession = msg.sessionId || currentSession;
+        setCurrentSession(msg.sessionId || currentSession);
         updateSessionName();
         break;
     }
   });
 
-  WS.on('open', () => {
-    // Load current session on connect
+  WS.on('open', async () => {
+    // Load session list first so we can pick the most recent if needed
+    await loadSessionList();
+    if (!currentSession) {
+      // No saved session — default to most recent
+      try {
+        const res = await fetch('/api/sessions');
+        const sessions = await res.json();
+        if (sessions.length > 0) {
+          setCurrentSession(sessions[0].id); // already sorted by most recent
+        }
+      } catch {}
+    }
+    if (!currentSession) setCurrentSession('web:general');
     WS.send({ type: 'switch_session', sessionId: currentSession });
     loadSessionList();
   });
@@ -143,7 +167,7 @@
         body: JSON.stringify({ project: 'web', channel: 'general' }),
       });
       const data = await res.json();
-      currentSession = data.id;
+      setCurrentSession(data.id);
       WS.send({ type: 'switch_session', sessionId: currentSession });
       loadSessionList();
     } catch (err) {
@@ -177,7 +201,7 @@
         `;
         info.addEventListener('click', () => {
           if (session.id === currentSession) return; // already active, allow dblclick
-          currentSession = session.id;
+          setCurrentSession(session.id);
           WS.send({ type: 'switch_session', sessionId: currentSession });
           loadSessionList();
           if (window.innerWidth <= 768) sidebar.classList.remove('open');
@@ -200,7 +224,7 @@
           try {
             await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
             if (session.id === currentSession) {
-              currentSession = 'web:general';
+              setCurrentSession('web:general');
               await fetch('/api/sessions/new', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

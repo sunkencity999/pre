@@ -26,6 +26,43 @@ const Markdown = (() => {
       .replace(/(^|[^"(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   }
 
+  function renderTable(tableLines) {
+    const rows = tableLines.map(line =>
+      line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+    );
+    if (rows.length < 2) return rows.map(r => `<p>${parseInline(escapeHtml(r.join(' | ')))}</p>`).join('\n');
+
+    // Detect alignment from separator row (row index 1)
+    const sepRow = rows[1];
+    const isSep = sepRow.every(c => /^[:\-\s]+$/.test(c));
+    const aligns = isSep ? sepRow.map(c => {
+      if (c.startsWith(':') && c.endsWith(':')) return 'center';
+      if (c.endsWith(':')) return 'right';
+      return 'left';
+    }) : [];
+
+    const headerRow = rows[0];
+    const dataRows = isSep ? rows.slice(2) : rows.slice(1);
+
+    let out = '<div class="table-wrapper"><table>';
+    out += '<thead><tr>';
+    for (let j = 0; j < headerRow.length; j++) {
+      const align = aligns[j] ? ` style="text-align:${aligns[j]}"` : '';
+      out += `<th${align}>${parseInline(escapeHtml(headerRow[j]))}</th>`;
+    }
+    out += '</tr></thead><tbody>';
+    for (const row of dataRows) {
+      out += '<tr>';
+      for (let j = 0; j < headerRow.length; j++) {
+        const align = aligns[j] ? ` style="text-align:${aligns[j]}"` : '';
+        out += `<td${align}>${parseInline(escapeHtml(row[j] || ''))}</td>`;
+      }
+      out += '</tr>';
+    }
+    out += '</tbody></table></div>';
+    return out;
+  }
+
   function render(text) {
     if (!text) return '';
 
@@ -122,6 +159,23 @@ const Markdown = (() => {
       if (/^[-*_]{3,}$/.test(line.trim())) {
         if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
         html.push('<hr>');
+        continue;
+      }
+
+      // Table: detect pipe-delimited rows
+      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+        if (inList) { html.push(listType === 'ul' ? '</ul>' : '</ol>'); inList = false; }
+        // Collect all consecutive table lines
+        const tableLines = [line];
+        while (i + 1 < lines.length) {
+          const next = lines[i + 1].trim();
+          if (next.startsWith('|') && next.endsWith('|')) {
+            tableLines.push(lines[++i]);
+          } else {
+            break;
+          }
+        }
+        html.push(renderTable(tableLines));
         continue;
       }
 

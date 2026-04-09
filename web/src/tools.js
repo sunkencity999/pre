@@ -4,8 +4,53 @@
 const { streamChat, parseTextToolCalls, stripToolCallText } = require('./ollama');
 const { buildSystemPrompt } = require('./context');
 const { buildToolDefs } = require('./tools-defs');
-const { appendMessage, getSessionMessages } = require('./sessions');
+const { appendMessage, getSessionMessages, renameSession } = require('./sessions');
 const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
+
+/**
+ * Generate a short session title from the first user message.
+ * Runs in the background — does not block the main response.
+ */
+function generateSessionTitle(sessionId, userMessage, send) {
+  streamChat({
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a title generator. Given a user message, output a concise 3-6 word conversation title. Output ONLY the title text, nothing else. No quotes. No punctuation. No explanation. Examples: "Weather in Boulder Creek", "Python Prime Number Function", "Snake Game for Browser"',
+      },
+      { role: 'user', content: userMessage },
+    ],
+    maxTokens: 512, // Model needs room for thinking before producing the title
+  }).then((result) => {
+    console.log(`[title-gen] response: "${result.response}" thinking: "${(result.thinking || '').slice(0, 200)}"`);
+    // Model often puts everything in thinking. Extract a title-like line.
+    let title = '';
+    if (result.response && result.response.trim()) {
+      title = result.response.trim().split('\n')[0];
+    } else if (result.thinking) {
+      // Find the last short line that looks like a title (not a bullet, not the input)
+      const lines = result.thinking.split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length > 0 && l.length < 60
+          && !l.startsWith('*') && !l.startsWith('-') && !l.startsWith('#')
+          && !l.toLowerCase().includes('input') && !l.toLowerCase().includes('message')
+          && !l.toLowerCase().includes('generate') && !l.toLowerCase().includes('title'));
+      if (lines.length > 0) {
+        title = lines[lines.length - 1]; // last qualifying line is usually the answer
+      }
+    }
+    title = title.replace(/^["'`]|["'`]$/g, '').replace(/[.!:]+$/, '').trim();
+    if (title && title.length > 0 && title.length < 80) {
+      console.log(`[title-gen] Saving title: "${title}" for session ${sessionId}`);
+      renameSession(sessionId, title);
+      send({ type: 'session_renamed', sessionId, name: title });
+    } else {
+      console.log(`[title-gen] Title rejected: "${title}"`);
+    }
+  }).catch((err) => {
+    console.log(`[title-gen] Error: ${err.message}`);
+  });
+}
 
 // Tool implementations
 const bashTool = require('./tools/bash');
@@ -106,7 +151,7 @@ async function executeTool(name, args, cwd) {
  * @param {Function} opts.onConfirmRequest - Ask client to confirm dangerous tool
  * @returns {Promise<void>}
  */
-async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest }) {
+async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle }) {
   let tokensIn = 0;
   let tokensOut = 0;
 
@@ -169,6 +214,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest }) {
           pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX),
         },
       });
+      // Generate session title in background after first response
+      if (needsTitle && userMessage) {
+        generateSessionTitle(sessionId, userMessage, send);
+      }
       return;
     }
 

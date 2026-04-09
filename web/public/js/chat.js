@@ -297,6 +297,7 @@ const Chat = (() => {
     container.innerHTML = '';
 
     if (!messages || messages.length === 0) {
+      updateContextBar({ used: 0, max: 65536, pct: 0 });
       container.innerHTML = `
         <div class="welcome">
           <div class="welcome-logo">PRE</div>
@@ -325,6 +326,25 @@ const Chat = (() => {
         toolCalls: msg.tool_calls,
       });
     }
+
+    // Estimate context usage from session history
+    // ~1 token per 4 chars is a rough approximation
+    // Include tool_calls arguments size (can be large for artifacts)
+    const totalChars = messages.reduce((sum, m) => {
+      let chars = (m.content || '').length;
+      if (m.tool_calls) {
+        try { chars += JSON.stringify(m.tool_calls).length; } catch {}
+      }
+      return sum + chars;
+    }, 0);
+    const estimatedTokens = Math.round(totalChars / 4);
+    const max = 65536;
+    updateContextBar({
+      used: estimatedTokens,
+      max,
+      pct: Math.min(99, Math.round(estimatedTokens * 100 / max)),
+    });
+
     scrollToBottom();
   }
 

@@ -124,6 +124,14 @@ wss.on('connection', (ws) => {
       const userContent = msg.content;
       if (!userContent || !userContent.trim()) return;
 
+      // Check if this session needs an auto-generated title
+      const history = getSession(sessionId);
+      const userMsgCount = history.filter(m => m.role === 'user').length;
+      const sessions = listSessions();
+      const sessionMeta = sessions.find(s => s.id === sessionId);
+      const needsTitle = userMsgCount === 0 && !sessionMeta?.displayName;
+      console.log(`[ws] needsTitle=${needsTitle} userMsgCount=${userMsgCount} displayName=${sessionMeta?.displayName}`);
+
       // Save user message to session
       const userMsg = { role: 'user', content: userContent };
       if (msg.image) userMsg.images = [msg.image];
@@ -136,6 +144,8 @@ wss.on('connection', (ws) => {
           sessionId,
           cwd: CWD,
           signal: abortController.signal,
+          userMessage: needsTitle ? userContent : null,
+          needsTitle,
           send: (event) => {
             if (ws.readyState === 1) {
               ws.send(JSON.stringify(event));
