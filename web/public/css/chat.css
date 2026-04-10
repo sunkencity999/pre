@@ -436,11 +436,128 @@
   animation: blink 0.7s step-end infinite;
 }
 
+/* Attachments in user messages */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.msg-attachment-image {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  max-width: 300px;
+}
+.msg-attachment-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+}
+.msg-attachment-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+.msg-attachment-file svg {
+  flex-shrink: 0;
+  color: var(--primary);
+}
+
 /* Input area */
 .input-area {
   padding: 16px 20px;
   border-top: 1px solid var(--border);
   background: var(--surface);
+}
+.input-area.drag-over {
+  border-top-color: var(--primary);
+  background: var(--primary-bg);
+}
+
+/* Attachment preview bar (above input) */
+.attachment-preview {
+  max-width: 800px;
+  margin: 0 auto 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.attachment-preview.hidden {
+  display: none;
+}
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  max-width: 220px;
+}
+.attachment-chip.image-chip {
+  padding: 3px;
+}
+.attachment-chip.image-chip img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.attachment-chip-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+.attachment-chip-size {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  flex-shrink: 0;
+}
+.attachment-remove {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.attachment-remove:hover {
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Attach button */
+.btn-attach {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.btn-attach:hover {
+  color: var(--text);
+  background: var(--surface-hover);
 }
 
 .chat-form {

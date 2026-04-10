@@ -29,7 +29,7 @@ const CWD = process.env.PRE_CWD || os.homedir();
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: 50 * 1024 * 1024 }); // 50MB for image uploads
 
 // Serve static files (no caching in dev to avoid stale JS/CSS)
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -249,6 +249,29 @@ app.delete('/api/memory/:filename', (req, res) => {
   res.json(result);
 });
 
+// Reveal an artifact in Finder (macOS)
+app.post('/api/artifacts/reveal', (req, res) => {
+  const { filePath } = req.body || {};
+  if (!filePath) return res.status(400).json({ error: 'filePath required' });
+
+  // Resolve the web path to an absolute filesystem path
+  const resolved = filePath.startsWith('/artifacts/')
+    ? path.join(ARTIFACTS_DIR, filePath.replace(/^\/artifacts\//, ''))
+    : filePath;
+
+  const fs = require('fs');
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  // Use osascript to reveal in Finder (non-blocking)
+  const { exec } = require('child_process');
+  exec(`open -R "${resolved.replace(/"/g, '\\"')}"`, (err) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ ok: true });
+  });
+});
+
 app.get('/api/status', async (_req, res) => {
   const ollamaUp = await healthCheck();
   res.json({
@@ -310,7 +333,12 @@ wss.on('connection', (ws) => {
 
       // Save user message to session
       const userMsg = { role: 'user', content: userContent };
-      if (msg.image) userMsg.images = [msg.image];
+      // Support single image (legacy) or multiple images array
+      if (msg.images && msg.images.length > 0) {
+        userMsg.images = msg.images;
+      } else if (msg.image) {
+        userMsg.images = [msg.image];
+      }
       appendMessage(sessionId, userMsg);
 
       // Run the full tool loop

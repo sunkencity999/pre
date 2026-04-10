@@ -45,6 +45,27 @@ const Chat = (() => {
       msgEl.appendChild(details);
     }
 
+    // Attachments (shown above content in user messages)
+    if (extra.attachments && extra.attachments.length > 0) {
+      const attBar = document.createElement('div');
+      attBar.className = 'message-attachments';
+      for (const att of extra.attachments) {
+        if (att.isImage && att.dataUrl) {
+          const thumb = document.createElement('div');
+          thumb.className = 'msg-attachment-image';
+          thumb.innerHTML = `<img src="${Markdown.escapeHtml(att.dataUrl)}" alt="${Markdown.escapeHtml(att.name)}">`;
+          attBar.appendChild(thumb);
+        } else {
+          const chip = document.createElement('div');
+          chip.className = 'msg-attachment-file';
+          chip.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`
+            + `<span>${Markdown.escapeHtml(att.name)}</span>`;
+          attBar.appendChild(chip);
+        }
+      }
+      msgEl.appendChild(attBar);
+    }
+
     const contentEl = document.createElement('div');
     contentEl.className = 'message-content';
     if (role === 'user') {
@@ -264,11 +285,13 @@ const Chat = (() => {
     return card;
   }
 
-  function addDocumentCard(title, path, format) {
+  function addDocumentCard(title, docPath, format) {
     const container = messagesEl();
     const card = document.createElement('div');
     card.className = 'document-card';
     const icon = getDocIcon(format);
+    const safePath = Markdown.escapeHtml(docPath);
+    const viewable = ['txt', 'xml', 'html', 'pdf'].includes((format || '').toLowerCase());
     card.innerHTML = `
       <div class="document-card-header">
         <span class="document-card-icon">${icon}</span>
@@ -278,8 +301,9 @@ const Chat = (() => {
         </div>
       </div>
       <div class="document-card-actions">
-        <a href="${Markdown.escapeHtml(path)}" download class="btn btn-primary btn-sm">Download</a>
-        ${format === 'txt' || format === 'xml' ? `<a href="${Markdown.escapeHtml(path)}" target="_blank" class="btn btn-ghost btn-sm">View</a>` : ''}
+        <a href="${safePath}" download class="btn btn-primary btn-sm">Download</a>
+        ${viewable ? `<a href="${safePath}" target="_blank" class="btn btn-ghost btn-sm">Open</a>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="window._revealInFinder('${safePath}')">Show in Finder</button>
       </div>
     `;
     container.appendChild(card);
@@ -295,18 +319,23 @@ const Chat = (() => {
     }
   }
 
-  function addArtifactCard(title, path, type) {
+  function addArtifactCard(title, artPath, type) {
     const container = messagesEl();
     const card = document.createElement('div');
     card.className = 'artifact-card';
+    const safePath = Markdown.escapeHtml(artPath);
+    const safeTitle = Markdown.escapeHtml(title);
+    const safeType = Markdown.escapeHtml(type || 'html');
     card.innerHTML = `
       <div class="artifact-card-header">
         <span class="artifact-card-icon">&#9672;</span>
-        <span class="artifact-card-title">${Markdown.escapeHtml(title)}</span>
-        <span class="artifact-card-type">${Markdown.escapeHtml(type || 'html')}</span>
+        <span class="artifact-card-title">${safeTitle}</span>
+        <span class="artifact-card-type">${safeType}</span>
       </div>
       <div class="artifact-card-actions">
-        <a href="${Markdown.escapeHtml(path)}" target="_blank" class="btn btn-primary btn-sm">Open in new tab</a>
+        <a href="${safePath}" target="_blank" class="btn btn-primary btn-sm">Open</a>
+        <a href="${safePath}" download class="btn btn-ghost btn-sm">Download</a>
+        <button class="btn btn-ghost btn-sm" onclick="window._revealInFinder('${safePath}')">Show in Finder</button>
       </div>
     `;
     container.appendChild(card);
@@ -317,15 +346,17 @@ const Chat = (() => {
     const container = messagesEl();
     const card = document.createElement('div');
     card.className = 'image-card';
+    const safePath = Markdown.escapeHtml(imgPath);
     card.innerHTML = `
       <div class="image-card-preview">
-        <img src="${Markdown.escapeHtml(imgPath)}" alt="${Markdown.escapeHtml(prompt)}" loading="lazy">
+        <img src="${safePath}" alt="${Markdown.escapeHtml(prompt)}" loading="lazy">
       </div>
       <div class="image-card-footer">
         <span class="image-card-prompt">${Markdown.escapeHtml(prompt.length > 120 ? prompt.slice(0, 120) + '...' : prompt)}</span>
         <div class="image-card-actions">
-          <a href="${Markdown.escapeHtml(imgPath)}" target="_blank" class="btn btn-ghost btn-sm">Full size</a>
-          <a href="${Markdown.escapeHtml(imgPath)}" download class="btn btn-primary btn-sm">Download</a>
+          <a href="${safePath}" target="_blank" class="btn btn-ghost btn-sm">Full size</a>
+          <a href="${safePath}" download class="btn btn-primary btn-sm">Download</a>
+          <button class="btn btn-ghost btn-sm" onclick="window._revealInFinder('${safePath}')">Show in Finder</button>
         </div>
       </div>
     `;

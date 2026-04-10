@@ -121,6 +121,15 @@
   // ── Chat form ──
   const form = document.getElementById('chat-form');
   const input = document.getElementById('chat-input');
+  const fileInput = document.getElementById('file-input');
+  const attachBtn = document.getElementById('attach-btn');
+  const attachPreview = document.getElementById('attachment-preview');
+
+  // Pending attachments waiting to be sent
+  let pendingAttachments = [];
+
+  const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml']);
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -140,22 +149,164 @@
     }
   });
 
+  // Attach button opens file picker
+  attachBtn.addEventListener('click', () => fileInput.click());
+
+  // Handle file selection
+  fileInput.addEventListener('change', () => {
+    for (const file of fileInput.files) {
+      if (file.size > MAX_FILE_SIZE) {
+        Chat.addError(`File "${file.name}" is too large (max 10MB)`);
+        continue;
+      }
+      readAttachment(file);
+    }
+    fileInput.value = ''; // reset so same file can be re-selected
+  });
+
+  // Drag-and-drop on the input area
+  const inputArea = document.querySelector('.input-area');
+  inputArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    inputArea.classList.add('drag-over');
+  });
+  inputArea.addEventListener('dragleave', () => {
+    inputArea.classList.remove('drag-over');
+  });
+  inputArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    inputArea.classList.remove('drag-over');
+    for (const file of e.dataTransfer.files) {
+      if (file.size > MAX_FILE_SIZE) {
+        Chat.addError(`File "${file.name}" is too large (max 10MB)`);
+        continue;
+      }
+      readAttachment(file);
+    }
+  });
+
+  // Paste images from clipboard
+  input.addEventListener('paste', (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.kind === 'file') {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) readAttachment(file);
+      }
+    }
+  });
+
+  function readAttachment(file) {
+    const isImage = IMAGE_TYPES.has(file.type);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const attachment = {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        isImage,
+      };
+      if (isImage) {
+        // Store as base64 data URL for preview and base64 raw for Ollama
+        attachment.dataUrl = reader.result;
+        attachment.base64 = reader.result.split(',')[1]; // strip data:...;base64, prefix
+      } else {
+        attachment.text = reader.result;
+      }
+      pendingAttachments.push(attachment);
+      renderAttachmentPreview();
+    };
+    if (isImage) {
+      reader.readAsDataURL(file);
+    } else {
+      reader.readAsText(file);
+    }
+  }
+
+  function renderAttachmentPreview() {
+    if (pendingAttachments.length === 0) {
+      attachPreview.classList.add('hidden');
+      attachPreview.innerHTML = '';
+      return;
+    }
+    attachPreview.classList.remove('hidden');
+    attachPreview.innerHTML = pendingAttachments.map((att, i) => {
+      const sizeStr = att.size < 1024 ? `${att.size}B`
+        : att.size < 1048576 ? `${(att.size / 1024).toFixed(0)}KB`
+        : `${(att.size / 1048576).toFixed(1)}MB`;
+      if (att.isImage) {
+        return `<div class="attachment-chip image-chip">
+          <img src="${att.dataUrl}" alt="${Markdown.escapeHtml(att.name)}">
+          <span class="attachment-chip-name">${Markdown.escapeHtml(att.name)}</span>
+          <button type="button" class="attachment-remove" onclick="window._removeAttachment(${i})">&times;</button>
+        </div>`;
+      }
+      return `<div class="attachment-chip file-chip">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        <span class="attachment-chip-name">${Markdown.escapeHtml(att.name)}</span>
+        <span class="attachment-chip-size">${sizeStr}</span>
+        <button type="button" class="attachment-remove" onclick="window._removeAttachment(${i})">&times;</button>
+      </div>`;
+    }).join('');
+  }
+
+  window._removeAttachment = (index) => {
+    pendingAttachments.splice(index, 1);
+    renderAttachmentPreview();
+  };
+
+  // Reveal a file in Finder (macOS)
+  window._revealInFinder = (filePath) => {
+    fetch('/api/artifacts/reveal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath }),
+    }).catch(() => {});
+  };
+
   function sendMessage() {
     const content = input.value.trim();
-    if (!content || Chat.isStreaming) return;
+    if ((!content && pendingAttachments.length === 0) || Chat.isStreaming) return;
 
-    // Add user message to UI
-    Chat.addMessage('user', content);
+    // Build attachment summaries for display
+    const attachments = pendingAttachments.map(a => ({
+      name: a.name, isImage: a.isImage, dataUrl: a.dataUrl || null,
+      size: a.size, textPreview: a.text ? a.text.slice(0, 200) : null,
+    }));
 
-    // Show thinking indicator immediately (removed when first token arrives)
+    // Add user message to UI (with attachment info)
+    Chat.addMessage('user', content || '(attached files)', { attachments });
+
+    // Show thinking indicator immediately
     Chat.showThinkingIndicator();
 
-    // Send to server
-    WS.send({ type: 'message', content });
+    // Build WS message
+    const wsMsg = { type: 'message', content: content || '' };
 
-    // Clear input
+    // Collect images (base64) for Ollama multimodal
+    const images = pendingAttachments.filter(a => a.isImage).map(a => a.base64);
+    if (images.length > 0) wsMsg.images = images;
+
+    // Collect text files — prepend to content
+    const textFiles = pendingAttachments.filter(a => !a.isImage && a.text);
+    if (textFiles.length > 0) {
+      const fileBlocks = textFiles.map(f => {
+        const ext = f.name.split('.').pop() || '';
+        return `<file name="${f.name}">\n\`\`\`${ext}\n${f.text}\n\`\`\`\n</file>`;
+      }).join('\n\n');
+      wsMsg.content = fileBlocks + (wsMsg.content ? '\n\n' + wsMsg.content : '');
+    }
+
+    // Send to server
+    WS.send(wsMsg);
+
+    // Clear input and attachments
     input.value = '';
     input.style.height = 'auto';
+    pendingAttachments = [];
+    renderAttachmentPreview();
   }
 
   // ── Sidebar ──
