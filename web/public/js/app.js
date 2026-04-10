@@ -87,14 +87,10 @@
         loadSessionList();
         break;
 
-      case 'cron_trigger':
-        if (msg.job) {
-          Chat.addMessage('user', `[Cron: ${msg.job.description}] ${msg.job.prompt}`, {
-            cronJob: msg.job,
-          });
-          Chat.showThinkingIndicator();
-          WS.send({ type: 'message', content: msg.job.prompt });
-        }
+      case 'cron_complete':
+        // A cron job finished running server-side — show toast with link to its session
+        showCronToast(msg.description, msg.sessionId, msg.preview);
+        loadSessionList(); // refresh sidebar to show new cron session
         break;
 
       case 'error':
@@ -113,6 +109,16 @@
   WS.on('open', async () => {
     // Load session list first so we can pick the most recent if needed
     await loadSessionList();
+
+    // Check URL params — ?session=ID deep-links to a specific session (used by cron notifications)
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlSession = urlParams.get('session');
+    if (urlSession) {
+      setCurrentSession(urlSession);
+      // Clean URL without reloading
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     if (!currentSession) {
       // No saved session — default to most recent
       try {
@@ -499,6 +505,33 @@
       searchInput.blur();
     }
   });
+
+  // ── Cron toast notification ──
+  function showCronToast(description, sessionId, preview) {
+    const toast = document.createElement('div');
+    toast.className = 'cron-toast';
+    const shortPreview = preview && preview.length > 150 ? preview.slice(0, 150) + '...' : (preview || '');
+    toast.innerHTML = `
+      <div class="cron-toast-header">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 3.5a.5.5 0 0 0-1 0V8a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 7.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
+        <strong>Cron: ${description}</strong>
+        <button class="cron-toast-close" onclick="this.closest('.cron-toast').remove()">&times;</button>
+      </div>
+      <div class="cron-toast-preview">${shortPreview.replace(/</g, '&lt;')}</div>
+      <button class="btn btn-sm btn-primary cron-toast-open" data-session="${sessionId}">View Result</button>
+    `;
+    document.body.appendChild(toast);
+    // Click to switch to the cron session
+    toast.querySelector('.cron-toast-open').addEventListener('click', () => {
+      setCurrentSession(sessionId);
+      WS.send({ type: 'switch_session', sessionId });
+      loadSessionList();
+      updateSessionName();
+      toast.remove();
+    });
+    // Auto-dismiss after 30 seconds
+    setTimeout(() => { if (toast.parentNode) toast.remove(); }, 30000);
+  }
 
   async function loadSessionList() {
     try {
@@ -930,6 +963,7 @@
               </div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
+              ${job.last_session_id ? `<button class="btn btn-ghost btn-sm" onclick="window.Cron.viewResult('${job.last_session_id}')" title="View last result">Result</button>` : ''}
               <button class="btn btn-ghost btn-sm" onclick="window.Cron.toggle('${job.id}', ${!job.enabled})" title="${job.enabled ? 'Disable' : 'Enable'}">${job.enabled ? 'Disable' : 'Enable'}</button>
               <button class="btn btn-ghost btn-sm" onclick="window.Cron.run('${job.id}')" title="Run now">Run</button>
               <button class="btn btn-ghost btn-sm" onclick="window.Cron.del('${job.id}')" style="color:var(--danger)" title="Delete">&times;</button>
@@ -965,6 +999,16 @@
       </div>
     </div>`;
 
+    // Notification delivery info
+    html += '<div class="settings-section" style="margin-top:16px">';
+    html += '<div class="settings-section-title">Result Delivery</div>';
+    html += '<p style="font-size:0.82rem;color:var(--text-muted);line-height:1.5;margin:0 0 8px 0">Cron jobs run server-side — no browser needed. Each run creates its own chat session. Results are delivered via:</p>';
+    html += '<ul style="font-size:0.82rem;color:var(--text-secondary);line-height:1.8;margin:0;padding-left:20px">';
+    html += '<li><strong>macOS notification</strong> — always (click to open result)</li>';
+    html += '<li><strong>Telegram</strong> — configure bot token in Settings to enable</li>';
+    html += '<li><strong>GUI toast</strong> — shown if browser is open</li>';
+    html += '</ul></div>';
+
     html += '</div>';
     container.innerHTML = html;
   }
@@ -980,10 +1024,14 @@
     }
 
     // Parse time from string: "9am", "9:30pm", "14:00", "3 pm", "noon", "midnight"
+    // Prefers am/pm-qualified times over bare numbers (e.g. "1st at 10am" → 10am, not 1)
     function parseTime(str) {
       if (/\bnoon\b/.test(str)) return { h: 12, m: 0 };
       if (/\bmidnight\b/.test(str)) return { h: 0, m: 0 };
-      const match = str.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      // Try am/pm-qualified match first
+      let match = str.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+      // Fall back to colon-separated time (e.g. "14:00")
+      if (!match) match = str.match(/(\d{1,2}):(\d{2})/);
       if (!match) return null;
       let h = parseInt(match[1]);
       const m = match[2] ? parseInt(match[2]) : 0;
@@ -1007,11 +1055,11 @@
     // Day name → cron day number
     const dayMap = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
 
-    // Parse day names from string
+    // Parse day names from string (word-boundary match to avoid "mon" in "monthly"; handles plurals like "fridays")
     function parseDays(str) {
       const found = [];
       for (const [name, num] of Object.entries(dayMap)) {
-        if (str.includes(name)) found.push(num);
+        if (new RegExp('\\b' + name + 's?\\b').test(str)) found.push(num);
       }
       return [...new Set(found)].sort();
     }
@@ -1052,6 +1100,16 @@
       return { cron: `${min} ${hour} * * 0,6`, description: `Weekends at ${fmtTime(hour, min)}` };
     }
 
+    // "twice a day" / "2x daily" — must come before the "daily" catch-all
+    if (/twice\s+a\s+day|2x?\s+daily|two\s+times?\s+a\s+day/.test(s)) {
+      return { cron: `0 9,17 * * *`, description: 'Twice daily at 9:00 AM and 5:00 PM' };
+    }
+
+    // "three times a day" / "3x daily"
+    if (/three\s+times?\s+a\s+day|3x?\s+daily/.test(s)) {
+      return { cron: `0 8,13,18 * * *`, description: 'Three times daily at 8 AM, 1 PM, 6 PM' };
+    }
+
     // "every day" / "daily" / "every morning" / "every afternoon" / "every evening" / "every night"
     if (/every\s*day|daily|every\s+morning|every\s+afternoon|every\s+evening|every\s+night|every\s+midday|each\s+(day|morning|afternoon|evening|night)/.test(s)) {
       return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
@@ -1077,16 +1135,6 @@
     // "every week" / "weekly"
     if (/every\s*week\b|weekly/.test(s)) {
       return { cron: `${min} ${hour} * * 1`, description: `Weekly on Monday at ${fmtTime(hour, min)}` };
-    }
-
-    // "twice a day" / "2x daily"
-    if (/twice\s+a\s+day|2x?\s+daily|two\s+times?\s+a\s+day/.test(s)) {
-      return { cron: `0 9,17 * * *`, description: 'Twice daily at 9:00 AM and 5:00 PM' };
-    }
-
-    // "three times a day" / "3x daily"
-    if (/three\s+times?\s+a\s+day|3x?\s+daily/.test(s)) {
-      return { cron: `0 8,13,18 * * *`, description: 'Three times daily at 8 AM, 1 PM, 6 PM' };
     }
 
     // "at TIME" with no other context → daily
@@ -1191,6 +1239,14 @@
       if (!confirm('Delete this scheduled job?')) return;
       await fetch(`/api/cron/${id}`, { method: 'DELETE' });
       openCronPanel();
+    },
+    viewResult(sessionId) {
+      // Close the cron panel and switch to the cron result session
+      document.getElementById('right-panel').classList.add('hidden');
+      setCurrentSession(sessionId);
+      WS.send({ type: 'switch_session', sessionId });
+      loadSessionList();
+      updateSessionName();
     },
   };
 

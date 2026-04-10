@@ -24,6 +24,7 @@ const {
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
+const { executeCronJob } = require('./src/cron-runner');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -329,14 +330,20 @@ app.post('/api/cron/:id/run', (req, res) => {
   const jobs = cronSystem.loadJobs();
   const job = jobs.find(j => j.id === req.params.id);
   if (!job) return res.status(404).json({ error: 'Job not found' });
-  // Trigger execution — broadcast to all connected WS clients
-  broadcastCronRun(job);
-  res.json({ ok: true, id: job.id });
+  // Update run stats
+  job.last_run_at = Date.now();
+  job.run_count = (job.run_count || 0) + 1;
+  cronSystem.saveJobs(jobs);
+  // Execute server-side (non-blocking) and notify
+  executeCronJob(job, { broadcastWS }).catch(err => {
+    console.error(`[cron] Manual run error for ${job.id}: ${err.message}`);
+  });
+  res.json({ ok: true, id: job.id, run_count: job.run_count });
 });
 
-// Broadcast a cron job trigger to connected clients
-function broadcastCronRun(job) {
-  const msg = JSON.stringify({ type: 'cron_trigger', job });
+// Broadcast a WS event to all connected clients
+function broadcastWS(event) {
+  const msg = JSON.stringify(event);
   wss.clients.forEach((client) => {
     if (client.readyState === 1) client.send(msg);
   });
@@ -499,8 +506,10 @@ setInterval(() => {
     job.run_count = (job.run_count || 0) + 1;
     changed = true;
 
-    // Broadcast to all connected clients so the active one can run it
-    broadcastCronRun(job);
+    // Execute server-side — runs headlessly, stores in own session, sends notifications
+    executeCronJob(job, { broadcastWS }).catch(err => {
+      console.error(`[cron] Execution error for job ${job.id}: ${err.message}`);
+    });
   }
 
   if (changed) cronSystem.saveJobs(jobs);

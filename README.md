@@ -1,66 +1,58 @@
 # PRE — Personal Reasoning Engine
 
-> A fully local agentic assistant that actually works. No cloud. No API keys. No data leaves your machine.
+> A fully local agentic assistant that actually works. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 38+ integrated tools, persistent memory, local image generation, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 45+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
 ---
 
-## Why This Works (When Other Local Agents Don't)
+## Why This Exists
 
-Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, connect a few tools, hope for the best. The result is sluggish, fragile, and useful mainly as a novelty. PRE takes the opposite approach — it is a **model-specific, platform-specific, vertically integrated agent** — and that specificity is what makes it actually usable for real work.
+Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, connect a few tools, hope for the best. The result is sluggish, fragile, and useful mainly as a novelty. PRE takes the opposite approach — it is a **model-specific, platform-specific, vertically integrated agent** — and that specificity is what makes it competitive with cloud-based offerings like ChatGPT Pro, Claude, and Gemini Advanced, while keeping everything private and running on your own hardware.
 
 ### The Right Model for Agency
 
-**Gemma 4 26B-A4B** is a Mixture-of-Experts (MoE) architecture: 26 billion total parameters, but only **3.8 billion active per token** (128 experts, 8 active per forward pass). This is the key to the entire system. MoE means:
+**Gemma 4 26B-A4B** is a Mixture-of-Experts (MoE) architecture: 26 billion total parameters, but only **3.8 billion active per token** (128 experts, 8 active per forward pass). This is the key to the entire system:
 
-- **Speed without sacrifice.** You get the knowledge and reasoning quality of a 26B-parameter model at the computational cost of a ~4B model. On Apple Silicon with q4_K_M quantization (~17 GB on disk), this translates to **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
+- **Speed without sacrifice.** 26B-parameter quality at ~4B computational cost. On Apple Silicon with q4_K_M quantization (~17 GB), this means **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
 
-- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **65K token window** — large enough for extended multi-step workflows (read 20 files, chain tool calls, iterate) while cold-loading in just 1.5 seconds. Models that top out at 8K choke on the second tool call. 65K with auto-compaction means PRE can hold an entire debugging session, a full codebase exploration, or a multi-step refactoring in a single coherent conversation.
+- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **65K token window** — large enough for extended multi-step workflows (read 20 files, chain tool calls, iterate) while cold-loading in just 1.5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
 
-- **Strong instruction following.** MoE models with dedicated routing learn to follow structured tool-call formats reliably. Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable: the model calls tools incorrectly and the whole loop breaks down.
+- **Strong instruction following.** Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable.
 
-- **Native multimodal input.** Gemma 4 accepts images natively. PRE supports Ctrl+V image paste — screenshot a UI bug, paste it in, and ask the model to analyze it. No separate vision model, no preprocessing pipeline, no base64 workaround. It just works because the model was trained for it.
+- **Native multimodal input.** Gemma 4 accepts images natively — screenshot a UI bug, paste it in, and ask the model to analyze it. No separate vision model, no preprocessing pipeline.
 
 ### Platform-Specific Engineering
 
-PRE doesn't abstract away the hardware — it leans into it. Every layer of the stack is optimized for the specific reality of running a 26B MoE model on Apple Silicon via Ollama:
+PRE doesn't abstract away the hardware — it leans into it:
 
-**Raw socket streaming, not buffered I/O.** Most LLM clients use `fgets()` or equivalent stdio-buffered reads to consume server-sent events. This adds latency — sometimes hundreds of milliseconds per token — because the C runtime waits to fill its internal buffer before returning data. PRE uses raw `recv()` on the TCP socket with a 64KB manual ring buffer and `memchr()`-based newline scanning. Every NDJSON chunk from Ollama is parsed and rendered the instant it arrives. The difference is visceral: tokens appear one at a time as the model generates them, not in jerky batches.
-
-**Fixed context window with fast startup.** Changing `num_ctx` at runtime triggers a full model unload/reload in Ollama — 300+ seconds for large models. PRE avoids this entirely: the Modelfile sets `num_ctx=65536` once, `pre-launch` pre-warms the model with a real request (forcing full KV cache allocation), and every request from the code sends the exact same `num_ctx=65536`. The model cold-loads in ~1.5 seconds on M4 Max 128GB, and subsequent requests benefit from Ollama's KV cache prefix reuse with sub-second TTFT. Auto-compaction at 75% keeps conversations within the 65K budget.
-
-**KV cache prefix reuse.** Ollama caches the KV state of previously processed tokens. If the prefix of a new request matches a previous one, those tokens don't need re-processing — only the new tokens go through the model. PRE exploits this by always sending the system prompt as the first `role:system` message in the messages array, identically formatted every turn. After the first exchange, the system prompt (tool descriptions, project context, memories) is essentially free — the KV cache already has it. This is why multi-turn conversations maintain fast TTFT even with a large system prompt.
-
-**Server-reported token metrics.** Client-side timing (start a clock, measure when tokens arrive) includes network latency, JSON parsing overhead, and rendering time. It systematically underreports performance. PRE extracts `eval_duration`, `prompt_eval_duration`, `eval_count`, and `prompt_eval_count` from Ollama's final `done:true` NDJSON message — these are the server's own measurements of time spent in the model, giving you ground-truth tok/s and TTFT numbers.
-
-**Model pre-warming.** Cold-starting a model — loading weights from disk into GPU memory — can take 30+ seconds and causes terrible TTFT on the first request. PRE's launcher script (`pre-launch`) sends a zero-message warmup request with `keep_alive: "24h"` before starting the CLI. By the time you see the prompt, the model is already in GPU memory and the KV cache is primed.
-
-**Compact prompt engineering.** The system prompt is where most local agents waste their context budget — verbose tool descriptions, lengthy instructions, boilerplate. PRE compresses all 35 tool definitions into a **function-signature format** (`bash(command) read_file(path) glob(pattern,path?)...`) instead of numbered lists with multi-line descriptions. The entire tool catalog fits in ~800 tokens. This leaves more room for actual conversation and means fewer tokens to prefill on every turn (directly improving TTFT through the KV cache reuse described above).
-
-**Whitespace-tolerant JSON parsing.** Different APIs (Ollama, Google, GitHub) format their JSON differently — some minified, some pretty-printed. A naive `strstr(json, "\"id\":\"")` fails when the server sends `"id" : "value"` with spaces around the colon. PRE's `json_find_key()` helper scans for the key string, then skips arbitrary whitespace before matching the colon. This eliminated an entire class of parsing failures that plagued early versions.
+| Layer | Optimization | Effect |
+|-------|-------------|--------|
+| **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
+| **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
+| **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
+| **Prompt compression** | Function-signature tool format (~800 tokens for 45+ tools) | More room for conversation, faster prefill |
+| **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
+| **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
 
 ### What Makes It an Agent, Not a Chatbot
 
-The difference between a chatbot and an agent is the **tool-call loop**. A chatbot generates text. An agent generates text, decides it needs more information or needs to take an action, calls a tool, reads the result, decides what to do next, and repeats until the task is done. This requires:
+The difference is the **tool-call loop**. A chatbot generates text. An agent generates text, decides it needs more information, calls a tool, reads the result, decides what to do next, and repeats until the task is done. PRE delivers:
 
-1. **Reliable tool calling** — the model must produce valid JSON tool calls consistently
-2. **Fast execution** — each tool call adds a round-trip; if each one takes 10 seconds, a 5-step task takes a minute of waiting
-3. **Sufficient context** — the conversation must hold the system prompt, tool definitions, all previous turns, tool results, and still have room for the model to reason
-4. **Autonomy with safety** — most actions should just execute; only genuinely dangerous ones should ask
+1. **Reliable tool calling** via Ollama's native structured function calling
+2. **Fast execution** — each round-trip completes in 1-3 seconds for typical tools
+3. **Sufficient context** — 65K window with auto-compaction holds extended multi-step sessions
+4. **Autonomous scheduling** — cron jobs execute server-side, even when you're not at the computer
 
-PRE delivers all four. The model produces well-formed tool calls via Ollama's native structured function calling. Each round-trip (generate → parse → execute → inject result → generate) completes in 1-3 seconds for typical tools. The 65K context with auto-compaction holds extended multi-step sessions. And the permission model is designed for power users: **35 of 38+ tools auto-execute** — only `process_kill`, `memory_delete`, and `applescript` require confirmation.
+This means PRE can:
 
-This means PRE can do things like:
-
-- Read a stack trace, search the codebase for the relevant function, read the file, identify the bug, edit the fix, run the tests, and report the result — all from a single prompt
-- Search your Gmail for a thread, summarize it, draft a reply, and save it — without you touching a browser
-- Inspect network connections, check disk usage, review running processes, and generate a system health report
-- Navigate your codebase, understand the architecture, and make coordinated edits across multiple files
-
-These aren't demos. These are workflows that complete in under a minute because every layer of the stack was built to make the loop fast.
+- Read a stack trace, search the codebase, identify the bug, edit the fix, run the tests, and report the result — all from a single prompt
+- Search your Gmail, summarize a thread, draft a reply, and save it — without you touching a browser
+- Generate images locally, create documents, build artifacts, and export PDFs
+- Run recurring tasks on a schedule — morning briefings, system checks, report generation — and deliver results via macOS notification and Telegram
+- Manage Jira tickets, search Confluence wikis, update Smartsheet rows, and send Slack messages
 
 ---
 
@@ -75,6 +67,8 @@ These aren't demos. These are workflows that complete in under a minute because 
   - [Memory System](#memory-system)
   - [Projects & PRE.md](#projects--premd)
   - [Channels](#channels)
+  - [Connections](#connections)
+  - [Scheduling (Cron)](#scheduling-cron)
   - [Context Management](#context-management)
 - [Best Practices](#best-practices)
 - [Web GUI](#web-gui)
@@ -90,26 +84,16 @@ These aren't demos. These are workflows that complete in under a minute because 
 ## Quick Start
 
 ```bash
-# Full automated install (checks requirements, installs Ollama, pulls model, builds PRE)
+# Full automated install (checks requirements, installs dependencies, pulls model, builds PRE)
+git clone https://github.com/sunkencity999/pre.git
 cd pre
 ./install.sh
 
-# Or manual setup:
-
-# 1. Install Ollama (if not already installed)
-brew install ollama
-
-# 2. Pull the base model (~17 GB)
-ollama pull gemma4:26b-a4b-it-q4_K_M
-
-# 3. Clone and build PRE
-git clone https://github.com/sunkencity999/pre.git
-cd pre/engine
-make pre
-
-# 4. Launch (auto-creates optimized model on first run)
-./pre-launch
+# Launch
+pre-launch
 ```
+
+The installer checks system requirements, installs Ollama if needed, pulls the base model (~17 GB), creates the optimized `pre-gemma4` model, builds the PRE binary, sets up the web GUI, installs `terminal-notifier` for clickable notifications, creates data directories, and pre-warms the model into GPU memory.
 
 PRE detects your project, loads memories, and drops you into an interactive prompt:
 
@@ -119,6 +103,7 @@ PRE detects your project, loads memories, and drops you into an interactive prom
 ║  Gemma 4 26B-A4B                                ║
 ╚══════════════════════════════════════════════════╝
   Server:  http://localhost:11434
+  Web GUI: http://localhost:7749
   Project: my-project  /Users/you/my-project
   Channel: #general
   Memory:  3 entries loaded
@@ -131,37 +116,33 @@ my-project #general>
 
 ## What PRE Can Do
 
-PRE is not a chatbot — it's a local agent with deep system access.
+PRE is not a chatbot — it's a local agent with deep system access and 45+ tools.
 
-**Read and modify your codebase** — The model reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
+**Read and modify your codebase** — Reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-**Run commands autonomously** — Bash execution with a streamlined permission model. 35 of 38 tools auto-execute; only genuinely destructive operations ask for confirmation.
+**Run commands autonomously** — Bash execution with a streamlined permission model. 42 of 45+ tools auto-execute; only genuinely destructive operations ask for confirmation.
 
-**Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts.
+**Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts. Auto-extraction learns from conversations without being asked.
 
-**Manage multiple workstreams** — Channels let you run parallel conversations with separate contexts within the same project.
+**Generate images locally** — Photorealistic image generation via ComfyUI on Apple Silicon (MPS). Juggernaut XL v9 (1024x1024, 25-step) or SDXL Turbo (512x512, 4-step). No cloud API.
 
-**Deep system inspection** — Network interfaces, running processes, disk usage, hardware info, window management, screenshots, and arbitrary AppleScript automation.
+**Create documents and artifacts** — Multi-part HTML artifacts, Excel spreadsheets, Word documents, and PDFs. Download, open, or reveal in Finder directly from the GUI.
 
-**Connect to external services** — Optional integrations with Brave Search, GitHub, Google (Gmail, Drive, Docs), Wolfram Alpha, and Telegram via `/connections`. Google uses built-in OAuth — just sign in, no Cloud Console setup. API keys for the rest. Multi-account Google is supported (`/connections add google work`). Tokens stored locally.
+**Schedule recurring tasks** — Cron-based scheduling with natural language input ("every morning at 9am"). Jobs execute server-side even when the browser is closed. Results are stored as individual chat sessions and delivered via macOS notification (click to open), Telegram, and in-browser toasts.
 
-**Use from your browser** — PRE includes a built-in web GUI at `http://localhost:7749` that launches automatically alongside the CLI. Three themes (Dark, Light, Evangelion), Calendas Plus serif typography, real-time streaming, full tool execution, session management — all sharing the same sessions and memory as the CLI. No framework, no build step, just `node server.js`.
+**Upload files and images for analysis** — Drag-and-drop, clipboard paste, or file picker. Gemma 4's native multimodal support analyzes screenshots, diagrams, photos, CSVs, code files, and more.
 
-**Chat from your phone** — Configure a Telegram bot and PRE automatically bridges it when you launch. Full system access from Telegram — same 35 tools, same memory, same agentic workflows. No separate process to manage.
+**Connect to external services** — Google (Gmail, Drive, Docs), GitHub, Telegram, Slack, Jira, Confluence, Smartsheet, Brave Search, and Wolfram Alpha. Configure via `/connections` or the web GUI Settings panel.
 
-**Personalize your agent** — On first launch, PRE asks you to name your assistant. The name appears in the banner, system prompt, and Telegram bot. Change it anytime with `/name`.
+**Use from your browser** — Built-in web GUI at `http://localhost:7749` with three themes (Dark, Light, Evangelion), real-time streaming, full tool execution, session management, project organization, memory browser, cron scheduler, and connection management.
 
-**Generate images locally** — `image_generate` tool creates photorealistic images via ComfyUI running on Apple Silicon (MPS). The installer offers two checkpoints: **Juggernaut XL v9** (recommended — 25-step, 1024x1024, photorealistic faces and scenes) or **SDXL Turbo** (fast — 4-step, 512x512, speed-optimized). No cloud API required. Optional install via `install.sh`.
+**Chat from your phone** — Configure a Telegram bot and PRE bridges it automatically. Full system access — same tools, same memory, same agentic workflows.
 
-**Build rich reports** — Multi-part artifacts let the model build long documents across multiple tool calls. Each `append_to` call adds a new section to an existing artifact. Combined with image generation and `/pdf` export, PRE can produce complete visual reports.
+**Manage multiple workstreams** — Projects with drag-and-drop session organization. Channels for separate conversation threads within the same project.
 
-**Paste images for analysis** — Ctrl+V pastes clipboard images directly into the prompt. Gemma 4 is multimodal — it can analyze screenshots, diagrams, photos, and more.
+**Export and share** — PDF export, markdown export, document generation (DOCX, XLSX, TXT, CSV, HTML). Artifacts open in the browser or download directly.
 
-**Export to PDF** — `/pdf` exports any artifact to a clean PDF via WebKit rendering. The model can also call `pdf_export` programmatically to generate shareable documents.
-
-**Clean shutdown** — Ctrl+C stops all services (including the Telegram bot and ComfyUI) and unloads the model from GPU memory, freeing VRAM immediately.
-
-**Respect your privacy** — Everything runs locally on your machine. Ollama serves the model, PRE manages the conversation. Connection-dependent tools make API calls to their respective services; all other tools are fully local.
+**Respect your privacy** — Everything runs locally. Ollama serves the model, PRE manages the conversation. Connection-dependent tools make API calls to their respective services; all other tools are fully local.
 
 ---
 
@@ -177,11 +158,10 @@ PRE is not a chatbot — it's a local agent with deep system access.
 | **Disk** | ~17 GB for model, +8 GB for image generation (optional) |
 | **Ollama** | [ollama.ai](https://ollama.ai) or `brew install ollama` |
 | **Xcode CLI** | `xcode-select --install` |
-| **Python 3.10-3.13** | Optional — for ComfyUI image generation (`brew install python@3.12`) |
+| **Node.js 18+** | For web GUI (`brew install node`) |
+| **Python 3.10-3.13** | Optional — for ComfyUI image generation |
 
 ### Install
-
-The easiest path is the automated installer:
 
 ```bash
 git clone https://github.com/sunkencity999/pre.git
@@ -189,22 +169,28 @@ cd pre
 ./install.sh
 ```
 
-This checks system requirements, installs Ollama if needed, pulls the base model, creates the optimized `pre-gemma4` model from the Modelfile, builds the PRE binary, installs `pre-launch` to your PATH, sets up data directories, and pre-warms the model into GPU memory.
+The installer handles everything: system validation, Ollama, model pull, binary compilation, web GUI dependencies, terminal-notifier, ComfyUI (optional), data directories, and model pre-warming.
 
 Or install manually:
 
 ```bash
-# Pull the base model (Gemma 4 26B-A4B, MoE, ~17 GB)
+# Pull the base model (~17 GB)
 ollama pull gemma4:26b-a4b-it-q4_K_M
 
 # Create the optimized model
 cd pre/engine
 ollama create pre-gemma4 -f Modelfile
 
-# Build PRE
-make pre
+# Build PRE CLI + Telegram bot
+make pre telegram
 
-# Optional: add to PATH
+# Web GUI
+cd ../web && npm install
+
+# Optional: clickable cron notifications
+brew install terminal-notifier
+
+# Add to PATH
 make install
 # or: ln -sf "$(pwd)/pre-launch" ~/.local/bin/pre-launch
 ```
@@ -214,10 +200,11 @@ make install
 ```bash
 pre-launch                         # From any directory
 pre-launch --dir /path/to/project  # Override working directory
+pre-launch --show-think            # Start with visible reasoning
 pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
-The launcher checks that Ollama is running (starts it if not), creates `pre-gemma4` from the Modelfile if needed, pre-warms the model into GPU memory with a real request (matching `num_ctx=65536` for full KV cache allocation), starts the web GUI server on port 7749 (if Node.js is available), and launches the PRE binary.
+The launcher checks Ollama, creates `pre-gemma4` if needed, pre-warms the model into GPU memory, starts the web GUI on port 7749, and launches the PRE CLI.
 
 ---
 
@@ -225,16 +212,16 @@ The launcher checks that Ollama is running (starts it if not), creates `pre-gemm
 
 ### Commands
 
-PRE supports slash commands for managing sessions, files, and configuration. Type `/help` for the full list, or `/help <topic>` for detailed guides.
+Type `/help` for the full list, or `/help <topic>` for detailed guides.
 
 #### Chat & Input
 
 | Command | Description |
 |---------|-------------|
 | *(type a message)* | Send to the model |
-| `!command` | Run a shell command (output stays local, not sent to model) |
+| `!command` | Run a shell command (output stays local) |
 | `/edit` | Open `$EDITOR` for multi-line prompts |
-| `/file <path>` | Attach a file to next message (stackable) |
+| `/file <path>` | Attach a file to next message |
 | `/run <cmd>` | Run a command, optionally feed output to model |
 
 #### Session Management
@@ -273,121 +260,119 @@ PRE supports slash commands for managing sessions, files, and configuration. Typ
 | `/think` | Toggle reasoning visibility |
 | `/name <name>` | Rename your agent |
 | `/pdf [title]` | Export artifact to PDF |
-| `/cron add <schedule> <prompt>` | Schedule a recurring task (5-field cron) |
-| `/cron list` | List all scheduled tasks |
-| `/cron rm <id>` | Remove a scheduled task |
 
-#### Help
+#### Scheduling
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Command overview |
-| `/help tools` | All 38+ tools with permission levels |
-| `/help memory` | Memory system guide |
-| `/help channels` | Channel system guide |
-| `/help projects` | Project detection & PRE.md |
-| `/help tips` | Best practices and tips |
-| `/help all` | Everything at once |
+| `/cron add <schedule> <prompt>` | Schedule a recurring task |
+| `/cron list` | List all scheduled tasks |
+| `/cron rm <id>` | Remove a scheduled task |
 
 ---
 
 ### Tools
 
-PRE has 32 built-in tools plus up to 6 connection-dependent tools (38 total) that the model can call autonomously. PRE is designed for power users — nearly all tools auto-execute without confirmation:
+PRE has 45+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
 
-- **Auto** — executes immediately, no confirmation needed (35 of 38 tools)
-- **Confirm always** — asks every time (only 3 tools: `process_kill`, `memory_delete`, `applescript`)
+- **Auto** — executes immediately (42+ tools)
+- **Confirm always** — asks every time (3 tools: `process_kill`, `memory_delete`, `applescript`)
 
 #### File & Code
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 1 | `read_file` | `path` | Read file contents |
-| 2 | `list_dir` | `path` | List directory contents |
-| 3 | `glob` | `pattern`, `path`? | Find files by glob pattern |
-| 4 | `grep` | `pattern`, `path`?, `include`? | Search file contents (regex) |
-| 5 | `file_write` | `path`, `content` | Create or overwrite a file (checkpointed, `/undo`-able) |
-| 6 | `file_edit` | `path`, `old_string`, `new_string` | Find-and-replace in a file (checkpointed, `/undo`-able) |
+| Tool | Args | Description |
+|------|------|-------------|
+| `read_file` | `path` | Read file contents |
+| `list_dir` | `path` | List directory contents |
+| `glob` | `pattern`, `path`? | Find files by glob pattern |
+| `grep` | `pattern`, `path`?, `include`? | Search file contents (regex) |
+| `file_write` | `path`, `content` | Create or overwrite a file (checkpointed, `/undo`-able) |
+| `file_edit` | `path`, `old_string`, `new_string` | Find-and-replace in a file (checkpointed, `/undo`-able) |
 
 #### Shell & Process
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 7 | `bash` | `command` | Execute a shell command |
-| 8 | `process_list` | `filter`? | List running processes |
-| 9 | `process_kill` | `pid` | Send SIGTERM to a process *(confirm always)* |
+| Tool | Args | Description |
+|------|------|-------------|
+| `bash` | `command` | Execute a shell command |
+| `process_list` | `filter`? | List running processes |
+| `process_kill` | `pid` | Send SIGTERM to a process *(confirm always)* |
 
 #### System Inspection
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 10 | `system_info` | *(none)* | CPU, memory, disk, battery overview |
-| 11 | `hardware_info` | *(none)* | Detailed hardware, thermal sensors, GPU info |
-| 12 | `disk_usage` | `path`? | Volume and directory usage |
-| 13 | `display_info` | *(none)* | Display resolution and GPU details |
+| Tool | Args | Description |
+|------|------|-------------|
+| `system_info` | *(none)* | CPU, memory, disk, battery overview |
+| `hardware_info` | *(none)* | Detailed hardware, thermal sensors, GPU info |
+| `disk_usage` | `path`? | Volume and directory usage |
+| `display_info` | *(none)* | Display resolution and GPU details |
 
 #### Network
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 14 | `net_info` | *(none)* | Interfaces, IPs, DNS, routes |
-| 15 | `net_connections` | `filter`? | TCP connections (listening/established/port) |
-| 16 | `service_status` | `service`? | List or search launchd services |
+| Tool | Args | Description |
+|------|------|-------------|
+| `net_info` | *(none)* | Interfaces, IPs, DNS, routes |
+| `net_connections` | `filter`? | TCP connections (listening/established/port) |
+| `service_status` | `service`? | List or search launchd services |
 
 #### Desktop Integration
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 17 | `screenshot` | `region`? | Capture screen (full/window/region/x,y,w,h) |
-| 18 | `window_list` | *(none)* | List open windows with positions |
-| 19 | `window_focus` | `app` | Bring an app to front |
-| 20 | `clipboard_read` | *(none)* | Read clipboard contents |
-| 21 | `clipboard_write` | `content` | Write to clipboard |
-| 22 | `open_app` | `target` | Open files/apps/URLs via macOS `open` |
-| 23 | `notify` | `title`, `message` | Show a macOS notification |
-| 24 | `applescript` | `script` | Run arbitrary AppleScript *(confirm always)* |
+| Tool | Args | Description |
+|------|------|-------------|
+| `screenshot` | `region`? | Capture screen (full/window/region/x,y,w,h) |
+| `window_list` | *(none)* | List open windows with positions |
+| `window_focus` | `app` | Bring an app to front |
+| `clipboard_read` | *(none)* | Read clipboard contents |
+| `clipboard_write` | `content` | Write to clipboard |
+| `open_app` | `target` | Open files/apps/URLs via macOS `open` |
+| `notify` | `title`, `message` | Show a macOS notification |
+| `applescript` | `script` | Run arbitrary AppleScript *(confirm always)* |
 
 #### Web
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 25 | `web_fetch` | `url` | Fetch a URL (HTML→text conversion) |
+| Tool | Args | Description |
+|------|------|-------------|
+| `web_fetch` | `url` | Fetch a URL (HTML to text conversion) |
 
 #### Creative & Export
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 26 | `artifact` | `title`, `content`, `type`, `append_to`? | Create/append rich HTML artifacts in pop-out viewer |
-| 27 | `image_generate` | `prompt`, `width`?, `height`?, `style`? | Generate images locally via ComfyUI (Juggernaut XL or SDXL Turbo, MPS) |
-| 28 | `pdf_export` | `title`, `path`? | Export an artifact to PDF via WebKit |
+| Tool | Args | Description |
+|------|------|-------------|
+| `artifact` | `title`, `content`, `type`, `append_to`? | Create/append rich HTML artifacts |
+| `document` | `title`, `format`, `sheets`? | Generate DOCX, XLSX, TXT, CSV, HTML documents |
+| `image_generate` | `prompt`, `width`?, `height`?, `style`? | Generate images via ComfyUI (MPS) |
 
 #### Memory
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 29 | `memory_save` | `name`, `type`, `description`, `content`, `scope`? | Save a persistent memory (global or project-scoped) |
-| 30 | `memory_search` | `query`? | Search saved memories |
-| 31 | `memory_list` | *(none)* | List all memories |
-| 32 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
+| Tool | Args | Description |
+|------|------|-------------|
+| `memory_save` | `name`, `type`, `description`, `content` | Save a persistent memory |
+| `memory_search` | `query`? | Search saved memories |
+| `memory_list` | *(none)* | List all memories |
+| `memory_delete` | `query` | Delete a memory *(confirm always)* |
 
 #### Scheduling
 
-| # | Tool | Args | Description |
-|---|------|------|-------------|
-| 33 | `cron` | `action`, `schedule`?, `prompt`?, `description`?, `id`? | Manage recurring scheduled tasks |
+| Tool | Args | Description |
+|------|------|-------------|
+| `cron` | `action`, `schedule`?, `prompt`?, `id`? | Manage recurring scheduled tasks |
 
 #### Connection-Dependent Tools
 
-These tools require external API keys or OAuth setup via `/connections`. Run `/connections` to configure.
+These require API keys or OAuth setup via `/connections` or the web GUI Settings panel.
 
-| # | Tool | Connection | Args | Description |
-|---|------|------------|------|-------------|
-| 34 | `web_search` | Brave Search | `query`, `count`? | Web search via Brave Search API |
-| 35 | `github` | GitHub | `action`, `repo`?, `query`?, `number`?, `state`? | GitHub API (search repos, issues, PRs, user info) |
-| 36 | `gmail` | Google | `action`, `query`?, `id`?, `to`?, `subject`?, `body`?, `cc`?, `bcc`?, `max_results`? | Gmail (search, read, send, draft, trash, labels, profile) |
-| 37 | `gdrive` | Google | `action`, `id`?, `path`?, `name`?, `folder_id`?, `query`?, `email`?, `role`?, `count`? | Google Drive (list, search, download, upload, mkdir, share, delete) |
-| 38 | `gdocs` | Google | `action`, `id`?, `title`?, `content`? | Google Docs (create, read, append) |
-| 39 | `wolfram` | Wolfram Alpha | `query` | Computation, math, science, data queries |
+| Tool | Connection | Description |
+|------|------------|-------------|
+| `web_search` | Brave Search | Web search via Brave Search API |
+| `github` | GitHub | Search repos, issues, PRs, user info |
+| `gmail` | Google | Search, read, send, draft, trash, labels |
+| `gdrive` | Google | List, search, download, upload, share |
+| `gdocs` | Google | Create, read, append documents |
+| `telegram` | Telegram | Send messages, photos, check updates |
+| `jira` | Jira | Search issues, create, update, transition |
+| `confluence` | Confluence | Search pages, read, create, update |
+| `smartsheet` | Smartsheet | List sheets, search rows, add/update rows |
+| `slack` | Slack | Send messages, list channels, reply, react |
+| `wolfram` | Wolfram Alpha | Computation, math, science, data queries |
 
 ---
 
@@ -397,7 +382,7 @@ PRE has persistent, file-based memory that survives across sessions and restarts
 
 #### How It Works
 
-Memories are markdown files with YAML frontmatter stored in `~/.pre/memory/` (global) or `~/.pre/projects/{name}/memory/` (project-scoped). All relevant memories are injected into context at the start of each session.
+Memories are markdown files with YAML frontmatter stored in `~/.pre/memory/` (global) or `~/.pre/projects/{name}/memory/` (project-scoped). Relevant memories are injected into context at the start of each session.
 
 #### Memory Types
 
@@ -405,19 +390,14 @@ Memories are markdown files with YAML frontmatter stored in `~/.pre/memory/` (gl
 |------|---------|---------|
 | `user` | About you — role, preferences, expertise | "Senior Python dev, prefers type hints" |
 | `feedback` | How to work — corrections and confirmations | "Don't add docstrings to unchanged code" |
-| `project` | Current work — decisions, deadlines, context | "Auth rewrite driven by compliance, not tech debt" |
+| `project` | Current work — decisions, deadlines, context | "Auth rewrite driven by compliance" |
 | `reference` | External pointers — where info lives | "Bugs tracked in Linear project INGEST" |
 
-#### Saving Memories
+#### Three Ways Memories Are Created
 
-The model saves memories proactively when it learns something about you or your project. You can also be explicit:
-
-```
-pre> Remember that I prefer functional style over class-based components.
-pre> Save a project memory: we're migrating from REST to GraphQL by Q3.
-```
-
-Project-scoped memories stay with that project and don't leak into other contexts.
+1. **Auto-extraction** — The web GUI analyzes conversations and automatically saves important facts (throttled: every 3 turns, 60-second cooldown)
+2. **Model-initiated** — The model saves memories proactively when it learns something important
+3. **Explicit** — Tell PRE what to remember: "Remember that I prefer functional style over classes"
 
 #### Managing Memories
 
@@ -427,18 +407,7 @@ Project-scoped memories stay with that project and don't leak into other context
 /forget "old rule"   # Delete a memory (with confirmation)
 ```
 
-#### File Format
-
-```markdown
----
-name: User prefers functional style
-description: Coding style preference for React components
-type: feedback
----
-
-User prefers functional components with hooks over class-based components.
-Confirmed when reviewing frontend code on 2026-03-15.
-```
+The web GUI includes a **Memory Browser** panel (book icon in sidebar footer) for viewing and managing memories visually.
 
 ---
 
@@ -450,15 +419,11 @@ PRE detects project boundaries by walking up from your working directory looking
 
 `.git` · `package.json` · `pyproject.toml` · `Cargo.toml` · `go.mod` · `Makefile` · `CMakeLists.txt` · `pom.xml` · `PRE.md`
 
-When a project is detected, PRE:
-1. Shows the project name in the prompt and banner
-2. Creates `~/.pre/projects/{name}/` for project data
-3. Loads project-scoped memories alongside global ones
-4. Scopes channels to the project
+When a project is detected, PRE loads project-scoped memories, scopes channels to the project, and shows the project name in the prompt.
 
 #### PRE.md — Project Configuration
 
-Place a `PRE.md` file in your project root to give the model project-specific instructions. It's loaded into context on the first turn of every session.
+Place a `PRE.md` file in your project root to give the model project-specific instructions:
 
 ```markdown
 # My API Service
@@ -469,16 +434,9 @@ FastAPI application with PostgreSQL and Redis.
 - Use async/await for all I/O
 - Type hints required on all public functions
 - Tests in tests/ — run with: pytest -xvs
-- Deploy target: AWS ECS on arm64
-
-## Architecture
-- src/api/ — FastAPI routes
-- src/models/ — SQLAlchemy models
-- src/services/ — Business logic
-- migrations/ — Alembic migrations
 ```
 
-Use `/project` to see detected project info and verify PRE.md is loaded.
+The web GUI supports **Projects** with drag-and-drop session organization — group related sessions under a named project.
 
 ---
 
@@ -488,57 +446,102 @@ Channels are named conversation threads scoped to a project. Each channel has it
 
 ```
 /channel                 # List channels
-/channel refactor        # Switch to #refactor (creates if new)
+/channel refactor        # Switch to #refactor
 /channel debug-auth      # Separate thread for debugging
-/channel general         # Back to default
 /new                     # Fresh session in current channel
 ```
 
-**Why channels?** Long conversations accumulate context. If you're deep into a refactoring discussion and need to debug something unrelated, switching channels gives you a clean context without losing your refactoring thread.
-
-Channels are scoped to the detected project. When you `/cd` into a different project, PRE switches to that project's `#general` channel.
+Long conversations accumulate context. Switching channels gives you a clean context without losing your previous thread.
 
 ---
 
 ### Connections
 
-PRE can integrate with external services via API keys and OAuth. Run `/connections` to see available integrations, or `/connections add <service>` to set one up.
+PRE integrates with external services via API keys and OAuth. Configure via `/connections` in the CLI or the **Settings** panel in the web GUI.
 
 | Service | Auth Type | Tools Unlocked |
 |---------|-----------|----------------|
 | **Google** | Built-in OAuth 2.0 | `gmail`, `gdrive`, `gdocs` |
-| **Telegram** | Bot token (via @BotFather) | Phone access to PRE |
+| **Telegram** | Bot token (@BotFather) | Phone access + cron delivery |
+| **Slack** | Bot OAuth token (xoxb-) | `slack` |
 | **Brave Search** | API key | `web_search` |
 | **GitHub** | Personal access token | `github` |
+| **Jira** | URL + API token | `jira` |
+| **Confluence** | URL + API token | `confluence` |
+| **Smartsheet** | API token | `smartsheet` |
 | **Wolfram Alpha** | API key | `wolfram` |
 
-**Google** uses built-in OAuth credentials — just run `/connections add google` and sign in via your browser. No Google Cloud Console setup required. For advanced users who want their own OAuth app, option 2 in the setup menu supports custom client ID/secret.
+**Google** uses built-in OAuth — just sign in via your browser. No Google Cloud Console setup required. Multi-account supported: `/connections add google work`.
 
-**Multi-account Google** is supported: `/connections add google work` and `/connections add google personal` create named accounts. The model uses the `account` parameter to target the right one.
-
-**Telegram** automatically starts when PRE launches (if configured). See [Telegram Integration](#telegram-integration) for details.
+**Telegram** automatically starts as a background process when PRE launches.
 
 All tokens are stored locally in `~/.pre/connections.json` and refreshed automatically.
 
 ---
 
+### Scheduling (Cron)
+
+PRE includes a full cron scheduling system for recurring autonomous tasks. Jobs execute **server-side** — no browser or terminal needs to be open.
+
+#### How It Works
+
+1. **Create a job** — via the web GUI cron panel (clock icon in sidebar) or the CLI (`/cron add`)
+2. **Natural language scheduling** — type "every morning at 9am" or "weekdays at 8:30am" instead of raw cron expressions
+3. **Server-side execution** — when a job fires, the server runs the prompt through the full agent tool loop headlessly
+4. **Dedicated sessions** — each run creates its own chat session you can review, continue, or reference
+5. **Multi-channel delivery** — results are delivered via all configured channels:
+
+| Channel | Behavior |
+|---------|----------|
+| **macOS notification** | Always sent. Click to open the result in the web GUI. Uses `terminal-notifier` for clickable notifications (installed automatically). |
+| **Telegram** | Sent if bot token is configured. Full result preview in your Telegram chat. |
+| **GUI toast** | Shown if the browser is open. Slide-in notification with "View Result" button. |
+
+#### Natural Language Schedule Input
+
+The web GUI accepts plain English for scheduling:
+
+| Input | Cron Expression | Description |
+|-------|----------------|-------------|
+| "every morning at 9am" | `0 9 * * *` | Daily at 9:00 AM |
+| "weekdays at 8:30am" | `30 8 * * 1-5` | Weekdays at 8:30 AM |
+| "every 15 minutes" | `*/15 * * * *` | Every 15 minutes |
+| "monday and friday at 3pm" | `0 15 * * 1,5` | Mon & Fri at 3:00 PM |
+| "monthly on the 1st at 10am" | `0 10 1 * *` | 1st of each month |
+| "twice a day" | `0 9,17 * * *` | 9 AM and 5 PM |
+| "every half hour" | `*/30 * * * *` | Every 30 minutes |
+
+Raw cron expressions (e.g. `0 */2 * * 1-5`) are also accepted with passthrough.
+
+#### Use Cases
+
+- **Morning briefing** — "Summarize my calendar and top priorities for today"
+- **System health check** — "Check disk usage, memory, and running services. Alert if anything is abnormal."
+- **Competitive monitoring** — "Search for news about [company] and summarize findings"
+- **Report generation** — "Generate a weekly project status report from git activity"
+- **Data pipeline monitoring** — "Check the ETL job status and report any failures"
+
+#### Managing Jobs
+
+| Method | How |
+|--------|-----|
+| **Web GUI** | Clock icon in sidebar footer — visual panel with live preview, enable/disable toggle, run now, view last result |
+| **CLI** | `/cron add "0 9 * * 1-5" "Morning briefing"`, `/cron list`, `/cron rm <id>` |
+| **Model tool** | The model can create cron jobs autonomously via the `cron` tool |
+
+---
+
 ### Context Management
 
-PRE manages Gemma 4's context window with a **fixed 65K token allocation** (set once in the Modelfile and matched exactly in every request). This avoids Ollama's model reload penalty — changing `num_ctx` at runtime triggers a full unload/reload cycle (300+ seconds for large models). Instead, PRE allocates 65K at startup, pre-warms the KV cache with a real request, and all subsequent requests reuse the same allocation with sub-second TTFT.
+PRE manages Gemma 4's context window with a **fixed 65K token allocation**.
 
-**Fixed 65K context** — Large enough for extended multi-step agentic sessions (read 20 files, chain tool calls, iterate) while cold-loading in ~1.5 seconds on M4 Max 128GB. Auto-compaction keeps conversations within budget.
+**Why fixed?** Changing `num_ctx` at runtime triggers a full model unload/reload in Ollama — 300+ seconds for large models. PRE sets 65K once in the Modelfile, matches it exactly in every request, and the model cold-loads in ~1.5 seconds on M4 Max 128GB.
 
-**Context bar** — Shown after every response (color-coded: grey → yellow at 50% → red at 75%). Also available via `/context`.
-
-**Auto-compaction** — When estimated tokens exceed 75% of the 65K budget (~49K tokens), older conversation turns are automatically summarized and compressed. The last 6 exchanges are kept intact.
-
-**Server-reported tokens** — PRE uses Ollama's native API which reports exact prompt and generation token counts from the server, giving you ground-truth context usage instead of client-side estimates.
-
-**Tool response cap** — Tool outputs are truncated to 8KB to prevent a single large file from consuming the entire context.
-
-**Rewind** — `/rewind N` removes the last N turns to free context space.
-
-**Channels** — Use separate channels for different tasks to avoid context pollution.
+- **Context bar** — Shown after every response (color-coded: grey > yellow at 50% > red at 75%). Also visible in the web GUI topbar.
+- **Auto-compaction** — At 75% usage (~49K tokens), older turns are summarized and compressed. The last 6 exchanges are kept intact.
+- **Tool response cap** — Tool outputs truncated to 8KB to prevent context blowout.
+- **Rewind** — `/rewind N` removes the last N turns to free space.
+- **Channels** — Separate channels for separate tasks to avoid context pollution.
 
 ---
 
@@ -547,61 +550,57 @@ PRE manages Gemma 4's context window with a **fixed 65K token allocation** (set 
 ### Getting Good Results
 
 1. **Be specific.** "Review auth.py for SQL injection" > "check my code"
-2. **Attach files first.** `/file src/main.py` then ask your question.
-3. **Use /edit for complex prompts.** Opens your $EDITOR for multi-line input.
-4. **Watch the thinking.** `/think` toggles the model's reasoning — useful for debugging and understanding its approach.
-5. **Use PRE.md.** A project config file saves you from re-explaining your stack every session.
+2. **Attach files.** `/file src/main.py` (CLI) or drag-and-drop (web GUI) then ask your question.
+3. **Use PRE.md.** A project config file saves you from re-explaining your stack every session.
+4. **Watch the thinking.** `/think` toggles the model's reasoning — useful for understanding its approach.
+5. **Upload images.** Paste screenshots, drag photos — Gemma 4 analyzes them natively.
 
 ### Managing Context
 
-1. **Check /context regularly.** Know how much budget you've used.
+1. **Check context regularly.** `/context` or the topbar bar in the web GUI.
 2. **Use channels for separate tasks.** Don't mix debugging and feature work.
 3. **Rewind noisy turns.** `/rewind` removes turns that added bulk without value.
-4. **Let auto-compaction work.** It kicks in at 75% and preserves recent context.
+4. **Let auto-compaction work.** It preserves recent context while compressing old turns.
 
-### Tool Calling
+### Scheduling
 
-1. **Almost everything auto-executes.** 32 of 35 tools run without confirmation. Only `process_kill`, `memory_delete`, and `applescript` prompt before executing.
-2. **Undo mistakes.** `/undo` reverts the last `file_write` or `file_edit`.
-3. **The model is agentic.** It will chain tool calls to accomplish multi-step tasks — read code, search for patterns, make edits, run commands, check results.
-
-### Memory
-
-1. **Tell PRE what to remember.** "Remember that I prefer X" works.
-2. **Use project-scoped memory** for things specific to one codebase.
-3. **Review memories periodically.** `/memory` lists everything. `/forget` removes stale entries.
-4. **The model saves proactively.** It learns your preferences from corrections and confirmations.
-
-### Shell Integration
-
-1. **`!` for quick commands.** `!git status`, `!docker ps` — runs immediately, output not sent to model.
-2. **`/run` to feed output to model.** Runs the command and asks if you want the model to see it.
-3. **`bash` tool for model-driven commands.** The model calls `bash` autonomously when it needs to run something.
+1. **Start simple.** "every day at 9am" — verify results before adding complex schedules.
+2. **Be specific in prompts.** Good: "Check disk usage on / and /Users, alert if >80%". Bad: "check things".
+3. **Use the Result button.** Each cron job run is a full chat session you can review and continue.
+4. **Configure delivery channels.** Add Telegram and/or Slack tokens for push notifications even when away from the computer.
 
 ---
 
 ## Web GUI
 
-PRE includes a built-in browser interface that provides full access to all PRE features through a modern, responsive web application.
+PRE includes a built-in browser interface at `http://localhost:7749` that provides full access to all features through a modern, responsive web application.
 
 ### How It Works
 
-The web GUI is a **Node.js (Express + WebSocket) backend** with a **vanilla JS SPA frontend** — no React, no Vue, no bundler. It talks directly to Ollama, reads/writes the same JSONL session files as the CLI, executes tools server-side, and streams responses via WebSocket. Sessions are fully interchangeable between CLI and web.
+**Node.js (Express + WebSocket) backend** with a **vanilla JS SPA frontend** — no React, no Vue, no bundler. It talks directly to Ollama, reads/writes the same JSONL session files as the CLI, executes tools server-side, and streams responses via WebSocket. Sessions are fully interchangeable between CLI and web.
 
 ### Features
 
-- **Real-time streaming** — Tokens appear as the model generates them, with a thinking block, streaming cursor, and live tool status cards
-- **Full tool execution** — All 37+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
-- **Three themes** — Dark, Light, and Evangelion (NERV-inspired orange-on-purple with hexagonal grid background and scan-line animations)
-- **Calendas Plus typography** — Serif display font for headings, system-ui stack for body text
-- **Session management** — Sidebar with session list, create/switch sessions, shared with CLI
-- **Context tracking** — Live context window usage bar in the topbar
-- **Tool confirmation** — Dangerous tools (process_kill, applescript, memory_delete) show a confirmation dialog before executing
-- **Responsive layout** — Three-panel design (sidebar, chat, artifact panel) with mobile hamburger drawer at <768px
+- **Real-time streaming** — tokens appear as the model generates them, with thinking blocks, streaming cursor, and live tool status cards
+- **Full tool execution** — all 45+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **File and image upload** — drag-and-drop, clipboard paste (Ctrl/Cmd+V), or file picker button. Images sent to model for analysis; text files included as context.
+- **Image generation** — generates images locally via ComfyUI. Results display inline with Full Size, Download, and Show in Finder actions.
+- **Document generation** — creates DOCX, XLSX, TXT, CSV, HTML documents. Download or open directly from the chat.
+- **Artifact viewer** — rich HTML artifacts render in a slide-out right panel. Download or reveal in Finder.
+- **Cron scheduler** — visual panel for managing recurring jobs with natural language input, live cron preview, enable/disable toggles, and run-now buttons. Results delivered via macOS notification, Telegram, and in-browser toast.
+- **Session management** — sidebar with searchable session list, create/rename/delete sessions, project organization with drag-and-drop
+- **Memory browser** — view, search, and manage persistent memories from a dedicated panel
+- **Connection manager** — configure all external services from the Settings panel (API keys, OAuth)
+- **Context tracking** — live context window usage bar in the topbar
+- **Tool confirmation** — dangerous tools show a confirmation dialog before executing
+- **Three themes** — Dark, Light, and Evangelion (NERV-inspired orange-on-purple with hexagonal grid background)
+- **Calendas Plus typography** — serif display font for headings, system-ui stack for body text
+- **Auto-generated titles** — sessions are automatically named based on the first message
+- **Responsive layout** — three-panel design (sidebar, chat, artifact panel) with mobile hamburger drawer
 
 ### Auto-Launch
 
-The web GUI starts automatically when you run `pre-launch` (requires Node.js). It runs in the background on port **7749** (configurable via `PRE_WEB_PORT`). If the server is already running, the launcher detects it and skips.
+The web GUI starts automatically when you run `pre-launch` (requires Node.js 18+). It runs in the background on port **7749** (configurable via `PRE_WEB_PORT`).
 
 ### Manual Launch
 
@@ -610,29 +609,15 @@ cd pre/web
 npm install          # First time only
 node server.js       # Starts on http://localhost:7749
 
-# Or with custom settings:
+# With custom settings:
 PRE_WEB_PORT=8080 PRE_CWD=/path/to/project node server.js
 ```
-
-### Architecture
-
-```
-Browser (localhost:7749)
-  ├── WebSocket ──► Express + ws server
-  │                   ├── Ollama NDJSON streaming client
-  │                   ├── Tool dispatcher (48 aliases, 37 tools)
-  │                   ├── Session JSONL read/write (shared with CLI)
-  │                   └── System prompt builder (memory, connections, rules)
-  └── REST API ──► /api/sessions, /api/status, /api/rewind
-```
-
-The web GUI never exposes raw API keys to the browser — all tool execution and credential access happens server-side.
 
 ---
 
 ## Telegram Integration
 
-PRE includes a built-in Telegram bot that gives you full agent access from your phone.
+PRE includes a built-in Telegram bot for full agent access from your phone.
 
 ### Setup
 
@@ -642,13 +627,11 @@ PRE includes a built-in Telegram bot that gives you full agent access from your 
 
 ### How It Works
 
-When PRE launches and a Telegram connection is configured, it automatically spawns `pre-telegram` as a background process. The bot long-polls the Telegram API (no webhook, no public URL required) and routes messages through the same Ollama instance as the TUI.
+The bot long-polls the Telegram API (no webhook, no public URL required) and routes messages through the same Ollama instance. Full system access — all tools, same memory, same agentic workflows.
 
-- **Full system access** — all 38+ tools, same as the TUI. File operations, bash, process management, clipboard, screenshots, Google services, everything.
-- **Owner authorization** — the first Telegram user to message the bot becomes the owner. All other users are blocked.
-- **Conversation management** — per-chat history with `/new` to reset
+- **Owner authorization** — the first user to message becomes the owner
+- **Cron delivery** — scheduled job results are sent to your Telegram chat
 - **Automatic lifecycle** — starts with PRE, stops with PRE (Ctrl+C kills both)
-- **Logs** — output goes to `~/.pre/telegram.log`
 
 ### Bot Commands
 
@@ -656,19 +639,15 @@ When PRE launches and a Telegram connection is configured, it automatically spaw
 |---------|-------------|
 | `/start` | Welcome message |
 | `/new` | New conversation |
-| `/status` | Bot status (model, connections, memory count) |
+| `/status` | Bot status |
 | `/memory` | List saved memories |
 | `/help` | Show commands |
-
-### Architecture
-
-The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that shares the same Ollama model, memory system, connections, and identity. It uses non-streaming Ollama chat with dynamic context scaling (matching the TUI), and sends typing indicators while the model generates.
 
 ---
 
 ## Architecture
 
-### How PRE Works
+### System Diagram
 
 ```
 ┌─────────────┐    Ollama Native    ┌─────────────────┐
@@ -691,18 +670,18 @@ The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that share
 ┌──▼──────────────┐  ┌──┴──────────────┐
 │    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
 │ Juggernaut XL   │  │  (Node.js/WS)   │  3 themes, streaming
-│  (MPS/Metal)    │  │  vanilla JS SPA  │  full tool execution
-│ 25-step, 1024px │  │  shared sessions │  Calendas Plus typography
+│  (MPS/Metal)    │  │  vanilla JS SPA  │  45+ tools, cron runner
+│ 25-step, 1024px │  │  shared sessions │  file upload, image gen
 └─────────────────┘  └─────────────────┘
 
   ~/.pre/
   ├── identity.json       # Agent name
   ├── connections.json    # API keys and OAuth tokens
-  ├── sessions/           # Conversation JSONL files (shared by CLI + web)
+  ├── cron.json           # Scheduled recurring tasks
+  ├── sessions/           # Conversation JSONL (shared by CLI + web + cron)
   ├── history             # Input history (arrow-key recall)
   ├── checkpoints/        # File backups for /undo
-  ├── artifacts/          # HTML artifacts and generated images
-  ├── cron.json           # Scheduled recurring tasks
+  ├── artifacts/          # HTML artifacts, documents, and generated images
   ├── comfyui.json        # ComfyUI configuration (if installed)
   ├── comfyui/            # ComfyUI installation (if installed)
   ├── comfyui-venv/       # Python venv for ComfyUI (if installed)
@@ -717,62 +696,39 @@ The Telegram bot (`telegram.m` / `pre-telegram`) is a separate binary that share
           └── channels/   # Channel metadata
 ```
 
-### Optimization Stack
-
-PRE's performance comes from a stack of reinforcing optimizations, not any single trick:
-
-| Layer | Optimization | Effect |
-|-------|-------------|--------|
-| **Model selection** | Gemma 4 26B-A4B MoE — 3.8B active params of 26B total | 26B quality at ~4B speed |
-| **Quantization** | q4_K_M (~17 GB) — sweet spot of quality vs. memory | Fits comfortably in unified memory |
-| **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
-| **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
-| **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
-| **Prompt compression** | Function-signature tool format (~800 tokens for 35 tools) | More room for conversation, faster prefill |
-| **Model pre-warming** | `keep_alive: "24h"` + real warmup request (with matching `num_ctx`) at launch | Full KV cache pre-allocated, no cold-start penalty |
-| **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth performance numbers |
-| **Hybrid tool calling** | Native Ollama `tools` API for small tools, text-based for artifacts | Reliable structured calls + large content generation |
-| **Artifact compaction** | Strip HTML from session after saving to disk | Prevents prefill stalls on follow-up turns |
-| **Image data URIs** | Convert `file://` image refs to base64 at render time | Local images display in WebKit without cross-origin blocks |
-| **Auto-compaction** | Summarize old turns at 75% context usage | Extends effective session length |
-| **Tool response cap** | 8KB limit per tool result | Prevents context blowout from large files |
-
 ### The PRE Binary
 
-**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines). It handles:
-- Ollama native API client with raw `recv()` NDJSON streaming
-- Fixed `num_ctx=65536` matching Modelfile (avoids Ollama reload penalty)
-- System prompt as `role:system` message for KV cache prefix reuse
-- Streaming markdown renderer with ANSI formatting
-- Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` for large content
-- 38+ tool implementations with two-tier permissions
-- Local image generation via ComfyUI + Juggernaut XL/SDXL Turbo (MPS-accelerated, checkpoint-adaptive workflow)
-- Multi-part artifacts with incremental append mode
+**PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines) handling:
+- Raw `recv()` NDJSON streaming with 64KB ring buffer
+- Fixed `num_ctx=65536` matching Modelfile (avoids Ollama reload)
+- 45+ tool implementations with two-tier permissions
+- Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` fallback
+- Local image generation via ComfyUI (checkpoint-adaptive workflow)
+- Multi-part artifacts with incremental append
 - PDF export via native WebKit rendering
-- Cron registry for recurring scheduled tasks (`/cron`, persisted in `~/.pre/cron.json`)
+- Cron registry for recurring tasks
 - Built-in Google OAuth 2.0 with multi-account support
-- Connection management for external services (Brave, GitHub, Google, Wolfram, Telegram)
-- Automatic Telegram bot subprocess management
-- Agent identity system (custom naming, persisted across sessions)
 - Persistent memory with per-project scoping
-- Channel-based conversation management
-- Project detection and PRE.md loading
-- Context compaction and token budget management (65K fixed context)
-- Artifact session compaction (strips HTML from session after saving to disk)
-- Model unload on exit (frees GPU memory on Ctrl+C)
+- Context compaction and token budget management
 - File checkpointing and undo
-- Ctrl+V image paste for multimodal queries (via AppKit)
-- linenoise-based line editor with tab completion and ANSI-aware cursor
+- Ctrl+V image paste for multimodal queries
+- linenoise-based line editor with tab completion
 
-**Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines) auto-launched by PRE:
-- Telegram Bot API long-polling (no webhook/public URL needed)
-- Full tool access matching the TUI (all 38+ tools)
-- Per-chat conversation history with dynamic context scaling
-- Owner-based authorization (first user to message becomes owner)
-- Typing indicators via forked child process
-- Shared identity, connections, and memory with the TUI
+**Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA:
+- NDJSON streaming client for Ollama
+- Server-side tool execution (same tool loop as CLI)
+- Headless cron runner with multi-channel notification delivery
+- Session JSONL read/write (shared format with CLI)
+- File/image upload (drag-and-drop, clipboard paste, file picker)
+- Document generation (DOCX, XLSX via docx/exceljs, PDF via pdfkit)
+- Three themes with CSS custom properties
+- No framework, no bundler — under 3K lines total JS
 
-**Ollama** serves the model via a custom Modelfile (`pre-gemma4`) with tuned parameters and a small default context. PRE uses the native `/api/chat` endpoint — not the OpenAI-compatible layer — for access to server-reported metrics, native multimodal support, and streaming NDJSON.
+**Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines):
+- Long-polling (no webhook needed)
+- Full tool access matching CLI
+- Owner-based authorization
+- Automatic lifecycle management
 
 ---
 
@@ -806,9 +762,12 @@ All PRE data lives in `~/.pre/`:
 ~/.pre/
 ├── identity.json       # Agent name
 ├── connections.json    # API keys, OAuth tokens (chmod 600)
-├── sessions/           # Conversation JSONL (one per channel)
+├── cron.json           # Scheduled recurring tasks
+├── sessions/           # Conversation JSONL (one per session)
 ├── history             # Readline history
 ├── checkpoints/        # File backups (auto-cleaned)
+├── artifacts/          # Generated documents, images, artifacts
+├── comfyui.json        # ComfyUI config (optional)
 ├── telegram.log        # Telegram bot output
 ├── telegram_owner      # Authorized Telegram user ID
 ├── memory/
@@ -829,14 +788,15 @@ pre/
 ├── README.md               # This file
 ├── install.sh              # Automated installer
 ├── system.md               # Model system prompt reference
+├── benchmark.sh            # Performance benchmarking tool
 ├── engine/
 │   ├── pre.m               # PRE CLI (single-file, ~10000 lines)
 │   ├── telegram.m          # Telegram bot bridge (~2000 lines)
-│   ├── linenoise.c/h       # Terminal line editor (patched: Ctrl+V, ANSI-aware)
+│   ├── linenoise.c/h       # Terminal line editor (patched)
 │   ├── Makefile             # Build: make pre telegram
-│   ├── Modelfile            # Ollama model config (pre-gemma4, num_ctx=65536)
-│   ├── pre-launch           # Universal launcher script (starts CLI + web GUI)
-│   └── launch-telegram      # Standalone Telegram launcher (optional)
+│   ├── Modelfile            # Ollama model config (num_ctx=65536)
+│   ├── pre-launch           # Universal launcher script
+│   └── launch-telegram      # Standalone Telegram launcher
 ├── web/                     # Web GUI (Node.js + vanilla JS)
 │   ├── server.js            # Express + WebSocket server
 │   ├── package.json
@@ -844,18 +804,37 @@ pre/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client
 │   │   ├── sessions.js      # JSONL read/write (shared with CLI)
 │   │   ├── tools.js         # Tool dispatcher + execution loop
-│   │   ├── tools-defs.js    # 37 tool definitions for Ollama
+│   │   ├── tools-defs.js    # 45+ tool definitions for Ollama
 │   │   ├── context.js       # System prompt builder
+│   │   ├── memory.js        # Auto-extraction engine
+│   │   ├── connections.js   # Credential management
 │   │   ├── constants.js     # MODEL_CTX=65536, paths
-│   │   └── tools/           # Tool implementations (bash, files, web, memory, system)
+│   │   ├── cron-runner.js   # Headless cron execution + notifications
+│   │   └── tools/           # Tool implementations
+│   │       ├── bash.js      # Shell execution
+│   │       ├── files.js     # File operations
+│   │       ├── web.js       # Web fetch/search
+│   │       ├── memory.js    # Memory CRUD
+│   │       ├── system.js    # System inspection + desktop
+│   │       ├── artifact.js  # HTML artifact generation
+│   │       ├── document.js  # DOCX/XLSX/PDF/TXT/CSV generation
+│   │       ├── image.js     # ComfyUI image generation
+│   │       ├── cron.js      # Cron job management
+│   │       ├── github.js    # GitHub API
+│   │       ├── google.js    # Gmail, Drive, Docs
+│   │       ├── telegram.js  # Telegram Bot API
+│   │       ├── jira.js      # Jira API
+│   │       ├── confluence.js # Confluence API
+│   │       ├── smartsheet.js # Smartsheet API
+│   │       └── slack.js     # Slack API
 │   └── public/
 │       ├── index.html       # SPA shell
+│       ├── favicon.svg
 │       ├── fonts/           # Calendas Plus (regular, italic, bold)
-│       ├── css/             # base, themes (dark/light/evangelion), chat, sidebar, components, animations
+│       ├── css/             # base, themes, chat, sidebar, components, animations
 │       └── js/              # app, ws, chat, markdown, themes
-├── docs/
-│   └── *.md                 # Research notes from Flash-MoE era
-└── benchmark_results/       # Performance benchmarks
+└── docs/
+    └── *.md                 # Research notes
 ```
 
 ---
@@ -863,16 +842,6 @@ pre/
 ## Contributing
 
 PRE is built and maintained by **Christopher Bradford** — systems administrator at Joby Aviation and AI engineer.
-
-**Areas for contribution:**
-- **New tools** — Calendar integration, git operations, Slack, Linear/Jira
-- **Smarter memory** — Auto-extraction of important facts, memory relevance ranking
-- **Better rendering** — Syntax highlighting in code blocks, image display in terminal
-- **Model support** — Test with other Ollama models (Llama 4, Qwen 3, etc.)
-- **New connections** — Slack, Discord, Notion, Linear, and other service integrations
-- **Web GUI** — Sidebar features (channels, artifacts viewer), image generation UI, cron management, slash command palette
-- **Telegram enhancements** — Inline keyboards, photo/document handling, group chat support
-- **Documentation** — Tutorials, use-case guides, video walkthroughs
 
 **How to contribute:**
 1. Fork and create a branch
@@ -889,7 +858,6 @@ PRE is built and maintained by **Christopher Bradford** — systems administrato
 - **Google** for the Gemma 4 model family
 - **Ollama** for making local model serving effortless
 - **Apple** for unified memory architecture that makes this possible
-- The original **Flash-MoE** research that informed PRE's early design
 
 ## License
 

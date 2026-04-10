@@ -225,6 +225,20 @@ if [ -f "$WEB_DIR/package.json" ]; then
             cd "$WEB_DIR"
             npm install --silent 2>&1 | tail -3
             ok "  Web GUI dependencies installed (express, ws, docx, exceljs, pdfkit)"
+
+            # Install terminal-notifier for clickable cron notifications
+            if ! command -v terminal-notifier &>/dev/null; then
+                if command -v brew &>/dev/null; then
+                    echo "  Installing terminal-notifier (clickable cron notifications)..."
+                    brew install terminal-notifier --quiet 2>&1 | tail -1
+                    ok "  terminal-notifier installed"
+                else
+                    warn "  terminal-notifier not found — cron notifications will use basic osascript."
+                    echo -e "  ${DIM}Install later with: brew install terminal-notifier${RESET}"
+                fi
+            else
+                ok "  terminal-notifier available (clickable cron notifications)"
+            fi
             cd "$REPO_DIR"
         else
             warn "  Node.js $NODE_VER is too old — need v18+. Web GUI will not be available."
@@ -506,11 +520,15 @@ echo -e "    PRE will ask you to name your agent and optionally"
 echo -e "    configure connections (Google, GitHub, Brave, Wolfram)."
 echo ""
 echo -e "  ${BOLD}Connections (optional):${RESET}"
-echo -e "    Type ${BOLD}/connections${RESET} inside PRE to set up:"
+echo -e "    Type ${BOLD}/connections${RESET} inside PRE or use the Web GUI Settings to set up:"
 echo -e "    • ${DIM}Google        — Gmail, Drive, Docs (built-in OAuth)${RESET}"
-echo -e "    • ${DIM}Telegram      — chat from your phone${RESET}"
+echo -e "    • ${DIM}Telegram      — chat from your phone + cron delivery${RESET}"
+echo -e "    • ${DIM}Slack         — channel messaging${RESET}"
 echo -e "    • ${DIM}Brave Search  — web search${RESET}"
 echo -e "    • ${DIM}GitHub        — repos, issues, PRs${RESET}"
+echo -e "    • ${DIM}Jira          — issues, projects, transitions${RESET}"
+echo -e "    • ${DIM}Confluence    — wiki pages, search${RESET}"
+echo -e "    • ${DIM}Smartsheet    — spreadsheets, rows, search${RESET}"
 echo -e "    • ${DIM}Wolfram Alpha — computation${RESET}"
 if [ -f "$HOME/.pre/comfyui.json" ]; then
 echo -e "    • ${GREEN}ComfyUI       — image generation (installed ✓)${RESET}"
@@ -520,9 +538,10 @@ fi
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
 echo -e "    ${DIM}~/.pre/identity.json${RESET}  Agent name"
-echo -e "    ${DIM}~/.pre/sessions/${RESET}      Session history"
+echo -e "    ${DIM}~/.pre/sessions/${RESET}      Session history (shared by CLI + Web)"
 echo -e "    ${DIM}~/.pre/memory/${RESET}        Persistent memory"
-echo -e "    ${DIM}~/.pre/artifacts/${RESET}     Generated documents & artifacts"
+echo -e "    ${DIM}~/.pre/artifacts/${RESET}     Generated documents, images & artifacts"
+echo -e "    ${DIM}~/.pre/cron.json${RESET}      Scheduled recurring tasks"
 echo -e "    ${DIM}~/.pre/telegram.log${RESET}   Telegram bot log"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
