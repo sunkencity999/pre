@@ -7,6 +7,14 @@ const Chat = (() => {
   let streamContent = '';
   let thinkContent = '';
   let isStreaming = false;
+  let currentDelegateStreamEl = null;
+  let delegateStreamContent = '';
+
+  const DELEGATE_META = {
+    claude: { name: 'Claude', color: '#cc785c' },
+    codex:  { name: 'Codex',  color: '#10a37f' },
+    gemini: { name: 'Gemini', color: '#4285f4' },
+  };
 
   /**
    * Add a message to the chat
@@ -23,10 +31,24 @@ const Chat = (() => {
 
     const header = document.createElement('div');
     header.className = 'message-header';
-    const roleSpan = document.createElement('span');
-    roleSpan.className = 'message-role';
-    roleSpan.textContent = role === 'user' ? 'You' : 'PRE';
-    header.appendChild(roleSpan);
+    if (extra.delegate && role === 'assistant') {
+      header.appendChild(createDelegateBadge(extra.delegate));
+    } else {
+      const roleSpan = document.createElement('span');
+      roleSpan.className = 'message-role';
+      roleSpan.textContent = role === 'user' ? 'You' : 'PRE';
+      header.appendChild(roleSpan);
+      if (extra.delegate && role === 'user') {
+        const meta = DELEGATE_META[extra.delegate];
+        if (meta) {
+          const tag = document.createElement('span');
+          tag.className = 'delegate-tag';
+          tag.textContent = `→ ${meta.name}`;
+          tag.style.color = meta.color;
+          header.appendChild(tag);
+        }
+      }
+    }
     if (role === 'assistant') {
       header.appendChild(createCopyBtn(() => content));
     }
@@ -408,6 +430,7 @@ const Chat = (() => {
       }
       addMessage(msg.role, msg.content, {
         toolCalls: msg.tool_calls,
+        delegate: msg.delegate,
       });
     }
 
@@ -510,12 +533,103 @@ const Chat = (() => {
     if (el) el.remove();
   }
 
+  // ── Delegate (frontier AI) streaming ──
+
+  /**
+   * Start streaming a delegated response from a frontier AI
+   */
+  function startDelegateStream(target) {
+    hideThinkingIndicator();
+    const container = messagesEl();
+    const welcome = container.querySelector('.welcome');
+    if (welcome) welcome.remove();
+
+    isStreaming = true;
+    delegateStreamContent = '';
+
+    const meta = DELEGATE_META[target] || { name: target, color: 'var(--primary)' };
+
+    const msgEl = document.createElement('div');
+    msgEl.className = 'message assistant';
+    msgEl.id = 'streaming-message';
+
+    const header = document.createElement('div');
+    header.className = 'message-header';
+    const badge = document.createElement('span');
+    badge.className = `message-role delegate-badge delegate-badge-${target}`;
+    badge.textContent = meta.name;
+    badge.style.setProperty('--delegate-color', meta.color);
+    header.appendChild(badge);
+    header.appendChild(createCopyBtn(() => delegateStreamContent));
+    msgEl.appendChild(header);
+
+    currentDelegateStreamEl = document.createElement('div');
+    currentDelegateStreamEl.className = 'message-content streaming-cursor';
+    msgEl.appendChild(currentDelegateStreamEl);
+
+    container.appendChild(msgEl);
+    scrollToBottom();
+    setTypingIndicator(`Waiting for ${meta.name}...`);
+  }
+
+  /**
+   * Append a token to the delegate stream
+   */
+  function appendDelegateToken(content) {
+    if (!currentDelegateStreamEl) return;
+    delegateStreamContent += content;
+    currentDelegateStreamEl.innerHTML = Markdown.render(delegateStreamContent);
+    scrollToBottom();
+    setTypingIndicator('Receiving...');
+  }
+
+  /**
+   * End the delegate stream
+   */
+  function endDelegateStream(target, duration) {
+    isStreaming = false;
+    hideThinkingIndicator();
+    if (!currentDelegateStreamEl) return;
+
+    currentDelegateStreamEl.classList.remove('streaming-cursor');
+
+    const msgEl = document.getElementById('streaming-message');
+    if (msgEl && duration) {
+      const statsEl = document.createElement('div');
+      statsEl.className = 'stats-line';
+      const secs = (duration / 1000).toFixed(1);
+      const meta = DELEGATE_META[target] || { name: target };
+      statsEl.textContent = `${meta.name} · ${secs}s`;
+      msgEl.appendChild(statsEl);
+    }
+
+    if (msgEl) msgEl.removeAttribute('id');
+    currentDelegateStreamEl = null;
+    setTypingIndicator('');
+    scrollToBottom();
+  }
+
+  /**
+   * Create a delegate badge element for history rendering
+   */
+  function createDelegateBadge(target) {
+    const meta = DELEGATE_META[target] || { name: target, color: 'var(--primary)' };
+    const badge = document.createElement('span');
+    badge.className = `message-role delegate-badge delegate-badge-${target}`;
+    badge.textContent = meta.name;
+    badge.style.setProperty('--delegate-color', meta.color);
+    return badge;
+  }
+
   return {
     addMessage,
     startStream,
     appendToken,
     appendThinking,
     endStream,
+    startDelegateStream,
+    appendDelegateToken,
+    endDelegateStream,
     addToolCall,
     updateToolCard,
     addDocumentCard,

@@ -53,6 +53,7 @@ This means PRE can:
 - Generate images locally, create documents, build artifacts, and export PDFs
 - Run recurring tasks on a schedule — morning briefings, system checks, report generation — and deliver results via macOS notification and Telegram
 - Manage Jira tickets, search Confluence wikis, update Smartsheet rows, and send Slack messages
+- Delegate prompts to frontier AI models (Claude, Codex, Gemini) when cloud-level intelligence is needed — PRE becomes an agentic orchestration layer
 
 ---
 
@@ -72,6 +73,7 @@ This means PRE can:
   - [Context Management](#context-management)
 - [Best Practices](#best-practices)
 - [Web GUI](#web-gui)
+- [Frontier AI Delegation](#frontier-ai-delegation)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -135,6 +137,8 @@ PRE is not a chatbot — it's a local agent with deep system access and 45+ tool
 **Connect to external services** — Google (Gmail, Drive, Docs), GitHub, Telegram, Slack, Jira, Confluence, Smartsheet, Brave Search, and Wolfram Alpha. Configure via `/connections` or the web GUI Settings panel.
 
 **Use from your browser** — Built-in web GUI at `http://localhost:7749` with three themes (Dark, Light, Evangelion), real-time streaming, full tool execution, session management, project organization, memory browser, cron scheduler, and connection management.
+
+**Delegate to frontier AI** — When a task requires cloud-level intelligence, route it to Claude (Anthropic), Codex (OpenAI), or Gemini (Google) with a single click. PRE detects which CLIs are installed, streams the response back in real-time, and stores the result in the session alongside local messages. Use local inference for 95% of tasks; escalate on demand.
 
 **Chat from your phone** — Configure a Telegram bot and PRE bridges it automatically. Full system access — same tools, same memory, same agentic workflows.
 
@@ -587,6 +591,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 - **Image generation** — generates images locally via ComfyUI. Results display inline with Full Size, Download, and Show in Finder actions.
 - **Document generation** — creates DOCX, XLSX, TXT, CSV, HTML documents. Download or open directly from the chat.
 - **Artifact viewer** — rich HTML artifacts render in a slide-out right panel. Download or reveal in Finder.
+- **Frontier AI delegation** — toggle between PRE (local), Claude, Codex, or Gemini via a dropdown next to the input. Unavailable CLIs are auto-hidden. Responses stream in real-time with color-coded model badges. Sessions preserve which model generated each message.
 - **Cron scheduler** — visual panel for managing recurring jobs with natural language input, live cron preview, enable/disable toggles, and run-now buttons. Results delivered via macOS notification, Telegram, and in-browser toast.
 - **Session management** — sidebar with searchable session list, create/rename/delete sessions, project organization with drag-and-drop
 - **Memory browser** — view, search, and manage persistent memories from a dedicated panel
@@ -612,6 +617,30 @@ node server.js       # Starts on http://localhost:7749
 # With custom settings:
 PRE_WEB_PORT=8080 PRE_CWD=/path/to/project node server.js
 ```
+
+---
+
+## Frontier AI Delegation
+
+PRE can delegate prompts to frontier AI models when cloud-level intelligence is needed, turning it into an **agentic orchestration layer** — use local inference for everyday tasks and escalate to the most powerful models on demand.
+
+### Supported Models
+
+| Delegate | CLI | Install |
+|----------|-----|---------|
+| **Claude** (Anthropic) | `claude` | `npm install -g @anthropic-ai/claude-code` |
+| **Codex** (OpenAI) | `codex` | `npm install -g @openai/codex` |
+| **Gemini** (Google) | `gemini` | `npm install -g @anthropic-ai/gemini-cli` |
+
+### How It Works
+
+1. PRE detects which CLIs are installed at startup and hides unavailable options
+2. In the GUI, click the **delegate toggle** (next to the attachment button) to switch between PRE, Claude, Codex, or Gemini
+3. Your prompt is sent to the selected CLI in text-only mode (no tool use) and the response streams back in real-time
+4. Responses display with a **color-coded model badge** (orange for Claude, green for Codex, blue for Gemini)
+5. Session history preserves which model generated each message — badges render on reload
+
+The delegates run in non-interactive mode with tool use disabled (`claude --tools ""`, `codex -a suggest`, `gemini -o text`) so they return text responses only. The frontier model thinks; PRE acts.
 
 ---
 

@@ -9,6 +9,10 @@
 
   // Track current session — restore across refreshes, default to most recent
   let currentSession = sessionStorage.getItem('pre-session') || null;
+
+  // ── Delegate (frontier AI) state ──
+  let currentDelegate = 'local'; // 'local', 'claude', 'codex', 'gemini'
+  let delegateAvailability = {}; // populated on connect
   function setCurrentSession(id) {
     currentSession = id;
     if (id) sessionStorage.setItem('pre-session', id);
@@ -93,6 +97,26 @@
         loadSessionList(); // refresh sidebar to show new cron session
         break;
 
+      // ── Delegate (frontier AI) events ──
+      case 'delegate_start':
+        Chat.startDelegateStream(msg.target);
+        break;
+
+      case 'delegate_token':
+        Chat.appendDelegateToken(msg.content);
+        break;
+
+      case 'delegate_done':
+        Chat.endDelegateStream(msg.target, msg.duration);
+        break;
+
+      case 'delegate_error': {
+        Chat.endDelegateStream(msg.target);
+        const name = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' }[msg.target] || msg.target;
+        Chat.addError(`${name}: ${msg.message}`);
+        break;
+      }
+
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
@@ -107,6 +131,13 @@
   });
 
   WS.on('open', async () => {
+    // Load delegate availability
+    try {
+      const dRes = await fetch('/api/delegates');
+      delegateAvailability = await dRes.json();
+      initDelegateSelector();
+    } catch {}
+
     // Load session list first so we can pick the most recent if needed
     await loadSessionList();
 
@@ -315,8 +346,12 @@
       wsMsg.content = fileBlocks + (wsMsg.content ? '\n\n' + wsMsg.content : '');
     }
 
-    // Send to server
-    WS.send(wsMsg);
+    // Send to server — delegate or local
+    if (currentDelegate !== 'local') {
+      WS.send({ type: 'delegate', target: currentDelegate, content: wsMsg.content });
+    } else {
+      WS.send(wsMsg);
+    }
 
     // Clear input and attachments
     input.value = '';
@@ -507,6 +542,77 @@
   });
 
   // ── Cron toast notification ──
+  // ── Delegate selector UI ──
+  const delegateBtn = document.getElementById('delegate-btn');
+  const delegateDropdown = document.getElementById('delegate-dropdown');
+  const delegateLabel = delegateBtn.querySelector('.delegate-label');
+
+  const DELEGATE_COLORS = { local: null, claude: '#cc785c', codex: '#10a37f', gemini: '#4285f4' };
+  const DELEGATE_NAMES = { local: 'PRE', claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+
+  function initDelegateSelector() {
+    // Hide unavailable delegates, show available ones with version
+    for (const [key, info] of Object.entries(delegateAvailability)) {
+      const option = delegateDropdown.querySelector(`.delegate-option[data-target="${key}"]`);
+      if (!option) continue;
+      if (info.available) {
+        option.style.display = '';
+        const badge = option.querySelector('.delegate-status');
+        if (badge) {
+          badge.textContent = info.version || 'installed';
+          badge.classList.remove('unavailable');
+        }
+      } else {
+        option.style.display = 'none';
+      }
+    }
+    // If no delegates available at all, hide the entire delegate button
+    const anyAvailable = Object.values(delegateAvailability).some(d => d.available);
+    delegateBtn.style.display = anyAvailable ? '' : 'none';
+  }
+
+  delegateBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    delegateDropdown.classList.toggle('hidden');
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', () => delegateDropdown.classList.add('hidden'));
+
+  // Handle delegate selection
+  delegateDropdown.addEventListener('click', (e) => {
+    const option = e.target.closest('.delegate-option');
+    if (!option) return;
+    const target = option.dataset.target;
+
+    // Check availability for non-local delegates
+    if (target !== 'local' && delegateAvailability[target] && !delegateAvailability[target].available) {
+      const hint = delegateAvailability[target].installHint || '';
+      Chat.addError(`${DELEGATE_NAMES[target]} CLI is not installed.${hint ? ' Install with: ' + hint : ''}`);
+      return;
+    }
+
+    currentDelegate = target;
+    delegateDropdown.classList.add('hidden');
+
+    // Update button appearance
+    delegateLabel.textContent = DELEGATE_NAMES[target] || 'PRE';
+    if (target === 'local') {
+      delegateBtn.classList.remove('delegate-active');
+      delegateBtn.style.removeProperty('--delegate-color');
+      input.placeholder = 'Message PRE...';
+    } else {
+      delegateBtn.classList.add('delegate-active');
+      delegateBtn.style.setProperty('--delegate-color', DELEGATE_COLORS[target]);
+      input.placeholder = `Message ${DELEGATE_NAMES[target]}...`;
+    }
+
+    // Update active state in dropdown
+    delegateDropdown.querySelectorAll('.delegate-option').forEach(o => {
+      o.classList.toggle('active', o.dataset.target === target);
+    });
+  });
+
   function showCronToast(description, sessionId, preview) {
     const toast = document.createElement('div');
     toast.className = 'cron-toast';

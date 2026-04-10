@@ -25,6 +25,7 @@ const {
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
 const { executeCronJob } = require('./src/cron-runner');
+const delegate = require('./src/tools/delegate');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -349,6 +350,11 @@ function broadcastWS(event) {
   });
 }
 
+// ── Delegate (frontier AI) routes ──
+app.get('/api/delegates', (_req, res) => {
+  res.json(delegate.checkAvailability());
+});
+
 app.get('/api/status', async (_req, res) => {
   const ollamaUp = await healthCheck();
   res.json({
@@ -391,6 +397,46 @@ wss.on('connection', (ws) => {
       if (resolver) {
         resolver(msg.approved);
         pendingConfirms.delete(msg.id);
+      }
+      return;
+    }
+
+    // ── Delegate to frontier AI ──
+    if (msg.type === 'delegate') {
+      const target = msg.target; // 'claude', 'codex', 'gemini'
+      const content = msg.content;
+      if (!target || !content?.trim()) return;
+
+      console.log(`[ws] Delegating to ${target}: ${content.slice(0, 80)}...`);
+
+      // Save user message to session
+      appendMessage(sessionId, { role: 'user', content, delegate: target });
+      ws.send(JSON.stringify({ type: 'delegate_start', target }));
+
+      try {
+        const result = await delegate.execute(target, content, {
+          signal: abortController?.signal,
+          onToken: (chunk) => {
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: 'delegate_token', target, content: chunk }));
+            }
+          },
+        });
+
+        // Save assistant response to session
+        appendMessage(sessionId, { role: 'assistant', content: result.response, delegate: target });
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            type: 'delegate_done',
+            target,
+            response: result.response,
+            duration: result.duration,
+          }));
+        }
+      } catch (err) {
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'delegate_error', target, message: err.message }));
+        }
       }
       return;
     }

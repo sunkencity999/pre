@@ -625,3 +625,107 @@
   margin-top: 8px;
   font-family: 'SF Mono', monospace;
 }
+
+/* ── Delegate selector ── */
+.delegate-selector {
+  position: relative;
+}
+.btn-delegate {
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--primary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-width: 44px;
+  text-align: center;
+}
+.btn-delegate:hover {
+  border-color: var(--primary);
+}
+.btn-delegate.delegate-active {
+  border-color: var(--delegate-color, var(--primary));
+  color: var(--delegate-color, var(--primary));
+  background: color-mix(in srgb, var(--delegate-color, var(--primary)) 10%, var(--surface));
+}
+.delegate-label {
+  pointer-events: none;
+}
+.delegate-dropdown {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  min-width: 200px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  z-index: 1000;
+}
+.delegate-dropdown.hidden {
+  display: none;
+}
+.delegate-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-align: left;
+}
+.delegate-option:hover {
+  background: var(--hover);
+}
+.delegate-option.active {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+}
+.delegate-option small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.delegate-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.delegate-status {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.delegate-status.unavailable {
+  color: var(--warning);
+}
+
+/* Delegate badge on messages */
+.delegate-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  margin-bottom: 6px;
+}
+.delegate-badge-claude { background: rgba(204,120,92,0.15); color: #cc785c; }
+.delegate-badge-codex { background: rgba(16,163,127,0.15); color: #10a37f; }
+.delegate-badge-gemini { background: rgba(66,133,244,0.15); color: #4285f4; }
+.delegate-tag {
+  font-size: 0.7rem;
+  opacity: 0.7;
+  margin-left: 6px;
+}
