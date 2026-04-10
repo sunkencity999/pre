@@ -994,6 +994,16 @@
       return { h, m };
     }
 
+    // Infer time from time-of-day words when no explicit time given
+    function inferTimeOfDay(str) {
+      if (/\bmorning\b/.test(str)) return { h: 9, m: 0 };
+      if (/\bafternoon\b/.test(str)) return { h: 14, m: 0 };
+      if (/\bevening\b/.test(str)) return { h: 18, m: 0 };
+      if (/\bnight\b/.test(str)) return { h: 21, m: 0 };
+      if (/\bmidday\b/.test(str)) return { h: 12, m: 0 };
+      return null;
+    }
+
     // Day name → cron day number
     const dayMap = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
 
@@ -1006,44 +1016,48 @@
       return [...new Set(found)].sort();
     }
 
-    const time = parseTime(s);
+    // Resolve time: explicit > time-of-day word > default 9am
+    const time = parseTime(s) || inferTimeOfDay(s);
     const min = time ? time.m : 0;
     const hour = time ? time.h : 9;
 
-    // "every N minutes"
+    // "every N minutes" / "every N mins"
     let match = s.match(/every\s+(\d+)\s*min/);
     if (match) return { cron: `*/${match[1]} * * * *`, description: `Every ${match[1]} minutes` };
 
     // "every minute"
     if (/every\s+minute/.test(s)) return { cron: '* * * * *', description: 'Every minute' };
 
+    // "every half hour" / "every 30 minutes" (covered above but also handle phrasing)
+    if (/every\s+half\s*hour|half[\s-]hourly/.test(s)) {
+      return { cron: '*/30 * * * *', description: 'Every 30 minutes' };
+    }
+
     // "every N hours"
     match = s.match(/every\s+(\d+)\s*hour/);
     if (match) return { cron: `0 */${match[1]} * * *`, description: `Every ${match[1]} hours` };
 
     // "every hour" / "hourly"
-    if (/every\s+hour|hourly/.test(s)) {
+    if (/\bevery\s+hour\b|\bhourly\b/.test(s)) {
       return { cron: `${min} * * * *`, description: `Every hour${min ? ` at :${String(min).padStart(2,'0')}` : ''}` };
     }
 
-    // "weekdays at TIME" / "every weekday at TIME"
+    // "weekdays at TIME" / "every weekday" / "monday through friday"
     if (/weekday|week\s*day|mon(day)?\s*(through|thru|-|to)\s*fri(day)?/.test(s)) {
-      if (!time) return { cron: `0 9 * * 1-5`, description: 'Weekdays at 9:00 AM' };
       return { cron: `${min} ${hour} * * 1-5`, description: `Weekdays at ${fmtTime(hour, min)}` };
     }
 
     // "weekends at TIME"
     if (/weekend/.test(s)) {
-      if (!time) return { cron: `0 9 * * 0,6`, description: 'Weekends at 9:00 AM' };
       return { cron: `${min} ${hour} * * 0,6`, description: `Weekends at ${fmtTime(hour, min)}` };
     }
 
-    // "every day at TIME" / "daily at TIME"
-    if (/every\s*day|daily/.test(s)) {
+    // "every day" / "daily" / "every morning" / "every afternoon" / "every evening" / "every night"
+    if (/every\s*day|daily|every\s+morning|every\s+afternoon|every\s+evening|every\s+night|every\s+midday|each\s+(day|morning|afternoon|evening|night)/.test(s)) {
       return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
     }
 
-    // Specific days: "monday and wednesday at 3pm", "every tuesday at 10am"
+    // Specific days: "monday and wednesday at 3pm", "every tuesday at 10am", "on fridays at noon"
     const days = parseDays(s);
     if (days.length > 0) {
       const dow = days.join(',');
@@ -1052,20 +1066,41 @@
       return { cron: `${min} ${hour} * * ${dow}`, description: `${label} at ${fmtTime(hour, min)}` };
     }
 
-    // "every month on the Nth at TIME" / "monthly on the Nth"
-    match = s.match(/(?:every\s+month|monthly)\s+(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?/);
+    // "every month on the Nth" / "monthly on the Nth" / "on the 1st of every month"
+    match = s.match(/(?:every\s+month|monthly|of\s+every\s+month)\s*(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?/)
+         || s.match(/(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?(?:every|each)\s+month/);
     if (match) {
       const dom = parseInt(match[1]);
       return { cron: `${min} ${hour} ${dom} * *`, description: `Monthly on the ${dom}${ordSuffix(dom)} at ${fmtTime(hour, min)}` };
     }
 
     // "every week" / "weekly"
-    if (/every\s*week|weekly/.test(s)) {
+    if (/every\s*week\b|weekly/.test(s)) {
       return { cron: `${min} ${hour} * * 1`, description: `Weekly on Monday at ${fmtTime(hour, min)}` };
     }
 
-    // Just a time with no frequency specified → daily
-    if (time && s.length < 15) {
+    // "twice a day" / "2x daily"
+    if (/twice\s+a\s+day|2x?\s+daily|two\s+times?\s+a\s+day/.test(s)) {
+      return { cron: `0 9,17 * * *`, description: 'Twice daily at 9:00 AM and 5:00 PM' };
+    }
+
+    // "three times a day" / "3x daily"
+    if (/three\s+times?\s+a\s+day|3x?\s+daily/.test(s)) {
+      return { cron: `0 8,13,18 * * *`, description: 'Three times daily at 8 AM, 1 PM, 6 PM' };
+    }
+
+    // "at TIME" with no other context → daily
+    if (/^(?:at\s+)/.test(s) && time) {
+      return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
+    }
+
+    // Just a bare time like "9am" or "3:30pm" → daily
+    if (time && s.replace(/\d{1,2}(:\d{2})?\s*(am|pm)?/i, '').trim().length < 5) {
+      return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
+    }
+
+    // Last resort: if we have any time-of-day word, treat as daily
+    if (inferTimeOfDay(s)) {
       return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
     }
 
