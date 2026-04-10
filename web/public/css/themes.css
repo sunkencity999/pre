@@ -99,6 +99,200 @@ html[data-theme="evangelion"] {
   --overlay: rgba(13, 0, 20, 0.8);
 }
 
+/* ── Metal Gear Theme ── */
+/* Inspired by the MGS Codec screen: green phosphor CRT, military terminal aesthetic */
+html[data-theme="metalgear"] {
+  --bg: #0a0e0a;
+  --surface: #0f150f;
+  --surface-hover: #141e14;
+  --surface-active: #1a261a;
+  --border: #1e3a1e;
+  --border-light: #254025;
+  --text: #33ff33;
+  --text-secondary: #28cc28;
+  --text-muted: #1a801a;
+  --primary: #33ff33;
+  --primary-hover: #66ff66;
+  --primary-bg: rgba(51, 255, 51, 0.08);
+  --accent: #00ccff;
+  --success: #33ff33;
+  --warning: #ccff00;
+  --danger: #ff3333;
+  --code-bg: #0c120c;
+  --code-border: #1e3a1e;
+  --msg-user-bg: rgba(51, 255, 51, 0.05);
+  --msg-assistant-bg: transparent;
+  --thinking-bg: rgba(0, 204, 255, 0.05);
+  --thinking-border: rgba(0, 204, 255, 0.2);
+  --tool-bg: rgba(51, 255, 51, 0.05);
+  --tool-border: rgba(51, 255, 51, 0.2);
+  --input-bg: #0c120c;
+  --input-border: #1e3a1e;
+  --input-focus: #33ff33;
+  --shadow: rgba(0, 0, 0, 0.6);
+  --overlay: rgba(10, 14, 10, 0.85);
+}
+
+/* Metal Gear: CRT scanline overlay */
+html[data-theme="metalgear"] body {
+  background-image:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.15) 2px,
+      rgba(0, 0, 0, 0.15) 4px
+    );
+  background-size: 100% 4px;
+}
+
+/* Metal Gear: phosphor glow on text */
+html[data-theme="metalgear"] .message-content {
+  text-shadow: 0 0 4px rgba(51, 255, 51, 0.3);
+}
+
+/* Metal Gear: codec-style logo */
+html[data-theme="metalgear"] .logo {
+  color: var(--primary);
+  text-shadow: 0 0 12px rgba(51, 255, 51, 0.6), 0 0 30px rgba(51, 255, 51, 0.2);
+  letter-spacing: 8px;
+  font-variant: small-caps;
+}
+
+html[data-theme="metalgear"] .logo-sub {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  font-size: 0.6rem;
+  text-shadow: 0 0 8px rgba(0, 204, 255, 0.4);
+}
+
+/* Metal Gear: terminal-style input */
+html[data-theme="metalgear"] .chat-input {
+  font-family: 'Courier New', 'SF Mono', monospace;
+  text-shadow: 0 0 3px rgba(51, 255, 51, 0.3);
+}
+
+html[data-theme="metalgear"] .chat-input:focus {
+  box-shadow: 0 0 0 1px var(--primary),
+    0 0 15px rgba(51, 255, 51, 0.15),
+    inset 0 0 30px rgba(51, 255, 51, 0.03);
+}
+
+html[data-theme="metalgear"] .chat-input::placeholder {
+  font-family: 'Courier New', 'SF Mono', monospace;
+}
+
+/* Metal Gear: glowing borders */
+html[data-theme="metalgear"] .sidebar {
+  border-right: 1px solid rgba(51, 255, 51, 0.2);
+}
+html[data-theme="metalgear"] .topbar {
+  border-bottom: 1px solid rgba(51, 255, 51, 0.15);
+}
+
+/* Metal Gear: military-style tool cards */
+html[data-theme="metalgear"] .tool-card {
+  border: 1px solid rgba(51, 255, 51, 0.25);
+  font-family: 'Courier New', 'SF Mono', monospace;
+}
+html[data-theme="metalgear"] .tool-card-header {
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.7rem;
+}
+
+/* Metal Gear: codec frequency bar on session items */
+html[data-theme="metalgear"] .session-item.active {
+  border-left: 2px solid var(--primary);
+  box-shadow: inset 3px 0 8px rgba(51, 255, 51, 0.1);
+}
+
+/* Metal Gear: command center background on chat area */
+html[data-theme="metalgear"] .main {
+  position: relative;
+  overflow: hidden;
+  background: url('../img/metalgear-bg.png') center center / cover no-repeat;
+}
+/* Ensure content sits above the background */
+html[data-theme="metalgear"] .topbar,
+html[data-theme="metalgear"] .messages,
+html[data-theme="metalgear"] .input-area {
+  position: relative;
+  z-index: 1;
+}
+/* Semi-transparent dark overlay on messages for readability — lets image bleed through */
+html[data-theme="metalgear"] .messages {
+  background: rgba(10, 14, 10, 0.82);
+}
+/* Message bubbles get a subtle terminal panel feel */
+html[data-theme="metalgear"] .message {
+  background: rgba(15, 21, 15, 0.80);
+  border: 1px solid rgba(51, 255, 51, 0.08);
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+html[data-theme="metalgear"] .message.user {
+  background: rgba(51, 255, 51, 0.04);
+  border-color: rgba(51, 255, 51, 0.12);
+}
+/* Input area gets matching opacity */
+html[data-theme="metalgear"] .input-area {
+  background: rgba(10, 14, 10, 0.88);
+}
+/* Topbar lets a hint of image through */
+html[data-theme="metalgear"] .topbar {
+  background: rgba(10, 14, 10, 0.90);
+}
+
+/* Metal Gear: CRT vignette effect */
+html[data-theme="metalgear"] .main::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0, 0, 0, 0.5) 100%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* Metal Gear: monospace stats line */
+html[data-theme="metalgear"] .stats-line {
+  font-family: 'Courier New', 'SF Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Metal Gear: blinking cursor effect */
+html[data-theme="metalgear"] .streaming-cursor::after {
+  background: var(--primary) !important;
+  box-shadow: 0 0 6px rgba(51, 255, 51, 0.6);
+}
+
+/* Metal Gear: welcome screen */
+html[data-theme="metalgear"] .welcome-logo {
+  text-shadow: 0 0 20px rgba(51, 255, 51, 0.6), 0 0 60px rgba(51, 255, 51, 0.2);
+}
+html[data-theme="metalgear"] .welcome-text {
+  font-family: 'Courier New', 'SF Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 4px;
+}
+html[data-theme="metalgear"] .welcome-sub {
+  font-family: 'Courier New', 'SF Mono', monospace;
+  color: var(--text-muted);
+  text-shadow: 0 0 4px rgba(51, 255, 51, 0.2);
+}
+
+/* Metal Gear: context bar phosphor glow */
+html[data-theme="metalgear"] .context-fill {
+  background: var(--primary);
+  box-shadow: 0 0 8px rgba(51, 255, 51, 0.4);
+}
+
 /* Evangelion: hexagonal grid background */
 html[data-theme="evangelion"] body {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='49' viewBox='0 0 28 49'%3E%3Cg fill-rule='evenodd'%3E%3Cg fill='%233d1f6d' fill-opacity='0.08'%3E%3Cpath d='M13.99 9.25l13 7.5v15l-13 7.5L1 31.75v-15l12.99-7.5zM3 17.9v12.7l10.99 6.34 11-6.35V17.9l-11-6.34L3 17.9zM0 15l12.98-7.5V0h-2v6.35L0 12.69v2.3zm0 18.5L12.98 41v8h-2v-6.85L0 35.81v-2.3zM15 0v7.5L27.99 15H28v-2.31h-.01L17 6.35V0h-2zm0 49v-8l12.99-7.5H28v2.31h-.01L17 42.15V49h-2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
