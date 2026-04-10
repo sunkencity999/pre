@@ -23,6 +23,7 @@ const {
   setConfluenceConfig,
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
+const cronSystem = require('./src/tools/cron');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -272,6 +273,75 @@ app.post('/api/artifacts/reveal', (req, res) => {
   });
 });
 
+// ── Cron API ──
+
+app.get('/api/cron', (_req, res) => {
+  res.json(cronSystem.loadJobs());
+});
+
+app.post('/api/cron', (req, res) => {
+  const { schedule, prompt, description } = req.body || {};
+  if (!schedule || !prompt) {
+    return res.status(400).json({ error: 'schedule and prompt are required' });
+  }
+  const fields = schedule.trim().split(/\s+/);
+  if (fields.length !== 5) {
+    return res.status(400).json({ error: 'Schedule must be 5 fields: min hour dom month dow' });
+  }
+  const jobs = cronSystem.loadJobs();
+  const job = {
+    id: cronSystem.generateId(),
+    schedule: schedule.trim(),
+    prompt,
+    description: description || prompt.slice(0, 80),
+    enabled: true,
+    created_at: Date.now(),
+    last_run_at: null,
+    run_count: 0,
+  };
+  jobs.push(job);
+  cronSystem.saveJobs(jobs);
+  res.json(job);
+});
+
+app.patch('/api/cron/:id', (req, res) => {
+  const jobs = cronSystem.loadJobs();
+  const job = jobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (req.body.enabled !== undefined) job.enabled = !!req.body.enabled;
+  if (req.body.schedule) job.schedule = req.body.schedule;
+  if (req.body.prompt) job.prompt = req.body.prompt;
+  if (req.body.description) job.description = req.body.description;
+  cronSystem.saveJobs(jobs);
+  res.json(job);
+});
+
+app.delete('/api/cron/:id', (req, res) => {
+  const jobs = cronSystem.loadJobs();
+  const idx = jobs.findIndex(j => j.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Job not found' });
+  const removed = jobs.splice(idx, 1)[0];
+  cronSystem.saveJobs(jobs);
+  res.json(removed);
+});
+
+app.post('/api/cron/:id/run', (req, res) => {
+  const jobs = cronSystem.loadJobs();
+  const job = jobs.find(j => j.id === req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  // Trigger execution — broadcast to all connected WS clients
+  broadcastCronRun(job);
+  res.json({ ok: true, id: job.id });
+});
+
+// Broadcast a cron job trigger to connected clients
+function broadcastCronRun(job) {
+  const msg = JSON.stringify({ type: 'cron_trigger', job });
+  wss.clients.forEach((client) => {
+    if (client.readyState === 1) client.send(msg);
+  });
+}
+
 app.get('/api/status', async (_req, res) => {
   const ollamaUp = await healthCheck();
   res.json({
@@ -398,10 +468,51 @@ function shutdown() {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
+// ── Cron background loop ──
+// Check every 30 seconds. Jobs fire at most once per minute.
+
+let lastCronMinute = -1;
+
+setInterval(() => {
+  const now = new Date();
+  const currentMinute = now.getHours() * 60 + now.getMinutes();
+  // Only check once per minute
+  if (currentMinute === lastCronMinute) return;
+  lastCronMinute = currentMinute;
+
+  const jobs = cronSystem.loadJobs();
+  let changed = false;
+
+  for (const job of jobs) {
+    if (!job.enabled) continue;
+    if (!cronSystem.matchesNow(job.schedule)) continue;
+
+    // Prevent double-fire within the same minute
+    if (job.last_run_at) {
+      const lastRun = new Date(job.last_run_at);
+      if (lastRun.getHours() === now.getHours() && lastRun.getMinutes() === now.getMinutes()
+          && lastRun.getDate() === now.getDate()) continue;
+    }
+
+    console.log(`[cron] Firing job ${job.id}: "${job.description}"`);
+    job.last_run_at = Date.now();
+    job.run_count = (job.run_count || 0) + 1;
+    changed = true;
+
+    // Broadcast to all connected clients so the active one can run it
+    broadcastCronRun(job);
+  }
+
+  if (changed) cronSystem.saveJobs(jobs);
+}, 30000);
+
 // ── Start ──
 
 server.listen(PORT, () => {
+  const jobs = cronSystem.loadJobs();
+  const enabledCount = jobs.filter(j => j.enabled).length;
   console.log(`\n  PRE Web GUI running at http://localhost:${PORT}`);
   console.log(`  Working directory: ${CWD}`);
-  console.log(`  Model context: ${MODEL_CTX} tokens\n`);
+  console.log(`  Model context: ${MODEL_CTX} tokens`);
+  console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total\n`);
 });

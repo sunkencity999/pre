@@ -87,6 +87,16 @@
         loadSessionList();
         break;
 
+      case 'cron_trigger':
+        if (msg.job) {
+          Chat.addMessage('user', `[Cron: ${msg.job.description}] ${msg.job.prompt}`, {
+            cronJob: msg.job,
+          });
+          Chat.showThinkingIndicator();
+          WS.send({ type: 'message', content: msg.job.prompt });
+        }
+        break;
+
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
@@ -870,6 +880,284 @@
   document.getElementById('settings-btn').addEventListener('click', () => {
     openSettingsPanel();
   });
+
+  // ── Cron jobs panel ──
+  document.getElementById('cron-btn').addEventListener('click', () => {
+    openCronPanel();
+  });
+
+  async function openCronPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Scheduled Jobs';
+    panel.classList.remove('hidden');
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/cron');
+      const jobs = await res.json();
+      renderCronPanel(content, jobs);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load cron jobs</p>';
+    }
+  }
+
+  function renderCronPanel(container, jobs) {
+    let html = '<div class="settings-section">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<div class="settings-section-title" style="margin:0">Jobs</div>';
+    html += '<button class="btn btn-primary btn-sm" onclick="window.Cron.showAdd()">+ New Job</button>';
+    html += '</div>';
+
+    if (jobs.length === 0) {
+      html += '<p style="color:var(--text-muted);font-size:0.85rem">No scheduled jobs yet. Create one to run prompts on a recurring schedule.</p>';
+    } else {
+      for (const job of jobs) {
+        const statusDot = job.enabled
+          ? '<span style="color:var(--success)">&#9679;</span>'
+          : '<span style="color:var(--text-muted)">&#9679;</span>';
+        const lastRun = job.last_run_at
+          ? new Date(job.last_run_at).toLocaleString()
+          : 'Never';
+        html += `<div class="connection-card" style="margin-bottom:10px">
+          <div class="connection-card-header" style="padding:12px 14px">
+            <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+              ${statusDot}
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${Markdown.escapeHtml(job.description)}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${Markdown.escapeHtml(describeCron(job.schedule))} &middot; <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(job.schedule)}</code> &middot; Runs: ${job.run_count || 0} &middot; Last: ${lastRun}</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button class="btn btn-ghost btn-sm" onclick="window.Cron.toggle('${job.id}', ${!job.enabled})" title="${job.enabled ? 'Disable' : 'Enable'}">${job.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.Cron.run('${job.id}')" title="Run now">Run</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.Cron.del('${job.id}')" style="color:var(--danger)" title="Delete">&times;</button>
+            </div>
+          </div>
+          <div style="padding:8px 14px;font-size:0.8rem;color:var(--text-secondary);border-top:1px solid var(--border)">${Markdown.escapeHtml(job.prompt.length > 200 ? job.prompt.slice(0, 200) + '...' : job.prompt)}</div>
+        </div>`;
+      }
+    }
+
+    // Add job form (hidden by default)
+    html += `<div id="cron-add-form" style="display:none;margin-top:16px">
+      <div class="settings-section-title">New Scheduled Job</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">When should it run?</label>
+          <input id="cron-schedule" type="text" placeholder="every weekday at 9am" oninput="window.Cron.parseSchedule()" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+          <div id="cron-parse-preview" style="font-size:0.75rem;margin-top:4px;min-height:1.2em"></div>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px">Examples: "every day at 9am" &middot; "weekdays at 8:30am" &middot; "every 15 minutes" &middot; "monday and friday at 3pm" &middot; or raw cron: "0 9 * * 1-5"</div>
+        </div>
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Description</label>
+          <input id="cron-description" type="text" placeholder="Morning briefing" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Prompt (sent to the model when triggered)</label>
+          <textarea id="cron-prompt" rows="3" placeholder="Give me a summary of today's calendar and top 3 priorities" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;font-family:inherit;resize:vertical"></textarea>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" onclick="window.Cron.save()">Create Job</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.Cron.hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  // Natural language → cron expression parser
+  function nlToCron(input) {
+    if (!input) return null;
+    const s = input.toLowerCase().trim();
+
+    // Already a valid cron expression (5 fields of cron-like chars)
+    if (/^[\d*\/,\-]+(\s+[\d*\/,\-]+){4}$/.test(s)) {
+      return { cron: s, description: describeCron(s) };
+    }
+
+    // Parse time from string: "9am", "9:30pm", "14:00", "3 pm", "noon", "midnight"
+    function parseTime(str) {
+      if (/\bnoon\b/.test(str)) return { h: 12, m: 0 };
+      if (/\bmidnight\b/.test(str)) return { h: 0, m: 0 };
+      const match = str.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      if (!match) return null;
+      let h = parseInt(match[1]);
+      const m = match[2] ? parseInt(match[2]) : 0;
+      const ampm = match[3]?.toLowerCase();
+      if (ampm === 'pm' && h < 12) h += 12;
+      if (ampm === 'am' && h === 12) h = 0;
+      if (h > 23 || m > 59) return null;
+      return { h, m };
+    }
+
+    // Day name → cron day number
+    const dayMap = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+
+    // Parse day names from string
+    function parseDays(str) {
+      const found = [];
+      for (const [name, num] of Object.entries(dayMap)) {
+        if (str.includes(name)) found.push(num);
+      }
+      return [...new Set(found)].sort();
+    }
+
+    const time = parseTime(s);
+    const min = time ? time.m : 0;
+    const hour = time ? time.h : 9;
+
+    // "every N minutes"
+    let match = s.match(/every\s+(\d+)\s*min/);
+    if (match) return { cron: `*/${match[1]} * * * *`, description: `Every ${match[1]} minutes` };
+
+    // "every minute"
+    if (/every\s+minute/.test(s)) return { cron: '* * * * *', description: 'Every minute' };
+
+    // "every N hours"
+    match = s.match(/every\s+(\d+)\s*hour/);
+    if (match) return { cron: `0 */${match[1]} * * *`, description: `Every ${match[1]} hours` };
+
+    // "every hour" / "hourly"
+    if (/every\s+hour|hourly/.test(s)) {
+      return { cron: `${min} * * * *`, description: `Every hour${min ? ` at :${String(min).padStart(2,'0')}` : ''}` };
+    }
+
+    // "weekdays at TIME" / "every weekday at TIME"
+    if (/weekday|week\s*day|mon(day)?\s*(through|thru|-|to)\s*fri(day)?/.test(s)) {
+      if (!time) return { cron: `0 9 * * 1-5`, description: 'Weekdays at 9:00 AM' };
+      return { cron: `${min} ${hour} * * 1-5`, description: `Weekdays at ${fmtTime(hour, min)}` };
+    }
+
+    // "weekends at TIME"
+    if (/weekend/.test(s)) {
+      if (!time) return { cron: `0 9 * * 0,6`, description: 'Weekends at 9:00 AM' };
+      return { cron: `${min} ${hour} * * 0,6`, description: `Weekends at ${fmtTime(hour, min)}` };
+    }
+
+    // "every day at TIME" / "daily at TIME"
+    if (/every\s*day|daily/.test(s)) {
+      return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
+    }
+
+    // Specific days: "monday and wednesday at 3pm", "every tuesday at 10am"
+    const days = parseDays(s);
+    if (days.length > 0) {
+      const dow = days.join(',');
+      const dayNames = days.map(d => Object.keys(dayMap).find(k => dayMap[k] === d && k.length > 3) || d);
+      const label = dayNames.map(d => typeof d === 'string' ? d.charAt(0).toUpperCase() + d.slice(1) : d).join(', ');
+      return { cron: `${min} ${hour} * * ${dow}`, description: `${label} at ${fmtTime(hour, min)}` };
+    }
+
+    // "every month on the Nth at TIME" / "monthly on the Nth"
+    match = s.match(/(?:every\s+month|monthly)\s+(?:on\s+)?(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)?/);
+    if (match) {
+      const dom = parseInt(match[1]);
+      return { cron: `${min} ${hour} ${dom} * *`, description: `Monthly on the ${dom}${ordSuffix(dom)} at ${fmtTime(hour, min)}` };
+    }
+
+    // "every week" / "weekly"
+    if (/every\s*week|weekly/.test(s)) {
+      return { cron: `${min} ${hour} * * 1`, description: `Weekly on Monday at ${fmtTime(hour, min)}` };
+    }
+
+    // Just a time with no frequency specified → daily
+    if (time && s.length < 15) {
+      return { cron: `${min} ${hour} * * *`, description: `Daily at ${fmtTime(hour, min)}` };
+    }
+
+    return null;
+  }
+
+  function fmtTime(h, m) {
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    return `${h12}:${String(m).padStart(2, '0')} ${ampm}`;
+  }
+
+  function ordSuffix(n) {
+    if (n > 3 && n < 21) return 'th';
+    switch (n % 10) { case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
+  }
+
+  function describeCron(expr) {
+    const [min, hour, dom, mon, dow] = expr.split(/\s+/);
+    let desc = '';
+    if (min.startsWith('*/')) return `Every ${min.slice(2)} minutes`;
+    if (hour.startsWith('*/')) return `Every ${hour.slice(2)} hours` + (min !== '0' ? ` at :${min.padStart(2, '0')}` : '');
+    const h = parseInt(hour), m = parseInt(min);
+    const timeStr = !isNaN(h) ? fmtTime(h, isNaN(m) ? 0 : m) : `${hour}:${min}`;
+    if (dow === '1-5') desc = `Weekdays at ${timeStr}`;
+    else if (dow === '0,6') desc = `Weekends at ${timeStr}`;
+    else if (dow !== '*') desc = `Days ${dow} at ${timeStr}`;
+    else if (dom !== '*') desc = `Day ${dom} of month at ${timeStr}`;
+    else desc = `Daily at ${timeStr}`;
+    return desc;
+  }
+
+  window.Cron = {
+    showAdd() {
+      const form = document.getElementById('cron-add-form');
+      if (form) form.style.display = 'block';
+    },
+    hideAdd() {
+      const form = document.getElementById('cron-add-form');
+      if (form) form.style.display = 'none';
+    },
+    parseSchedule() {
+      const input = document.getElementById('cron-schedule')?.value || '';
+      const preview = document.getElementById('cron-parse-preview');
+      if (!preview) return;
+      if (!input.trim()) { preview.innerHTML = ''; return; }
+      const result = nlToCron(input);
+      if (result) {
+        preview.innerHTML = `<span style="color:var(--success)">&#10003;</span> <code style="font-family:'SF Mono',monospace">${Markdown.escapeHtml(result.cron)}</code> &mdash; ${Markdown.escapeHtml(result.description)}`;
+      } else {
+        preview.innerHTML = `<span style="color:var(--warning)">Could not parse. Try "every day at 9am" or "weekdays at 8:30am"</span>`;
+      }
+    },
+    async save() {
+      const rawSchedule = document.getElementById('cron-schedule')?.value.trim();
+      const prompt = document.getElementById('cron-prompt')?.value.trim();
+      const description = document.getElementById('cron-description')?.value.trim();
+      if (!rawSchedule || !prompt) return alert('Schedule and prompt are required.');
+      // Parse natural language to cron
+      const parsed = nlToCron(rawSchedule);
+      if (!parsed) return alert('Could not understand the schedule. Try something like "every day at 9am" or "weekdays at 8:30am".');
+      const schedule = parsed.cron;
+      try {
+        const res = await fetch('/api/cron', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ schedule, prompt, description: description || parsed.description }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          return alert(err.error || 'Failed to create job');
+        }
+        openCronPanel();
+      } catch (e) { alert('Error: ' + e.message); }
+    },
+    async toggle(id, enabled) {
+      await fetch(`/api/cron/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      openCronPanel();
+    },
+    async run(id) {
+      await fetch(`/api/cron/${id}/run`, { method: 'POST' });
+    },
+    async del(id) {
+      if (!confirm('Delete this scheduled job?')) return;
+      await fetch(`/api/cron/${id}`, { method: 'DELETE' });
+      openCronPanel();
+    },
+  };
 
   // ── Memory browser panel ──
   document.getElementById('memory-btn').addEventListener('click', () => {

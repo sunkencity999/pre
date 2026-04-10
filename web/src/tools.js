@@ -69,6 +69,7 @@ const confluenceTool = require('./tools/confluence');
 const smartsheetTool = require('./tools/smartsheet');
 const slackTool = require('./tools/slack');
 const imageTool = require('./tools/image');
+const cronTool = require('./tools/cron');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -101,6 +102,7 @@ const ALIASES = {
   generate_image: 'image_generate', create_image: 'image_generate', img: 'image_generate',
   image: 'image_generate', image_gen: 'image_generate', gen_image: 'image_generate',
   draw: 'image_generate', paint: 'image_generate', dalle: 'image_generate',
+  schedule: 'cron', cron_job: 'cron', recurring: 'cron', timer: 'cron',
 };
 
 // Tools that require user confirmation before execution
@@ -183,6 +185,9 @@ async function executeTool(name, args, cwd) {
     // Image generation
     case 'image_generate': return imageTool.imageGenerate(args);
 
+    // Cron / scheduling
+    case 'cron': return cronTool.cron(args);
+
     // Documents
     case 'document': {
       // Parse sheets if passed as JSON string
@@ -193,7 +198,7 @@ async function executeTool(name, args, cwd) {
     }
 
     default:
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
