@@ -6511,10 +6511,17 @@ static int execute_tool(ToolCall *tc, char *output, size_t output_sz) {
 
     } else if (strcmp(name, "memory_list") == 0) {
         printf(ANSI_DIM "  [listing %d memories]" ANSI_RESET "\n", g_memory_count);
-        for (int i = 0; i < g_memory_count && out_len < (int)output_sz - 512; i++) {
+        for (int i = 0; i < g_memory_count && out_len < (int)output_sz - 1024; i++) {
             out_len += snprintf(output + out_len, output_sz - out_len,
                 "%d. [%s] %s — %s\n",
                 i + 1, g_memories[i].type, g_memories[i].name, g_memories[i].description);
+            char *body = read_memory_body(g_memories[i].file);
+            if (body && body[0]) {
+                char preview[256];
+                strlcpy(preview, body, sizeof(preview));
+                out_len += snprintf(output + out_len, output_sz - out_len, "   %s\n\n", preview);
+            }
+            free(body);
         }
         if (g_memory_count == 0)
             out_len = snprintf(output, output_sz, "No memories saved yet.");

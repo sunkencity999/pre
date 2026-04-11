@@ -24,7 +24,9 @@ function list() {
   const memories = getAllMemories();
   if (memories.length === 0) return 'No memories saved';
 
-  return memories.map(m => `[${m.type}] ${m.name}: ${m.description}`).join('\n');
+  return memories.map(m =>
+    `[${m.type}] ${m.name}: ${m.description}\n  ${m.body.slice(0, 200)}`
+  ).join('\n\n');
 }
 
 function del(args) {

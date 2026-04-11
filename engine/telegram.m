@@ -119,6 +119,7 @@ typedef struct {
     char name[128];
     char type[32];
     char description[256];
+    char body[1024];
     char file[PATH_MAX];
 } MemoryEntry;
 
@@ -544,7 +545,7 @@ static void load_memories(void) {
 
         MemoryEntry *m = &g_memories[g_memory_count];
         strlcpy(m->file, fpath, sizeof(m->file));
-        m->name[0] = m->type[0] = m->description[0] = 0;
+        m->name[0] = m->type[0] = m->description[0] = m->body[0] = 0;
 
         // Parse YAML frontmatter
         if (strncmp(content, "---", 3) == 0) {
@@ -574,6 +575,12 @@ static void load_memories(void) {
                     }
                     line = nl + 1;
                 }
+                // Capture body content after closing ---
+                char *body_start = end + 3;
+                while (*body_start == '\n' || *body_start == '\r') body_start++;
+                if (*body_start) {
+                    strlcpy(m->body, body_start, sizeof(m->body));
+                }
             }
         }
         if (m->name[0]) g_memory_count++;
@@ -583,12 +590,18 @@ static void load_memories(void) {
 
 static char *build_memory_context(void) {
     if (g_memory_count == 0) return NULL;
-    size_t cap = 4096;
+    size_t cap = 16384;
     char *buf = malloc(cap);
     int len = snprintf(buf, cap, "Memories:\n");
-    for (int i = 0; i < g_memory_count && len < (int)cap - 256; i++) {
+    for (int i = 0; i < g_memory_count && len < (int)cap - 1024; i++) {
         len += snprintf(buf + len, cap - len, "- [%s] %s: %s\n",
                         g_memories[i].type, g_memories[i].name, g_memories[i].description);
+        if (g_memories[i].body[0]) {
+            // Include first ~500 chars of body, indented
+            char preview[512];
+            strlcpy(preview, g_memories[i].body, sizeof(preview));
+            len += snprintf(buf + len, cap - len, "  %s\n", preview);
+        }
     }
     return buf;
 }
@@ -1871,9 +1884,15 @@ static int execute_tool(const ToolCall *tc, char *output, size_t output_sz) {
     } else if (strcmp(name, "memory_list") == 0) {
         load_memories();
         if (g_memory_count == 0) return snprintf(output, output_sz, "No memories saved.");
-        for (int i = 0; i < g_memory_count && out_len < (int)output_sz - 256; i++)
+        for (int i = 0; i < g_memory_count && out_len < (int)output_sz - 1024; i++) {
             out_len += snprintf(output + out_len, output_sz - out_len,
                 "%d. [%s] %s — %s\n", i+1, g_memories[i].type, g_memories[i].name, g_memories[i].description);
+            if (g_memories[i].body[0]) {
+                char preview[256];
+                strlcpy(preview, g_memories[i].body, sizeof(preview));
+                out_len += snprintf(output + out_len, output_sz - out_len, "   %s\n\n", preview);
+            }
+        }
 
     } else if (strcmp(name, "memory_search") == 0) {
         load_memories();
@@ -1889,6 +1908,11 @@ static int execute_tool(const ToolCall *tc, char *output, size_t output_sz) {
             }
             out_len += snprintf(output + out_len, output_sz - out_len,
                 "%d. [%s] %s — %s\n", ++found, g_memories[i].type, g_memories[i].name, g_memories[i].description);
+            if (g_memories[i].body[0]) {
+                char preview[256];
+                strlcpy(preview, g_memories[i].body, sizeof(preview));
+                out_len += snprintf(output + out_len, output_sz - out_len, "   %s\n\n", preview);
+            }
         }
         if (found == 0) out_len = snprintf(output, output_sz, "No memories matching '%s'", query ?: "");
 
@@ -2213,12 +2237,10 @@ static void handle_message(long chat_id, long user_id, const char *text) {
         char *tc_start = strstr(response, "<tool_call>");
         if (tc_start) *tc_start = 0;
 
-        // Send to Telegram
+        // Send to Telegram (skip empty responses from tool calls)
         size_t rlen = strlen(response);
         if (rlen > 0) {
             tg_send_message(chat_id, response);
-        } else {
-            tg_send_message(chat_id, "(empty response)");
         }
         free(response);
         break;
