@@ -9,6 +9,8 @@ const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
 const { autoExtract } = require('./memory');
 const mcp = require('./mcp');
 const hooks = require('./hooks');
+const experience = require('./experience');
+const chronos = require('./chronos');
 
 /**
  * Generate a short session title from the first user message.
@@ -109,6 +111,8 @@ const ALIASES = {
   schedule: 'cron', cron_job: 'cron', recurring: 'cron', timer: 'cron',
   agent: 'spawn_agent', sub_agent: 'spawn_agent', research: 'spawn_agent',
   spawn_parallel: 'spawn_multi', parallel: 'spawn_multi', agents: 'list_agents',
+  lessons: 'experience_list', experiences: 'experience_list',
+  health: 'memory_health', staleness: 'memory_health',
   browse_web: 'browser', web_browser: 'browser', chrome: 'browser',
   open_browser: 'browser', puppeteer: 'browser', navigate: 'browser',
 };
@@ -210,6 +214,26 @@ async function executeTool(name, args, cwd, opts) {
       return agentsTool.spawnMulti(args, cwd, opts?.onStatus);
     }
     case 'list_agents': return agentsTool.listAgents();
+
+    // Experience ledger
+    case 'experience_search': {
+      const results = await experience.searchExperiences(args.query || '');
+      if (results.length === 0) return 'No relevant past experience found.';
+      return results.map(r => `**${r.name}** (similarity: ${r.similarity?.toFixed(2) || 'keyword'})\n${r.body}`).join('\n\n---\n\n');
+    }
+    case 'experience_list': {
+      const entries = experience.listExperiences();
+      if (entries.length === 0) return 'No experience entries yet. The ledger builds automatically as you complete tasks.';
+      return entries.map(e => `[${e.created}] **${e.name}**: ${e.description}`).join('\n');
+    }
+
+    // Chronos
+    case 'memory_health': {
+      const summary = chronos.maintenanceSummary();
+      return `Memory Health: ${summary.healthPct}% fresh\n`
+        + `Total: ${summary.total} | Fresh: ${summary.fresh} | Aging: ${summary.aging} | Stale: ${summary.stale} | Unverified: ${summary.unverified}`
+        + (summary.oldestStale ? `\nOldest stale: "${summary.oldestStale.name}" (${summary.oldestStale.verifiedAge}d)` : '');
+    }
 
     // Documents
     case 'document': {
@@ -321,6 +345,15 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       }).catch(err => {
         console.log(`[memory-extract] Background error: ${err.message}`);
+      });
+      // Experience ledger: reflect on what worked/failed (don't block response)
+      experience.reflect(historyForExtract, { sessionId, cwd }).then(saved => {
+        if (saved.length > 0) {
+          console.log(`[experience] Saved ${saved.length} lesson(s)`);
+          send({ type: 'experience_saved', lessons: saved.map(l => ({ name: l.name, lesson: l.lesson })) });
+        }
+      }).catch(err => {
+        console.log(`[experience] Background error: ${err.message}`);
       });
       return;
     }

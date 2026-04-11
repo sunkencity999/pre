@@ -239,4 +239,45 @@ function stripToolCallText(text) {
   return cleaned;
 }
 
-module.exports = { streamChat, healthCheck, parseTextToolCalls, stripToolCallText };
+/**
+ * Generate embeddings via Ollama /api/embed
+ * Uses nomic-embed-text (274MB) — lightweight and already installed.
+ * @param {string|string[]} input - Text(s) to embed
+ * @returns {Promise<number[][]>} Array of embedding vectors
+ */
+const EMBED_MODEL = 'nomic-embed-text';
+
+function embed(input) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify({
+      model: EMBED_MODEL,
+      input: Array.isArray(input) ? input : [input],
+    });
+
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: OLLAMA_PORT,
+      path: '/api/embed',
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          resolve(parsed.embeddings || []);
+        } catch (err) {
+          reject(new Error(`Embed parse error: ${err.message}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Embed request timed out')); });
+    req.write(body);
+    req.end();
+  });
+}
+
+module.exports = { streamChat, healthCheck, parseTextToolCalls, stripToolCallText, embed };

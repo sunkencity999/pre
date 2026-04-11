@@ -28,6 +28,8 @@ const { executeCronJob } = require('./src/cron-runner');
 const delegate = require('./src/tools/delegate');
 const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
+const experienceSystem = require('./src/experience');
+const chronosSystem = require('./src/chronos');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -423,6 +425,40 @@ app.delete('/api/hooks/:id', (req, res) => {
   const result = hooksSystem.removeHook(req.params.id);
   if (result.error) return res.status(404).json({ error: result.error });
   res.json(result);
+});
+
+// ── Experience Ledger API ──
+app.get('/api/experience', (req, res) => {
+  const query = req.query.q || '';
+  if (query) {
+    experienceSystem.searchExperiences(query).then(results => res.json(results)).catch(() => res.json([]));
+  } else {
+    res.json(experienceSystem.listExperiences());
+  }
+});
+
+// ── Chronos API ──
+app.get('/api/chronos/health', (_req, res) => {
+  res.json(chronosSystem.maintenanceSummary());
+});
+
+app.get('/api/chronos/staleness', (_req, res) => {
+  res.json(chronosSystem.stalenessReport());
+});
+
+app.post('/api/chronos/verify/:filename', (req, res) => {
+  const result = chronosSystem.verifyMemory(req.params.filename);
+  if (result.error) return res.status(404).json({ error: result.error });
+  res.json(result);
+});
+
+app.post('/api/chronos/maintenance', async (_req, res) => {
+  try {
+    const result = await chronosSystem.runMaintenance();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/status', async (_req, res) => {

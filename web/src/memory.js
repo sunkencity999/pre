@@ -544,6 +544,7 @@ module.exports = {
 
   // Utilities
   parseFrontmatter,
+  buildFrontmatter,
   memoryAge,
   scanMemoryDir,
 };

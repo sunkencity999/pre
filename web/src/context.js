@@ -6,6 +6,8 @@ const path = require('path');
 const os = require('os');
 const { PRE_DIR, CONNECTIONS_FILE, COMFYUI_FILE } = require('./constants');
 const { buildMemoryContext: buildMemCtx, buildMemoryInstructions } = require('./memory');
+const { buildExperienceContext } = require('./experience');
+const { buildTemporalContext } = require('./chronos');
 
 /**
  * Check which connections are active
@@ -83,6 +85,14 @@ function buildSystemPrompt(cwd) {
   if (memory) prompt += memory + '\n';
   prompt += memoryInstructions + '\n';
 
+  // Experience ledger — lessons from past tasks
+  const experienceCtx = buildExperienceContext();
+  if (experienceCtx) prompt += experienceCtx + '\n';
+
+  // Temporal awareness — stale memory warnings, time context
+  const temporalCtx = buildTemporalContext();
+  if (temporalCtx) prompt += temporalCtx + '\n';
+
   prompt += `<context>\nWorking directory: ${cwd}\nFiles:\n${filesList}</context>\n\n`;
   prompt += `Today is ${dateStr}. Use this when interpreting relative dates.\n\n`;
 
@@ -107,6 +117,13 @@ function buildSystemPrompt(cwd) {
       + `The image is automatically displayed in the chat after generation — just respond naturally describing what was created. `
       + `For reports/artifacts that need the image embedded, use the returned /artifacts/ path as the src.\n`;
   }
+
+  // Experience ledger guidance
+  prompt += `\nEXPERIENCE LEDGER:\n`
+    + `You have an experience ledger that captures lessons from past tasks.\n`
+    + `- Before attempting complex or multi-step tasks, use experience_search to check for relevant prior lessons\n`
+    + `- The ledger updates automatically after tasks complete — you don't need to save lessons manually\n`
+    + `- Use memory_health to check if any memories need verification or are becoming stale\n`;
 
   // Sub-agent guidance
   prompt += `\nSUB-AGENTS:\n`

@@ -74,6 +74,8 @@ This means PRE can:
 - [Best Practices](#best-practices)
 - [Web GUI](#web-gui)
 - [Frontier AI Delegation](#frontier-ai-delegation)
+- [Experience Ledger](#experience-ledger)
+- [Chronos (Temporal Awareness)](#chronos-temporal-awareness)
 - [MCP Server Support](#mcp-server-support)
 - [Hooks System](#hooks-system)
 - [Browser Agent](#browser-agent)
@@ -127,7 +129,9 @@ PRE is not a chatbot — it's a local agent with deep system access and 50+ tool
 
 **Run commands autonomously** — Bash execution with a streamlined permission model. 42 of 50+ tools auto-execute; only genuinely destructive operations ask for confirmation.
 
-**Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts. Auto-extraction learns from conversations without being asked.
+**Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts. Auto-extraction learns from conversations without being asked. An **Experience Ledger** captures lessons from past tasks (what worked, what failed, why) and retrieves them via semantic similarity search when relevant future tasks arise.
+
+**Grow smarter over time** — After each task completes, PRE reflects on its approach and saves reusable lessons to an experience ledger. When facing a new task, it searches the ledger for relevant prior experience. Embeddings via `nomic-embed-text` enable semantic matching — finding lessons even when the wording is completely different. Chronos temporal awareness flags stale memories and runs self-maintenance to keep the knowledge base current.
 
 **Generate images locally** — Photorealistic image generation via ComfyUI on Apple Silicon (MPS). Juggernaut XL v9 (1024x1024, 25-step) or SDXL Turbo (512x512, 4-step). No cloud API.
 
@@ -365,6 +369,16 @@ PRE has 50+ tools that the model calls autonomously. Nearly all auto-execute wit
 | `memory_search` | `query`? | Search saved memories |
 | `memory_list` | *(none)* | List all memories |
 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
+
+#### Experience & Temporal Awareness
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `experience_search` | `query` | Search the experience ledger for lessons from past tasks (semantic similarity) |
+| `experience_list` | *(none)* | List all experience ledger entries |
+| `memory_health` | *(none)* | Check memory staleness, aging warnings, and overall health |
+
+The experience ledger builds automatically — after each task with 2+ tool calls, PRE reflects on what happened and extracts reusable lessons. Semantic search uses `nomic-embed-text` embeddings (768-dim) so queries match on meaning, not just keywords.
 
 #### Browser Automation
 
@@ -675,6 +689,81 @@ PRE can delegate prompts to frontier AI models when cloud-level intelligence is 
 5. Session history preserves which model generated each message — badges render on reload
 
 The delegates run in non-interactive mode with tool use disabled (`claude --tools ""`, `codex -a suggest`, `gemini -o text`) so they return text responses only. The frontier model thinks; PRE acts.
+
+---
+
+## Experience Ledger
+
+PRE doesn't just execute tasks — it **learns from them**. After each task completes, a reflection step extracts lessons learned and saves them to a permanent experience ledger at `~/.pre/memory/experience/`.
+
+### How It Works
+
+1. **Automatic reflection** — After a tool loop finishes (2+ tool calls, 2-minute cooldown), PRE runs a lightweight reflection prompt
+2. **Structured extraction** — Each lesson captures: task (what was being done), approach (what was tried), outcome (what happened), and lesson (the reusable insight)
+3. **Embedding-based dedup** — New lessons are compared to existing ones using `nomic-embed-text` cosine similarity (threshold: 0.85) to avoid duplicates
+4. **Semantic retrieval** — The `experience_search` tool finds relevant lessons by meaning, not just keywords
+5. **Context injection** — The 10 most recent lessons are included in the system prompt
+
+### Example
+
+After PRE uses `grep` to find all files importing a module:
+
+```
+Lesson: "grep_for_discovery"
+Task: locating specific imports or patterns in a codebase
+Approach: using grep to identify all files containing a specific string
+Outcome: success
+Lesson: Use grep as a primary discovery/filtering layer — more efficient
+than reading files individually
+```
+
+Next time, searching for "how to find dependencies in source code" retrieves this lesson via semantic similarity (0.56), even though the words are completely different.
+
+### REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/experience` | List all experience entries |
+| `GET` | `/api/experience?q=query` | Semantic search experiences |
+
+---
+
+## Chronos (Temporal Awareness)
+
+PRE tracks the age and freshness of its memories, flags stale information, and can run self-maintenance to keep its knowledge base current.
+
+### Staleness Thresholds
+
+Each memory type has a different staleness threshold:
+
+| Type | Threshold | Rationale |
+|------|-----------|-----------|
+| `project` | 14 days | Project context changes fast |
+| `reference` | 60 days | External resources may move |
+| `feedback` | 90 days | Work preferences are relatively stable |
+| `experience` | 120 days | Tool strategies may change with updates |
+| `user` | 180 days | User profile changes slowly |
+
+### Memory Verification
+
+Memories have a `verified` frontmatter field. When a memory is verified (manually or by maintenance), the date is updated. Staleness is measured from the last verification, not just modification.
+
+### Self-Maintenance
+
+Run maintenance manually via `POST /api/chronos/maintenance` or schedule it as a cron job:
+
+> "Review your memory health. Run memory_health and report any stale or aging memories."
+
+The maintenance system reviews stale memories and recommends: **keep** (re-verify), **update** (content needs correction), or **flag for deletion** (no longer relevant). It never auto-deletes — flagged items are presented for user review.
+
+### REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/chronos/health` | Memory health summary (% fresh, counts) |
+| `GET` | `/api/chronos/staleness` | Full staleness report |
+| `POST` | `/api/chronos/verify/:filename` | Mark a memory as verified |
+| `POST` | `/api/chronos/maintenance` | Run automated maintenance |
 
 ---
 
@@ -1050,6 +1139,8 @@ pre/
 │   │   ├── cron-runner.js   # Headless cron execution + notifications
 │   │   ├── mcp.js           # MCP client manager (stdio + HTTP)
 │   │   ├── hooks.js         # Pre/post tool execution hooks
+│   │   ├── experience.js   # Experience ledger (post-task reflection + embeddings)
+│   │   ├── chronos.js      # Temporal awareness + memory staleness
 │   │   └── tools/           # Tool implementations
 │   │       ├── bash.js      # Shell execution
 │   │       ├── files.js     # File operations

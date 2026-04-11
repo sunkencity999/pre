@@ -140,6 +140,14 @@ function buildToolDefs() {
     }, ['tasks']),
 
     tool('list_agents', 'List all spawned sub-agents and their status (running, completed, failed)', {}),
+
+    tool('experience_search', 'Search the experience ledger for lessons learned from past tasks. Use this before attempting complex tasks to check if you have relevant prior experience.', {
+      query: { type: 'string', description: 'Search query describing the task or problem' },
+    }, ['query']),
+
+    tool('experience_list', 'List all entries in the experience ledger (lessons from past tasks)', {}),
+
+    tool('memory_health', 'Check the health of the memory system: staleness report, aging warnings, maintenance status', {}),
   ];
 
   // Conditional: browser
