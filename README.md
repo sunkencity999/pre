@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant that actually works. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 45+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 50+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -33,7 +33,7 @@ PRE doesn't abstract away the hardware — it leans into it:
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
-| **Prompt compression** | Function-signature tool format (~800 tokens for 45+ tools) | More room for conversation, faster prefill |
+| **Prompt compression** | Function-signature tool format (~800 tokens for 50+ tools) | More room for conversation, faster prefill |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
 
@@ -74,6 +74,9 @@ This means PRE can:
 - [Best Practices](#best-practices)
 - [Web GUI](#web-gui)
 - [Frontier AI Delegation](#frontier-ai-delegation)
+- [MCP Server Support](#mcp-server-support)
+- [Hooks System](#hooks-system)
+- [Browser Agent](#browser-agent)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
 - [Configuration](#configuration)
@@ -118,11 +121,11 @@ my-project #general>
 
 ## What PRE Can Do
 
-PRE is not a chatbot — it's a local agent with deep system access and 45+ tools.
+PRE is not a chatbot — it's a local agent with deep system access and 50+ tools.
 
 **Read and modify your codebase** — Reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-**Run commands autonomously** — Bash execution with a streamlined permission model. 42 of 45+ tools auto-execute; only genuinely destructive operations ask for confirmation.
+**Run commands autonomously** — Bash execution with a streamlined permission model. 42 of 50+ tools auto-execute; only genuinely destructive operations ask for confirmation.
 
 **Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts. Auto-extraction learns from conversations without being asked.
 
@@ -139,6 +142,14 @@ PRE is not a chatbot — it's a local agent with deep system access and 45+ tool
 **Use from your browser** — Built-in web GUI at `http://localhost:7749` with three themes (Dark, Light, Evangelion), real-time streaming, full tool execution, session management, project organization, memory browser, cron scheduler, and connection management.
 
 **Delegate to frontier AI** — When a task requires cloud-level intelligence, route it to Claude (Anthropic), Codex (OpenAI), or Gemini (Google) with a single click. PRE detects which CLIs are installed, streams the response back in real-time, and stores the result in the session alongside local messages. Use local inference for 95% of tasks; escalate on demand.
+
+**Control a browser** — Headless Chrome automation via the `browser` tool. Navigate pages, take screenshots, click elements, type into forms, read content, scroll, and run JavaScript — all vision-aware. The model sees screenshots after each action and decides what to do next.
+
+**Spawn sub-agents** — Delegate research tasks to autonomous sub-agents that run in parallel. Each agent gets its own Ollama session with restricted tool access, executes up to 10 tool calls, and returns a summary. Spawn up to 5 agents simultaneously.
+
+**Extend with MCP servers** — Connect any MCP (Model Context Protocol) server and its tools become available to the model automatically. Stdio and HTTP transports supported. Configure via `~/.pre/mcp.json` or the REST API.
+
+**Customize with hooks** — Define shell commands that run before or after tool execution. Audit every tool call, block destructive commands, enforce policies, or trigger external workflows. Hooks are defined in `~/.pre/hooks.json`.
 
 **Chat from your phone** — Configure a Telegram bot and PRE bridges it automatically. Full system access — same tools, same memory, same agentic workflows.
 
@@ -277,10 +288,11 @@ Type `/help` for the full list, or `/help <topic>` for detailed guides.
 
 ### Tools
 
-PRE has 45+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
+PRE has 50+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
 
-- **Auto** — executes immediately (42+ tools)
+- **Auto** — executes immediately (47+ tools)
 - **Confirm always** — asks every time (3 tools: `process_kill`, `memory_delete`, `applescript`)
+- **Hook-controlled** — optional pre/post hooks can block or audit any tool call
 
 #### File & Code
 
@@ -353,6 +365,24 @@ PRE has 45+ tools that the model calls autonomously. Nearly all auto-execute wit
 | `memory_search` | `query`? | Search saved memories |
 | `memory_list` | *(none)* | List all memories |
 | `memory_delete` | `query` | Delete a memory *(confirm always)* |
+
+#### Browser Automation
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `browser` | `action`, `url`?, `selector`?, `text`?, `x`?, `y`?, `key`?, `script`? | Control headless Chrome: navigate, screenshot, click, type, press, scroll, read, evaluate, select, back, forward, wait, close |
+
+The browser tool returns screenshots as base64 images after each action, enabling the model to visually understand and interact with web pages. The `select` action lists all interactive elements with their coordinates, making it easy for the model to target specific UI elements.
+
+#### Sub-Agents
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `spawn_agent` | `task` | Spawn an autonomous research agent with restricted tool access |
+| `spawn_parallel` | `tasks` (JSON array) | Spawn up to 5 agents in parallel |
+| `list_agents` | *(none)* | List all spawned agents and their status |
+
+Sub-agents run independently with access to read-only tools (bash, files, web, memory, system info) plus any connected MCP tools. Each agent gets up to 10 tool turns and returns a concise summary.
 
 #### Scheduling
 
@@ -586,7 +616,11 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 ### Features
 
 - **Real-time streaming** — tokens appear as the model generates them, with thinking blocks, streaming cursor, and live tool status cards
-- **Full tool execution** — all 45+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **Full tool execution** — all 50+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **Sub-agent spawning** — the model can delegate research tasks to autonomous sub-agents that run in parallel, each with their own Ollama session
+- **Browser automation** — headless Chrome control with vision-aware screenshot feedback. Navigate, click, type, scroll, and read web pages.
+- **MCP server support** — connect external MCP tool servers; their tools are automatically discovered and available to the model
+- **Hooks** — pre/post tool execution hooks for auditing, safety guardrails, and workflow automation
 - **File and image upload** — drag-and-drop, clipboard paste (Ctrl/Cmd+V), or file picker button. Images sent to model for analysis; text files included as context.
 - **Image generation** — generates images locally via ComfyUI. Results display inline with Full Size, Download, and Show in Finder actions.
 - **Document generation** — creates DOCX, XLSX, TXT, CSV, HTML documents. Download or open directly from the chat.
@@ -598,7 +632,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 - **Connection manager** — configure all external services from the Settings panel (API keys, OAuth)
 - **Context tracking** — live context window usage bar in the topbar
 - **Tool confirmation** — dangerous tools show a confirmation dialog before executing
-- **Three themes** — Dark, Light, and Evangelion (NERV-inspired orange-on-purple with hexagonal grid background)
+- **Four themes** — Dark, Light, Evangelion (NERV-inspired orange-on-purple with hexagonal grid), and Metal Gear (CRT military terminal with phosphor green scanlines)
 - **Calendas Plus typography** — serif display font for headings, system-ui stack for body text
 - **Auto-generated titles** — sessions are automatically named based on the first message
 - **Responsive layout** — three-panel design (sidebar, chat, artifact panel) with mobile hamburger drawer
@@ -641,6 +675,173 @@ PRE can delegate prompts to frontier AI models when cloud-level intelligence is 
 5. Session history preserves which model generated each message — badges render on reload
 
 The delegates run in non-interactive mode with tool use disabled (`claude --tools ""`, `codex -a suggest`, `gemini -o text`) so they return text responses only. The frontier model thinks; PRE acts.
+
+---
+
+## MCP Server Support
+
+PRE supports the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP), allowing you to connect external tool servers and make their capabilities available to the model.
+
+### Configuration
+
+MCP servers are configured in `~/.pre/mcp.json`:
+
+```json
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/projects"],
+      "env": {}
+    },
+    "remote-api": {
+      "url": "https://mcp.example.com/api"
+    }
+  }
+}
+```
+
+Two transport types are supported:
+- **Stdio** — spawns a local process (`command` + `args`)
+- **HTTP** — connects to a remote endpoint (`url`)
+
+### How It Works
+
+1. **Auto-connect at startup** — PRE connects to all configured MCP servers when the web GUI starts
+2. **Tool discovery** — each server's tools are discovered via `tools/list` and merged into the model's available tools
+3. **Namespaced routing** — MCP tools are prefixed as `mcp__servername__toolname` to avoid collisions
+4. **Transparent execution** — the model calls MCP tools the same way it calls built-in tools
+
+### REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/mcp` | Status of all configured/connected servers |
+| `POST` | `/api/mcp/add` | Add a new MCP server (auto-connects) |
+| `POST` | `/api/mcp/connect` | Connect to a configured server |
+| `POST` | `/api/mcp/disconnect` | Disconnect a server |
+| `DELETE` | `/api/mcp/:name` | Remove a server from config |
+
+---
+
+## Hooks System
+
+Hooks let you run shell commands before or after tool execution. Use them for auditing, policy enforcement, or workflow automation.
+
+### Configuration
+
+Hooks are defined in `~/.pre/hooks.json`:
+
+```json
+{
+  "hooks": [
+    {
+      "id": "audit-all",
+      "event": "pre_tool",
+      "tool": "*",
+      "command": "echo \"$(date) $PRE_TOOL_NAME $PRE_TOOL_ARGS\" >> ~/.pre/audit.log",
+      "description": "Audit all tool calls",
+      "enabled": true,
+      "can_block": false,
+      "timeout": 5000
+    },
+    {
+      "id": "block-destructive",
+      "event": "pre_tool",
+      "tool": "bash",
+      "command": "echo \"$PRE_TOOL_ARGS\" | grep -qE 'rm -rf|mkfs|dd if=' && exit 1 || exit 0",
+      "description": "Block destructive bash commands",
+      "enabled": true,
+      "can_block": true,
+      "timeout": 5000
+    }
+  ]
+}
+```
+
+### Hook Events
+
+| Event | When | Can Block? |
+|-------|------|------------|
+| `pre_tool` | Before a tool executes | Yes (non-zero exit blocks the call) |
+| `post_tool` | After a tool completes | No (logging/auditing only) |
+| `pre_message` | Before a user message is processed | Yes |
+| `post_message` | After the model responds | No |
+
+### Environment Variables
+
+Hooks receive context via environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `PRE_HOOK_EVENT` | Event type (pre_tool, post_tool, etc.) |
+| `PRE_TOOL_NAME` | Tool being called (e.g., "bash") |
+| `PRE_TOOL_ARGS` | JSON-encoded tool arguments |
+| `PRE_TOOL_OUTPUT` | Tool output (post_tool only) |
+| `PRE_SESSION_ID` | Current session ID |
+| `PRE_CWD` | Working directory |
+
+### REST API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/hooks` | List all hooks |
+| `POST` | `/api/hooks` | Add a new hook |
+| `PATCH` | `/api/hooks/:id/toggle` | Enable/disable a hook |
+| `DELETE` | `/api/hooks/:id` | Remove a hook |
+
+### Use Cases
+
+- **Audit logging** — log every tool call to a file or external system
+- **Safety guardrails** — block destructive commands (rm -rf, DROP TABLE, etc.)
+- **Workflow triggers** — notify Slack when the agent creates a file, send a webhook after image generation
+- **Compliance** — enforce policies on what the agent can do in different contexts
+
+---
+
+## Browser Agent
+
+PRE includes a vision-aware browser automation tool powered by headless Chrome (via Puppeteer). The model can navigate web pages, see screenshots, and interact with page elements autonomously.
+
+### Requirements
+
+- Google Chrome installed (standard macOS location)
+- `puppeteer-core` npm package (installed with the web GUI)
+
+### How It Works
+
+1. The model calls the `browser` tool with an action (navigate, click, type, etc.)
+2. PRE executes the action in headless Chrome
+3. A screenshot is taken and returned to the model as a base64 image
+4. The model sees the screenshot via Gemma 4's native vision and decides the next action
+5. The loop repeats until the task is complete
+
+### Available Actions
+
+| Action | Args | Description |
+|--------|------|-------------|
+| `navigate` | `url` | Go to a URL, return screenshot |
+| `screenshot` | `full_page`? | Capture current page |
+| `click` | `selector` or `text` or `x,y` | Click an element |
+| `type` | `selector`?, `text`, `clear`? | Type text into a field |
+| `press` | `key` | Press a key (Enter, Tab, Escape, etc.) |
+| `scroll` | `direction`, `amount`? | Scroll up or down |
+| `read` | *(none)* | Extract visible text content |
+| `evaluate` | `script` | Run JavaScript in page context |
+| `select` | *(none)* | List all interactive elements with coordinates |
+| `back` / `forward` | *(none)* | Browser history navigation |
+| `wait` | `selector`?, `timeout`? | Wait for an element or duration |
+| `close` | *(none)* | Close the browser |
+
+### Example Workflow
+
+Ask PRE: "Go to Hacker News and find the top story about AI"
+
+The model will:
+1. `browser navigate https://news.ycombinator.com` — sees the homepage
+2. `browser select` — discovers clickable links with coordinates
+3. `browser read` — extracts article titles
+4. Return a summary of what it found
 
 ---
 
@@ -699,7 +900,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 ┌──▼──────────────┐  ┌──┴──────────────┐
 │    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
 │ Juggernaut XL   │  │  (Node.js/WS)   │  3 themes, streaming
-│  (MPS/Metal)    │  │  vanilla JS SPA  │  45+ tools, cron runner
+│  (MPS/Metal)    │  │  vanilla JS SPA  │  50+ tools, cron runner
 │ 25-step, 1024px │  │  shared sessions │  file upload, image gen
 └─────────────────┘  └─────────────────┘
 
@@ -707,6 +908,8 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
   ├── identity.json       # Agent name
   ├── connections.json    # API keys and OAuth tokens
   ├── cron.json           # Scheduled recurring tasks
+  ├── hooks.json          # Pre/post tool execution hooks
+  ├── mcp.json            # MCP server configuration
   ├── sessions/           # Conversation JSONL (shared by CLI + web + cron)
   ├── history             # Input history (arrow-key recall)
   ├── checkpoints/        # File backups for /undo
@@ -730,7 +933,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines) handling:
 - Raw `recv()` NDJSON streaming with 64KB ring buffer
 - Fixed `num_ctx=65536` matching Modelfile (avoids Ollama reload)
-- 45+ tool implementations with two-tier permissions
+- 50+ tool implementations with two-tier permissions + hook-based policy enforcement
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` fallback
 - Local image generation via ComfyUI (checkpoint-adaptive workflow)
 - Multi-part artifacts with incremental append
@@ -746,11 +949,15 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 **Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA:
 - NDJSON streaming client for Ollama
 - Server-side tool execution (same tool loop as CLI)
+- MCP client manager with stdio/HTTP transports and auto-discovery
+- Sub-agent spawning with parallel execution
+- Headless Chrome browser automation with vision feedback
+- Hook system for pre/post tool execution policies
 - Headless cron runner with multi-channel notification delivery
 - Session JSONL read/write (shared format with CLI)
 - File/image upload (drag-and-drop, clipboard paste, file picker)
 - Document generation (DOCX, XLSX via docx/exceljs, PDF via pdfkit)
-- Three themes with CSS custom properties
+- Four themes with CSS custom properties (Dark, Light, Evangelion, Metal Gear)
 - No framework, no bundler — under 3K lines total JS
 
 **Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines):
@@ -792,6 +999,8 @@ All PRE data lives in `~/.pre/`:
 ├── identity.json       # Agent name
 ├── connections.json    # API keys, OAuth tokens (chmod 600)
 ├── cron.json           # Scheduled recurring tasks
+├── hooks.json          # Pre/post tool execution hooks
+├── mcp.json            # MCP server configuration
 ├── sessions/           # Conversation JSONL (one per session)
 ├── history             # Readline history
 ├── checkpoints/        # File backups (auto-cleaned)
@@ -833,12 +1042,14 @@ pre/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client
 │   │   ├── sessions.js      # JSONL read/write (shared with CLI)
 │   │   ├── tools.js         # Tool dispatcher + execution loop
-│   │   ├── tools-defs.js    # 45+ tool definitions for Ollama
+│   │   ├── tools-defs.js    # 50+ tool definitions for Ollama
 │   │   ├── context.js       # System prompt builder
 │   │   ├── memory.js        # Auto-extraction engine
 │   │   ├── connections.js   # Credential management
 │   │   ├── constants.js     # MODEL_CTX=65536, paths
 │   │   ├── cron-runner.js   # Headless cron execution + notifications
+│   │   ├── mcp.js           # MCP client manager (stdio + HTTP)
+│   │   ├── hooks.js         # Pre/post tool execution hooks
 │   │   └── tools/           # Tool implementations
 │   │       ├── bash.js      # Shell execution
 │   │       ├── files.js     # File operations
@@ -855,7 +1066,10 @@ pre/
 │   │       ├── jira.js      # Jira API
 │   │       ├── confluence.js # Confluence API
 │   │       ├── smartsheet.js # Smartsheet API
-│   │       └── slack.js     # Slack API
+│   │       ├── slack.js     # Slack API
+│   │       ├── agents.js   # Sub-agent spawning + parallel execution
+│   │       ├── browser.js  # Headless Chrome automation (Puppeteer)
+│   │       └── delegate.js # Frontier AI delegation (Claude/Codex/Gemini)
 │   └── public/
 │       ├── index.html       # SPA shell
 │       ├── favicon.svg

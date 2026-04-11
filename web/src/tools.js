@@ -7,6 +7,8 @@ const { buildToolDefs } = require('./tools-defs');
 const { appendMessage, getSessionMessages, renameSession } = require('./sessions');
 const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
 const { autoExtract } = require('./memory');
+const mcp = require('./mcp');
+const hooks = require('./hooks');
 
 /**
  * Generate a short session title from the first user message.
@@ -70,6 +72,8 @@ const smartsheetTool = require('./tools/smartsheet');
 const slackTool = require('./tools/slack');
 const imageTool = require('./tools/image');
 const cronTool = require('./tools/cron');
+const agentsTool = require('./tools/agents');
+const browserTool = require('./tools/browser');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -103,6 +107,10 @@ const ALIASES = {
   image: 'image_generate', image_gen: 'image_generate', gen_image: 'image_generate',
   draw: 'image_generate', paint: 'image_generate', dalle: 'image_generate',
   schedule: 'cron', cron_job: 'cron', recurring: 'cron', timer: 'cron',
+  agent: 'spawn_agent', sub_agent: 'spawn_agent', research: 'spawn_agent',
+  parallel: 'spawn_parallel', agents: 'list_agents',
+  browse_web: 'browser', web_browser: 'browser', chrome: 'browser',
+  open_browser: 'browser', puppeteer: 'browser', navigate: 'browser',
 };
 
 // Tools that require user confirmation before execution
@@ -185,8 +193,22 @@ async function executeTool(name, args, cwd) {
     // Image generation
     case 'image_generate': return imageTool.imageGenerate(args);
 
+    // Browser
+    case 'browser': return browserTool.browserAction(args);
+
     // Cron / scheduling
     case 'cron': return cronTool.cron(args);
+
+    // Sub-agents
+    case 'spawn_agent': return agentsTool.spawnAgent(args, cwd);
+    case 'spawn_parallel': {
+      // Parse tasks if passed as JSON string
+      if (args.tasks && typeof args.tasks === 'string') {
+        try { args.tasks = JSON.parse(args.tasks); } catch {}
+      }
+      return agentsTool.spawnParallel(args, cwd);
+    }
+    case 'list_agents': return agentsTool.listAgents();
 
     // Documents
     case 'document': {
@@ -198,7 +220,11 @@ async function executeTool(name, args, cwd) {
     }
 
     default:
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
+      // Check if this is an MCP tool
+      if (mcp.isMCPTool(name)) {
+        return mcp.callTool(name, args);
+      }
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_parallel, list_agents, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
@@ -328,6 +354,14 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       }
 
+      // Run pre_tool hooks (can block)
+      const preHook = hooks.runHooks('pre_tool', { tool: toolName, args: toolArgs, sessionId, cwd });
+      if (preHook.blocked) {
+        send({ type: 'tool_result', id: toolId, name: toolName, output: `Blocked by hook: ${preHook.reason}`, status: 'blocked' });
+        toolResults.push({ name: toolName, output: `Blocked by hook: ${preHook.reason}` });
+        continue;
+      }
+
       // Execute the tool
       let output;
       try {
@@ -335,6 +369,9 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       } catch (err) {
         output = `Error: ${err.message}`;
       }
+
+      // Run post_tool hooks (non-blocking, for logging/auditing)
+      hooks.runHooks('post_tool', { tool: toolName, args: toolArgs, output: output?.slice(0, 4000), sessionId, cwd });
 
       // Notify client about generated images so they can display inline
       if (toolName === 'image_generate' && output && output.includes('/artifacts/')) {
@@ -362,6 +399,22 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       }
 
+      // Handle browser tool screenshots — extract base64 image for vision
+      let browserScreenshot = null;
+      if (toolName === 'browser' && output) {
+        try {
+          const parsed = JSON.parse(output);
+          if (parsed.screenshot) {
+            browserScreenshot = parsed.screenshot;
+            // Send screenshot to client for display
+            send({ type: 'browser_screenshot', id: toolId, screenshot: parsed.screenshot, message: parsed.message });
+            // Strip screenshot from text output (too large for text context)
+            delete parsed.screenshot;
+            output = JSON.stringify(parsed);
+          }
+        } catch {}
+      }
+
       // Truncate very large outputs
       const MAX_OUTPUT = 32000;
       if (output.length > MAX_OUTPUT) {
@@ -376,14 +429,20 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         status: 'done',
       });
 
-      toolResults.push({ name: toolName, output });
+      toolResults.push({ name: toolName, output, image: browserScreenshot });
     }
 
     // Save tool results to session (combined format matching CLI)
     const combinedResult = toolResults
       .map(r => `<tool_response name="${r.name}">\n${r.output}</tool_response>`)
       .join('\n');
-    appendMessage(sessionId, { role: 'tool', content: combinedResult });
+    const toolMsg = { role: 'tool', content: combinedResult };
+    // Attach browser screenshots as images so the model can see them
+    const screenshots = toolResults.filter(r => r.image).map(r => r.image);
+    if (screenshots.length > 0) {
+      toolMsg.images = screenshots;
+    }
+    appendMessage(sessionId, toolMsg);
 
     // Start next iteration (model sees tool results and may call more tools)
   }

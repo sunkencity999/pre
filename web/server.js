@@ -26,6 +26,8 @@ const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
 const { executeCronJob } = require('./src/cron-runner');
 const delegate = require('./src/tools/delegate');
+const mcp = require('./src/mcp');
+const hooksSystem = require('./src/hooks');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -355,6 +357,74 @@ app.get('/api/delegates', (_req, res) => {
   res.json(delegate.checkAvailability());
 });
 
+// ── MCP (Model Context Protocol) routes ──
+app.get('/api/mcp', (_req, res) => {
+  res.json(mcp.getStatus());
+});
+
+app.post('/api/mcp/connect', async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const config = mcp.loadConfig();
+  const serverConfig = config.servers?.[name];
+  if (!serverConfig) return res.status(404).json({ error: `Server '${name}' not configured` });
+  try {
+    await mcp.connectServer(name, serverConfig);
+    res.json({ connected: true, tools: mcp.getStatus()[name]?.tools || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/mcp/disconnect', async (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  await mcp.disconnectServer(name);
+  res.json({ disconnected: true });
+});
+
+app.post('/api/mcp/add', async (req, res) => {
+  const { name, command, args, env, url } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  if (!command && !url) return res.status(400).json({ error: 'command or url required' });
+  const serverConfig = url ? { url } : { command, args: args || [], env: env || {} };
+  mcp.addServer(name, serverConfig);
+  try {
+    await mcp.connectServer(name, serverConfig);
+    res.json({ added: true, connected: true, tools: mcp.getStatus()[name]?.tools || 0 });
+  } catch (err) {
+    res.json({ added: true, connected: false, error: err.message });
+  }
+});
+
+app.delete('/api/mcp/:name', async (req, res) => {
+  await mcp.removeServer(req.params.name);
+  res.json({ removed: true });
+});
+
+// ── Hooks API ──
+app.get('/api/hooks', (_req, res) => {
+  res.json(hooksSystem.listHooks());
+});
+
+app.post('/api/hooks', (req, res) => {
+  const result = hooksSystem.addHook(req.body || {});
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+
+app.patch('/api/hooks/:id/toggle', (req, res) => {
+  const result = hooksSystem.toggleHook(req.params.id);
+  if (result.error) return res.status(404).json({ error: result.error });
+  res.json(result);
+});
+
+app.delete('/api/hooks/:id', (req, res) => {
+  const result = hooksSystem.removeHook(req.params.id);
+  if (result.error) return res.status(404).json({ error: result.error });
+  res.json(result);
+});
+
 app.get('/api/status', async (_req, res) => {
   const ollamaUp = await healthCheck();
   res.json({
@@ -563,11 +633,22 @@ setInterval(() => {
 
 // ── Start ──
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   const jobs = cronSystem.loadJobs();
   const enabledCount = jobs.filter(j => j.enabled).length;
   console.log(`\n  PRE Web GUI running at http://localhost:${PORT}`);
   console.log(`  Working directory: ${CWD}`);
   console.log(`  Model context: ${MODEL_CTX} tokens`);
-  console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total\n`);
+  console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total`);
+
+  // Auto-connect MCP servers
+  const mcpConfig = mcp.loadConfig();
+  const mcpCount = Object.keys(mcpConfig.servers || {}).length;
+  if (mcpCount > 0) {
+    const results = await mcp.connectAll();
+    const connected = Object.values(results).filter(r => r.connected).length;
+    const totalTools = Object.values(results).reduce((sum, r) => sum + (r.tools || 0), 0);
+    console.log(`  MCP servers: ${connected}/${mcpCount} connected (${totalTools} tools)`);
+  }
+  console.log('');
 });

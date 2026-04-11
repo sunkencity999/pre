@@ -2,6 +2,7 @@
 // Mirrors build_tools_json() from pre.m
 
 const { getActiveConnections, isComfyUIInstalled } = require('./context');
+const mcp = require('./mcp');
 
 function buildToolDefs() {
   const tools = [
@@ -129,7 +130,36 @@ function buildToolDefs() {
       description: { type: 'string', description: 'Human-readable description' },
       id: { type: 'string', description: 'Job ID (for remove/enable/disable)' },
     }, ['action']),
+
+    tool('spawn_agent', 'Spawn a sub-agent to research a topic or complete a task autonomously in the background. The agent has access to read-only tools (bash, files, web, memory) and returns a summary of findings.', {
+      task: { type: 'string', description: 'Detailed task description for the sub-agent' },
+    }, ['task']),
+
+    tool('spawn_parallel', 'Spawn multiple sub-agents in parallel to research different topics simultaneously. Maximum 5 agents.', {
+      tasks: { type: 'string', description: 'JSON array of task description strings, e.g. ["research X", "analyze Y"]' },
+    }, ['tasks']),
+
+    tool('list_agents', 'List all spawned sub-agents and their status (running, completed, failed)', {}),
   ];
+
+  // Conditional: browser
+  const browserTool = require('./tools/browser');
+  if (browserTool.isAvailable()) {
+    tools.push(tool('browser', 'Control a headless Chrome browser. Navigate web pages, take screenshots, click elements, type text, read content. The browser returns screenshots as base64 images after each action so you can see what happened.', {
+      action: { type: 'string', description: 'Action: navigate|screenshot|click|type|press|scroll|read|evaluate|select|back|forward|wait|close' },
+      url: { type: 'string', description: 'URL to navigate to (for navigate)' },
+      selector: { type: 'string', description: 'CSS selector for click/type/wait' },
+      text: { type: 'string', description: 'Text to type, or text content to click on' },
+      x: { type: 'integer', description: 'X coordinate for click' },
+      y: { type: 'integer', description: 'Y coordinate for click' },
+      key: { type: 'string', description: 'Key to press (Enter, Tab, Escape, etc.)' },
+      direction: { type: 'string', description: 'Scroll direction: up|down' },
+      amount: { type: 'integer', description: 'Scroll amount in pixels' },
+      script: { type: 'string', description: 'JavaScript to evaluate in page context' },
+      clear: { type: 'boolean', description: 'Clear field before typing' },
+      full_page: { type: 'boolean', description: 'Take full-page screenshot' },
+    }, ['action']));
+  }
 
   // Conditional: image_generate
   if (isComfyUIInstalled()) {
@@ -269,6 +299,10 @@ function buildToolDefs() {
       parse_mode: { type: 'string', description: 'Parse mode: Markdown|HTML (default: Markdown)' },
     }, ['action']));
   }
+
+  // Append MCP tools from all connected servers
+  const mcpTools = mcp.getAllTools();
+  tools.push(...mcpTools);
 
   return tools;
 }
