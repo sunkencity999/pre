@@ -155,6 +155,21 @@ else
 fi
 
 # ============================================================================
+# Step 2b: Pull embedding model (for experience ledger semantic search)
+# ============================================================================
+step "Pulling embedding model (nomic-embed-text)"
+
+if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+    ok "  Embedding model already available."
+else
+    echo "  Downloading nomic-embed-text (~274MB)..."
+    ollama pull nomic-embed-text || warn "  Failed to pull nomic-embed-text — experience ledger will use keyword search fallback."
+    if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+        ok "  Embedding model downloaded."
+    fi
+fi
+
+# ============================================================================
 # Step 3: Create custom model from Modelfile
 # ============================================================================
 step "Creating optimized model ($CUSTOM_MODEL)"
@@ -289,12 +304,24 @@ step "Setting up PRE data directories"
 
 mkdir -p "$HOME/.pre/sessions"
 mkdir -p "$HOME/.pre/memory"
+mkdir -p "$HOME/.pre/memory/experience"
 mkdir -p "$HOME/.pre/checkpoints"
 mkdir -p "$HOME/.pre/artifacts"
 ok "  Created ~/.pre/sessions/"
 ok "  Created ~/.pre/memory/"
+ok "  Created ~/.pre/memory/experience/"
 ok "  Created ~/.pre/checkpoints/"
 ok "  Created ~/.pre/artifacts/"
+
+# Create default config files if they don't exist
+if [ ! -f "$HOME/.pre/hooks.json" ]; then
+    echo '{"hooks":[]}' > "$HOME/.pre/hooks.json"
+    ok "  Created ~/.pre/hooks.json"
+fi
+if [ ! -f "$HOME/.pre/mcp.json" ]; then
+    echo '{"servers":{}}' > "$HOME/.pre/mcp.json"
+    ok "  Created ~/.pre/mcp.json"
+fi
 
 # Migrate from old Flash-MoE layout if present
 if [ -d "$HOME/.flash-moe" ] && [ ! -f "$HOME/.pre/.migrated" ]; then
@@ -460,6 +487,7 @@ else
                 fi
 
                 if [ -n "$SELECTED_CHECKPOINT" ]; then
+
                     # Create config file
                     cat > "$COMFYUI_CONFIG" << CFGEOF
 {
@@ -536,13 +564,21 @@ else
 echo -e "    • ${DIM}ComfyUI       — image generation (re-run install.sh to add)${RESET}"
 fi
 echo ""
+echo -e "  ${BOLD}Features:${RESET}"
+echo -e "    50+ tools including sub-agents, browser automation, hooks,"
+echo -e "    experience ledger (learns from past tasks), and temporal"
+echo -e "    memory awareness. Chrome enables headless browser control."
+echo ""
 echo -e "  ${BOLD}Data:${RESET}"
-echo -e "    ${DIM}~/.pre/identity.json${RESET}  Agent name"
-echo -e "    ${DIM}~/.pre/sessions/${RESET}      Session history (shared by CLI + Web)"
-echo -e "    ${DIM}~/.pre/memory/${RESET}        Persistent memory"
-echo -e "    ${DIM}~/.pre/artifacts/${RESET}     Generated documents, images & artifacts"
-echo -e "    ${DIM}~/.pre/cron.json${RESET}      Scheduled recurring tasks"
-echo -e "    ${DIM}~/.pre/telegram.log${RESET}   Telegram bot log"
+echo -e "    ${DIM}~/.pre/identity.json${RESET}      Agent name"
+echo -e "    ${DIM}~/.pre/sessions/${RESET}          Session history (shared by CLI + Web)"
+echo -e "    ${DIM}~/.pre/memory/${RESET}            Persistent memory"
+echo -e "    ${DIM}~/.pre/memory/experience/${RESET} Experience ledger (lessons learned)"
+echo -e "    ${DIM}~/.pre/artifacts/${RESET}         Generated documents, images & artifacts"
+echo -e "    ${DIM}~/.pre/cron.json${RESET}          Scheduled recurring tasks"
+echo -e "    ${DIM}~/.pre/hooks.json${RESET}         Pre/post tool execution hooks"
+echo -e "    ${DIM}~/.pre/mcp.json${RESET}           MCP server configuration"
+echo -e "    ${DIM}~/.pre/telegram.log${RESET}       Telegram bot log"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""
