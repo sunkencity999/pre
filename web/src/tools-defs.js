@@ -131,11 +131,11 @@ function buildToolDefs() {
       id: { type: 'string', description: 'Job ID (for remove/enable/disable)' },
     }, ['action']),
 
-    tool('spawn_agent', 'Spawn a sub-agent to research a topic or complete a task autonomously in the background. The agent has access to read-only tools (bash, files, web, memory) and returns a summary of findings.', {
-      task: { type: 'string', description: 'Detailed task description for the sub-agent' },
+    tool('spawn_agent', 'Spawn an autonomous sub-agent for research-heavy tasks. Use this when a task requires multiple searches, file reads, or web fetches that would clutter the main conversation. The agent runs independently, calls tools on its own, and returns a concise summary. Best for: deep research, codebase analysis, gathering background info.', {
+      task: { type: 'string', description: 'Detailed task description — be specific about what to find and return' },
     }, ['task']),
 
-    tool('spawn_parallel', 'Spawn multiple sub-agents in parallel to research different topics simultaneously. Maximum 5 agents.', {
+    tool('spawn_multi', 'Run multiple research sub-agents sequentially, collecting results from each. Use when the user asks to compare, contrast, or investigate multiple independent topics. Each agent runs to completion before the next starts. Maximum 5 tasks. Progress is streamed to the user.', {
       tasks: { type: 'string', description: 'JSON array of task description strings, e.g. ["research X", "analyze Y"]' },
     }, ['tasks']),
 

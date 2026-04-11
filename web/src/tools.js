@@ -108,7 +108,7 @@ const ALIASES = {
   draw: 'image_generate', paint: 'image_generate', dalle: 'image_generate',
   schedule: 'cron', cron_job: 'cron', recurring: 'cron', timer: 'cron',
   agent: 'spawn_agent', sub_agent: 'spawn_agent', research: 'spawn_agent',
-  parallel: 'spawn_parallel', agents: 'list_agents',
+  spawn_parallel: 'spawn_multi', parallel: 'spawn_multi', agents: 'list_agents',
   browse_web: 'browser', web_browser: 'browser', chrome: 'browser',
   open_browser: 'browser', puppeteer: 'browser', navigate: 'browser',
 };
@@ -119,7 +119,8 @@ const CONFIRM_TOOLS = new Set([
 ]);
 
 // Dispatch a tool call to its handler
-async function executeTool(name, args, cwd) {
+// opts.onStatus — callback for streaming status events (used by sub-agents)
+async function executeTool(name, args, cwd, opts) {
   // Resolve aliases
   name = ALIASES[name] || name;
 
@@ -199,14 +200,14 @@ async function executeTool(name, args, cwd) {
     // Cron / scheduling
     case 'cron': return cronTool.cron(args);
 
-    // Sub-agents
-    case 'spawn_agent': return agentsTool.spawnAgent(args, cwd);
-    case 'spawn_parallel': {
+    // Sub-agents — onStatus passed through from runToolLoop for WS streaming
+    case 'spawn_agent': return agentsTool.spawnAgent(args, cwd, opts?.onStatus);
+    case 'spawn_multi': {
       // Parse tasks if passed as JSON string
       if (args.tasks && typeof args.tasks === 'string') {
         try { args.tasks = JSON.parse(args.tasks); } catch {}
       }
-      return agentsTool.spawnParallel(args, cwd);
+      return agentsTool.spawnMulti(args, cwd, opts?.onStatus);
     }
     case 'list_agents': return agentsTool.listAgents();
 
@@ -224,7 +225,7 @@ async function executeTool(name, args, cwd) {
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
       }
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_parallel, list_agents, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
@@ -365,7 +366,9 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       // Execute the tool
       let output;
       try {
-        output = await executeTool(toolName, toolArgs, cwd);
+        output = await executeTool(toolName, toolArgs, cwd, {
+          onStatus: (event) => send({ type: 'agent_status', ...event }),
+        });
       } catch (err) {
         output = `Error: ${err.message}`;
       }

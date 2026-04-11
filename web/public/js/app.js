@@ -60,6 +60,10 @@
         Chat.endStream(msg.stats, msg.context);
         break;
 
+      case 'agent_status':
+        Chat.updateAgentStatus(msg);
+        break;
+
       case 'confirm_request':
         showConfirmDialog(msg.id, msg.tool, msg.args);
         break;

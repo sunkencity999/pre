@@ -108,6 +108,15 @@ function buildSystemPrompt(cwd) {
       + `For reports/artifacts that need the image embedded, use the returned /artifacts/ path as the src.\n`;
   }
 
+  // Sub-agent guidance
+  prompt += `\nSUB-AGENTS:\n`
+    + `You have spawn_agent and spawn_multi tools for delegating research:\n`
+    + `- Use spawn_agent when a task requires deep research (multiple searches/reads) that would consume too much of this conversation's context window\n`
+    + `- Use spawn_multi when the user asks to compare, analyze, or investigate multiple independent topics (e.g. "compare frameworks A, B, and C") — agents run sequentially with progress updates\n`
+    + `- Sub-agents keep the main context clean — their tool calls and outputs stay in their own session\n`
+    + `- Do NOT use sub-agents for simple tasks (one file read, one search, one web fetch) — handle those directly, it's faster\n`
+    + `- Each sub-agent has access to: bash, file reading, glob, grep, web_fetch, web_search, memory, and system info\n`;
+
   // Report quality
   prompt += `\nREPORT QUALITY STANDARDS:\n`
     + `When creating reports or documents:\n`

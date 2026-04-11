@@ -145,7 +145,7 @@ PRE is not a chatbot — it's a local agent with deep system access and 50+ tool
 
 **Control a browser** — Headless Chrome automation via the `browser` tool. Navigate pages, take screenshots, click elements, type into forms, read content, scroll, and run JavaScript — all vision-aware. The model sees screenshots after each action and decides what to do next.
 
-**Spawn sub-agents** — Delegate research tasks to autonomous sub-agents that run in parallel. Each agent gets its own Ollama session with restricted tool access, executes up to 10 tool calls, and returns a summary. Spawn up to 5 agents simultaneously.
+**Spawn sub-agents** — Delegate research tasks to autonomous sub-agents that run in parallel. Each agent gets its own Ollama session with restricted tool access, executes up to 10 tool calls, and returns a summary. Run up to 5 agents sequentially with progress updates.
 
 **Extend with MCP servers** — Connect any MCP (Model Context Protocol) server and its tools become available to the model automatically. Stdio and HTTP transports supported. Configure via `~/.pre/mcp.json` or the REST API.
 
@@ -379,7 +379,7 @@ The browser tool returns screenshots as base64 images after each action, enablin
 | Tool | Args | Description |
 |------|------|-------------|
 | `spawn_agent` | `task` | Spawn an autonomous research agent with restricted tool access |
-| `spawn_parallel` | `tasks` (JSON array) | Spawn up to 5 agents in parallel |
+| `spawn_multi` | `tasks` (JSON array) | Run up to 5 research agents sequentially with progress streaming |
 | `list_agents` | *(none)* | List all spawned agents and their status |
 
 Sub-agents run independently with access to read-only tools (bash, files, web, memory, system info) plus any connected MCP tools. Each agent gets up to 10 tool turns and returns a concise summary.

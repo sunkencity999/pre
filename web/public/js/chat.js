@@ -278,6 +278,39 @@ const Chat = (() => {
     }
   }
 
+  /**
+   * Show sub-agent status updates inline
+   */
+  function updateAgentStatus(event) {
+    let container = document.getElementById('agent-status-bar');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'agent-status-bar';
+      container.className = 'agent-status-bar';
+      const msgEl = document.getElementById('streaming-message') ||
+                    messagesEl().lastElementChild;
+      if (msgEl) msgEl.appendChild(container);
+    }
+
+    if (event.type === 'agent_started') {
+      container.innerHTML = `<span class="agent-status-icon">◉</span> Agent started: ${Markdown.escapeHtml(event.task?.slice(0, 80) || '')}`;
+    } else if (event.type === 'agent_tool') {
+      container.innerHTML = `<span class="agent-status-icon spinning">◉</span> Agent using <strong>${Markdown.escapeHtml(event.tool || '')}</strong>...`;
+    } else if (event.type === 'agent_progress') {
+      container.innerHTML = `<span class="agent-status-icon spinning">◉</span> Task ${event.current}/${event.total}: ${Markdown.escapeHtml(event.task?.slice(0, 80) || '')}`;
+    } else if (event.type === 'agent_task_done') {
+      container.innerHTML = `<span class="agent-status-icon done">◉</span> Task ${event.current}/${event.total} complete`;
+    } else if (event.type === 'agent_completed') {
+      const secs = event.duration ? (event.duration / 1000).toFixed(1) + 's' : '';
+      container.innerHTML = `<span class="agent-status-icon done">◉</span> Agent finished ${secs}`;
+      setTimeout(() => container.remove(), 5000);
+    } else if (event.type === 'agent_failed') {
+      container.innerHTML = `<span class="agent-status-icon error">◉</span> Agent failed: ${Markdown.escapeHtml(event.error || '')}`;
+      setTimeout(() => container.remove(), 8000);
+    }
+    scrollToBottom();
+  }
+
   function createToolCard(tc) {
     const card = document.createElement('div');
     card.className = 'tool-card';
@@ -632,6 +665,7 @@ const Chat = (() => {
     endDelegateStream,
     addToolCall,
     updateToolCard,
+    updateAgentStatus,
     addDocumentCard,
     addArtifactCard,
     addImageCard,

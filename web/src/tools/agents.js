@@ -144,27 +144,31 @@ RULES:
 }
 
 /**
- * Spawn multiple agents in parallel and collect results
+ * Spawn multiple agents sequentially and collect results.
+ * Runs one at a time because Ollama processes requests serially per model.
+ * Streams status updates so the user sees progress.
  */
-async function spawnParallel(args, cwd, onStatus) {
+async function spawnMulti(args, cwd, onStatus) {
   const { tasks } = args;
   if (!tasks || !Array.isArray(tasks) || tasks.length === 0) {
     return 'Error: tasks must be a non-empty array of task descriptions';
   }
 
   if (tasks.length > 5) {
-    return 'Error: maximum 5 parallel agents allowed';
+    return 'Error: maximum 5 tasks allowed';
   }
 
-  const promises = tasks.map((task, i) =>
-    spawnAgent({ task }, cwd, onStatus).then(result => ({
-      task,
-      result,
-      index: i,
-    }))
-  );
+  const results = [];
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    if (onStatus) onStatus({ type: 'agent_progress', current: i + 1, total: tasks.length, task });
 
-  const results = await Promise.all(promises);
+    const result = await spawnAgent({ task }, cwd, onStatus);
+    results.push({ task, result, index: i });
+
+    if (onStatus) onStatus({ type: 'agent_task_done', current: i + 1, total: tasks.length, task, preview: result.slice(0, 200) });
+  }
+
   return results.map(r =>
     `## Task ${r.index + 1}: ${r.task}\n${r.result}`
   ).join('\n\n---\n\n');
@@ -218,4 +222,4 @@ function cleanResponse(text) {
     .trim();
 }
 
-module.exports = { spawnAgent, spawnParallel, listAgents };
+module.exports = { spawnAgent, spawnMulti, listAgents };
