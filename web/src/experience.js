@@ -302,7 +302,7 @@ async function searchExperiences(query) {
           const sim = cached?.vector ? cosineSim(queryVector, cached.vector) : 0;
           return { ...exp, similarity: sim };
         })
-        .filter(e => e.similarity > 0.3)
+        .filter(e => e.similarity > 0.4)
         .sort((a, b) => b.similarity - a.similarity);
 
       if (scored.length > 0) return scored.slice(0, 10);
