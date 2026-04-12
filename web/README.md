@@ -42,7 +42,73 @@ All integrations are configured through the Settings panel (gear icon in sidebar
 | **Confluence Server** | URL + Personal Access Token | Search (CQL), pages (CRUD), spaces, child pages, comments |
 | **Smartsheet** | API Access Token | Sheets (CRUD), rows (add/update/delete), columns, workspaces, search, comments |
 | **Slack** | Bot User OAuth Token | Channels, message history, send/reply/update, reactions, search, users |
+| **Microsoft SharePoint** | OAuth 2.0 (Azure AD) | Search sites, browse drives/files, read/upload files, list items, pages |
 | **Wolfram Alpha** | API Key | Computational queries |
+
+## Microsoft SharePoint Setup
+
+PRE integrates with Microsoft SharePoint via the Microsoft Graph API. One Azure AD app registration serves your entire organization — each user authenticates with their own Microsoft credentials.
+
+### 1. Register an Azure AD App (admin, one-time)
+
+1. Go to [Azure App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade)
+2. Click **New registration**
+   - **Name:** `PRE - Personal Reasoning Engine` (or any name)
+   - **Supported account types:** "Accounts in this organizational directory only" (single-tenant)
+   - **Redirect URI:** Select **Web** platform, enter `http://localhost:7749/oauth/microsoft/callback`
+3. After creation, note the **Application (client) ID** and **Directory (tenant) ID** from the Overview page
+4. Go to **Certificates & secrets** > **New client secret** — copy the **Value** (not the Secret ID)
+5. Go to **API permissions** > **Add a permission** > **Microsoft Graph** > **Delegated permissions**:
+   - `Sites.Read.All` — Read SharePoint sites
+   - `Files.ReadWrite.All` — Read and write files in SharePoint document libraries
+   - `User.Read` — Sign in and read user profile
+6. Click **Grant admin consent** (requires Global Admin)
+
+### 2. Connect in PRE (each user)
+
+1. Open PRE Web GUI (`http://localhost:7749`)
+2. Click the gear icon (Settings) in the sidebar footer
+3. Find **Microsoft SharePoint** and click **Setup**
+4. Enter:
+   - **Tenant ID** — Directory (tenant) ID from the app registration
+   - **Client ID** — Application (client) ID from the app registration
+   - **Client Secret** — The secret value you created
+5. Click **Save & Authorize** — a Microsoft sign-in window will open
+6. Sign in with your Microsoft work account and grant the requested permissions
+7. The window will close automatically and SharePoint tools become available
+
+### 3. Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `search` | Search across all SharePoint sites |
+| `list_sites` | List available SharePoint sites |
+| `list_subsites` | List subsites under a site |
+| `list_drives` | List document libraries with storage quota |
+| `site_usage` | Aggregate storage usage across all drives |
+| `list_files` | Browse files in a drive or folder |
+| `get_recent` | Recently modified files in a drive |
+| `read_file` | Download and read a file's contents |
+| `get_file_metadata` | File details (size, author, dates) without downloading |
+| `upload_file` | Upload a file to a SharePoint drive |
+| `create_folder` | Create a new folder in a drive |
+| `move_file` | Move or rename a file |
+| `copy_file` | Copy a file to another location |
+| `delete_file` | Delete a file from a drive (requires user confirmation) |
+| `list_lists` | List SharePoint lists in a site |
+| `get_columns` | Get column schema for a list (field names, types, choices) |
+| `list_items` | Read items from a SharePoint list |
+| `create_list_item` | Add a new item to a list |
+| `update_list_item` | Update fields on an existing list item |
+| `get_page` | Read a SharePoint page |
+
+### FAQ
+
+**Do other users in my company need their own app registration?**
+No. One Azure AD app registration serves the entire organization. Each user just needs the Tenant ID, Client ID, and Client Secret (shared by IT), then signs in with their own Microsoft account.
+
+**Does the token refresh automatically?**
+Yes. PRE automatically refreshes the access token when it expires. You only need to sign in once.
 
 ## Image Generation
 
@@ -172,7 +238,7 @@ src/
   tools-defs.js            45+ tool definitions for Ollama
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
-  connections.js            Connection management, Google OAuth, Telegram setup
+  connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
   constants.js             MODEL_CTX=65536, paths
   tools/
     bash.js                Shell execution (stderr capture)
@@ -190,6 +256,7 @@ src/
     confluence.js          Confluence Server REST API
     smartsheet.js          Smartsheet REST API 2.0
     slack.js               Slack Web API
+    sharepoint.js          Microsoft SharePoint (Graph API)
 public/
   index.html               SPA shell
   fonts/                   Calendas Plus (regular, italic, bold)

@@ -72,6 +72,7 @@ const jiraTool = require('./tools/jira');
 const confluenceTool = require('./tools/confluence');
 const smartsheetTool = require('./tools/smartsheet');
 const slackTool = require('./tools/slack');
+const sharepointTool = require('./tools/sharepoint');
 const imageTool = require('./tools/image');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
@@ -104,6 +105,7 @@ const ALIASES = {
   jira_search: 'jira', jira_issue: 'jira', jira_create: 'jira',
   wiki: 'confluence', confluence_search: 'confluence', confluence_page: 'confluence',
   spreadsheet: 'smartsheet', ss: 'smartsheet', smartsheets: 'smartsheet',
+  sharepoint_search: 'sharepoint', sp: 'sharepoint', microsoft: 'sharepoint',
   slack_send: 'slack', slack_message: 'slack', send_slack: 'slack',
   generate_image: 'image_generate', create_image: 'image_generate', img: 'image_generate',
   image: 'image_generate', image_gen: 'image_generate', gen_image: 'image_generate',
@@ -121,6 +123,11 @@ const ALIASES = {
 const CONFIRM_TOOLS = new Set([
   'process_kill', 'applescript', 'memory_delete',
 ]);
+
+// Tool+action combinations that require confirmation (for multi-action tools)
+const CONFIRM_ACTIONS = {
+  sharepoint: new Set(['delete_file']),
+};
 
 // Dispatch a tool call to its handler
 // opts.onStatus — callback for streaming status events (used by sub-agents)
@@ -187,6 +194,9 @@ async function executeTool(name, args, cwd, opts) {
     // Slack
     case 'slack': return slackTool.slack(args);
 
+    // SharePoint
+    case 'sharepoint': return sharepointTool.sharepoint(args);
+
     // Google
     case 'gmail': return googleTool.gmail(args);
     case 'gdrive': return googleTool.gdrive(args);
@@ -249,7 +259,7 @@ async function executeTool(name, args, cwd, opts) {
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
       }
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, gmail, gdrive, gdocs, telegram, artifact, document`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document`;
   }
 }
 
@@ -376,8 +386,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         status: 'running',
       });
 
-      // Check if confirmation is needed
-      if (CONFIRM_TOOLS.has(toolName)) {
+      // Check if confirmation is needed (tool-level or action-level)
+      const needsConfirm = CONFIRM_TOOLS.has(toolName)
+        || (CONFIRM_ACTIONS[toolName] && CONFIRM_ACTIONS[toolName].has(toolArgs.action));
+      if (needsConfirm) {
         if (onConfirmRequest) {
           const approved = await onConfirmRequest(toolId, toolName, toolArgs);
           if (!approved) {

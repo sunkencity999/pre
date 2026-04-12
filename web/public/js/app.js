@@ -1018,6 +1018,7 @@
     confluence: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M.87 18.257c-.248.382-.53.875-.763 1.245a.764.764 0 0 0 .255 1.04l4.965 3.054a.764.764 0 0 0 1.058-.26c.199-.332.494-.833.812-1.39 1.398-2.45 2.818-2.16 5.348-.875l4.947 2.51a.764.764 0 0 0 1.013-.382l2.227-5.093a.764.764 0 0 0-.357-1.006c-1.24-.63-3.45-1.76-4.986-2.537-5.14-2.602-9.01-2.269-14.519 3.694zm22.26-12.514c.249-.383.531-.876.764-1.246a.764.764 0 0 0-.256-1.04L18.674.403a.764.764 0 0 0-1.058.26c-.2.332-.494.833-.813 1.39-1.397 2.45-2.817 2.16-5.347.875L6.509.418A.764.764 0 0 0 5.496.8L3.27 5.893a.764.764 0 0 0 .357 1.006c1.24.63 3.45 1.76 4.985 2.537 5.14 2.602 9.01 2.27 14.52-3.693z"/></svg>',
     smartsheet: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M22.157 0H1.843A1.843 1.843 0 0 0 0 1.843v20.314A1.843 1.843 0 0 0 1.843 24h20.314A1.843 1.843 0 0 0 24 22.157V1.843A1.843 1.843 0 0 0 22.157 0zM5.5 7h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5z"/></svg>',
     slack: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.27 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.163 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.163 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.163 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.27a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.315A2.528 2.528 0 0 1 24 15.163a2.528 2.528 0 0 1-2.522 2.523h-6.315z"/></svg>',
+    microsoft: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"/></svg>',
   };
 
   document.getElementById('settings-btn').addEventListener('click', () => {
@@ -1566,7 +1567,7 @@
         } else {
           html += `<button class="btn btn-primary btn-sm" onclick="Settings.addKey('${conn.service}')">Add API Key</button>`;
         }
-      } else if (conn.type === 'oauth') {
+      } else if (conn.type === 'oauth' && conn.service === 'google') {
         if (conn.active) {
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.reconnectGoogle()">Reconnect</button>`;
           html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
@@ -1575,6 +1576,16 @@
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.editGoogleCreds()">Edit Credentials</button>`;
         } else {
           html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupGoogle()">Setup</button>`;
+        }
+      } else if (conn.type === 'oauth' && conn.service === 'microsoft') {
+        if (conn.active) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.reconnectMicrosoft()">Reconnect</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else if (conn.hasCredentials) {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.authorizeMicrosoft()">Authorize</button>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.editMicrosoftCreds()">Edit Credentials</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupMicrosoft()">Setup</button>`;
         }
       } else if (conn.type === 'jira') {
         if (conn.active) {
@@ -1768,6 +1779,73 @@
 
     reconnectGoogle() {
       this.authorizeGoogle();
+    },
+
+    setupMicrosoft() {
+      const actionsEl = document.getElementById('conn-actions-microsoft');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            Register an app at
+            <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" style="color:var(--primary)">Azure App Registrations</a>.
+            Add API permissions: <code style="font-size:0.75rem">Sites.Read.All</code>, <code style="font-size:0.75rem">Files.ReadWrite.All</code>, <code style="font-size:0.75rem">User.Read</code>.
+            Set redirect URI to
+            <code style="font-size:0.75rem">http://localhost:7749/oauth/microsoft/callback</code> (Web platform).
+          </p>
+          <input type="text" id="ms-tenant-id" placeholder="Tenant ID (Directory ID)" autocomplete="off">
+          <input type="text" id="ms-client-id" placeholder="Application (Client) ID" autocomplete="off">
+          <input type="password" id="ms-client-secret" placeholder="Client Secret (Value)" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveMicrosoftCreds()">Save & Authorize</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('ms-tenant-id').focus();
+    },
+
+    editMicrosoftCreds() {
+      this.setupMicrosoft();
+    },
+
+    async saveMicrosoftCreds() {
+      const tenantId = document.getElementById('ms-tenant-id')?.value.trim();
+      const clientId = document.getElementById('ms-client-id')?.value.trim();
+      const clientSecret = document.getElementById('ms-client-secret')?.value.trim();
+      if (!tenantId || !clientId || !clientSecret) return;
+      try {
+        await fetch('/api/connections/microsoft/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenantId, clientId, clientSecret }),
+        });
+        this.authorizeMicrosoft();
+      } catch {}
+    },
+
+    async authorizeMicrosoft() {
+      try {
+        const res = await fetch('/api/connections/microsoft/auth-url');
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+          const actionsEl = document.getElementById('conn-actions-microsoft');
+          if (actionsEl) {
+            actionsEl.innerHTML = `
+              <div style="font-size:0.8rem;color:var(--text-muted);display:flex;align-items:center;gap:8px">
+                <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
+                Waiting for Microsoft authorization... Complete sign-in in the opened tab.
+              </div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="Settings.refresh()">Done</button>
+            `;
+          }
+        }
+      } catch {}
+    },
+
+    reconnectMicrosoft() {
+      this.authorizeMicrosoft();
     },
 
     setupJira() {

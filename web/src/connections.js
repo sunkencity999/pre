@@ -21,6 +21,16 @@ const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/documents',
 ].join(' ');
 
+// Microsoft / SharePoint OAuth 2.0
+const MICROSOFT_SCOPES = 'https://graph.microsoft.com/Sites.Read.All https://graph.microsoft.com/Files.ReadWrite.All https://graph.microsoft.com/User.Read offline_access';
+
+function microsoftAuthUrl(tenantId) {
+  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
+}
+function microsoftTokenUrl(tenantId) {
+  return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
+}
+
 function loadConnections() {
   try {
     return JSON.parse(fs.readFileSync(CONNECTIONS_FILE, 'utf-8'));
@@ -161,6 +171,16 @@ function listConnections() {
       active: !!data.slack_token,
       masked: data.slack_token ? maskKey(data.slack_token) : null,
     },
+    {
+      service: 'microsoft',
+      label: 'Microsoft SharePoint',
+      type: 'oauth',
+      active: !!data.microsoft_client_id && !!data.microsoft_refresh_token,
+      hasCredentials: !!data.microsoft_client_id,
+      hasTokens: !!data.microsoft_refresh_token,
+      tenantId: data.microsoft_tenant_id || null,
+      tokenExpiry: data.microsoft_token_expiry ? new Date(data.microsoft_token_expiry * 1000).toISOString() : null,
+    },
   ];
 }
 
@@ -204,6 +224,13 @@ function removeConnection(service) {
     delete data.google_access_token;
     delete data.google_refresh_token;
     delete data.google_token_expiry;
+  } else if (service === 'microsoft') {
+    delete data.microsoft_tenant_id;
+    delete data.microsoft_client_id;
+    delete data.microsoft_client_secret;
+    delete data.microsoft_access_token;
+    delete data.microsoft_refresh_token;
+    delete data.microsoft_token_expiry;
   } else if (service === 'jira') {
     delete data.jira_url;
     delete data.jira_token;
@@ -341,6 +368,136 @@ function refreshGoogleToken() {
 }
 
 /**
+ * Set Microsoft / SharePoint OAuth client credentials
+ */
+function setMicrosoftCredentials(tenantId, clientId, clientSecret) {
+  const data = loadConnections();
+  data.microsoft_tenant_id = tenantId;
+  data.microsoft_client_id = clientId;
+  data.microsoft_client_secret = clientSecret;
+  saveConnections(data);
+  return true;
+}
+
+/**
+ * Get Microsoft OAuth authorization URL
+ */
+function getMicrosoftAuthUrl(redirectPort) {
+  const data = loadConnections();
+  if (!data.microsoft_client_id || !data.microsoft_tenant_id) return null;
+  const redirectUri = `http://localhost:${redirectPort}/oauth/microsoft/callback`;
+  const params = new URLSearchParams({
+    client_id: data.microsoft_client_id,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: MICROSOFT_SCOPES,
+    response_mode: 'query',
+  });
+  return `${microsoftAuthUrl(data.microsoft_tenant_id)}?${params.toString()}`;
+}
+
+/**
+ * Exchange Microsoft authorization code for tokens
+ */
+function exchangeMicrosoftCode(code, redirectPort) {
+  return new Promise((resolve, reject) => {
+    const data = loadConnections();
+    if (!data.microsoft_client_id || !data.microsoft_client_secret || !data.microsoft_tenant_id) {
+      return reject(new Error('Microsoft credentials not configured'));
+    }
+    const redirectUri = `http://localhost:${redirectPort}/oauth/microsoft/callback`;
+    const postData = new URLSearchParams({
+      code,
+      client_id: data.microsoft_client_id,
+      client_secret: data.microsoft_client_secret,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+      scope: MICROSOFT_SCOPES,
+    }).toString();
+
+    const tokenUrl = new URL(microsoftTokenUrl(data.microsoft_tenant_id));
+    const req = https.request({
+      hostname: tokenUrl.hostname,
+      path: tokenUrl.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const tokens = JSON.parse(body);
+          if (tokens.error) return reject(new Error(tokens.error_description || tokens.error));
+          const connData = loadConnections();
+          connData.microsoft_access_token = tokens.access_token;
+          if (tokens.refresh_token) connData.microsoft_refresh_token = tokens.refresh_token;
+          connData.microsoft_token_expiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 3600);
+          saveConnections(connData);
+          resolve({ success: true });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Refresh Microsoft access token using refresh token
+ */
+function refreshMicrosoftToken() {
+  return new Promise((resolve, reject) => {
+    const data = loadConnections();
+    if (!data.microsoft_refresh_token || !data.microsoft_client_id || !data.microsoft_client_secret || !data.microsoft_tenant_id) {
+      return reject(new Error('No Microsoft refresh token available'));
+    }
+    const postData = new URLSearchParams({
+      refresh_token: data.microsoft_refresh_token,
+      client_id: data.microsoft_client_id,
+      client_secret: data.microsoft_client_secret,
+      grant_type: 'refresh_token',
+      scope: MICROSOFT_SCOPES,
+    }).toString();
+
+    const tokenUrl = new URL(microsoftTokenUrl(data.microsoft_tenant_id));
+    const req = https.request({
+      hostname: tokenUrl.hostname,
+      path: tokenUrl.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const tokens = JSON.parse(body);
+          if (tokens.error) return reject(new Error(tokens.error_description || tokens.error));
+          data.microsoft_access_token = tokens.access_token;
+          if (tokens.refresh_token) data.microsoft_refresh_token = tokens.refresh_token;
+          data.microsoft_token_expiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 3600);
+          saveConnections(data);
+          resolve({ success: true });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
  * Set Jira Server URL and personal access token
  */
 function setJiraConfig(url, token) {
@@ -370,6 +527,10 @@ module.exports = {
   getGoogleAuthUrl,
   exchangeGoogleCode,
   refreshGoogleToken,
+  setMicrosoftCredentials,
+  getMicrosoftAuthUrl,
+  exchangeMicrosoftCode,
+  refreshMicrosoftToken,
   setTelegramChatId,
   testTelegramToken,
   setJiraConfig,

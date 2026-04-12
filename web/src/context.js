@@ -19,6 +19,7 @@ function getActiveConnections() {
       brave: !!data.brave_search_key,
       github: !!data.github_key,
       google: !!data.google_client_id,
+      microsoft: !!data.microsoft_client_id && !!data.microsoft_refresh_token,
       wolfram: !!data.wolfram_key,
       telegram: !!data.telegram_key,
       jira: !!data.jira_url && !!data.jira_token,
@@ -27,7 +28,7 @@ function getActiveConnections() {
       slack: !!data.slack_token,
     };
   } catch {
-    return { brave: false, github: false, google: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false };
+    return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false };
   }
 }
 

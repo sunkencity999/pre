@@ -18,6 +18,7 @@ const memorySystem = require('./src/memory');
 const {
   listConnections, setApiKey, removeConnection,
   setGoogleCredentials, getGoogleAuthUrl, exchangeGoogleCode,
+  setMicrosoftCredentials, getMicrosoftAuthUrl, exchangeMicrosoftCode,
   setTelegramChatId, testTelegramToken,
   setJiraConfig,
   setConfluenceConfig,
@@ -197,6 +198,40 @@ app.get('/api/connections/google/auth-url', (req, res) => {
   const url = getGoogleAuthUrl(PORT);
   if (!url) return res.status(400).json({ error: 'Google credentials not configured' });
   res.json({ url });
+});
+
+// ── Microsoft / SharePoint OAuth ──
+
+app.post('/api/connections/microsoft/credentials', (req, res) => {
+  const { tenantId, clientId, clientSecret } = req.body || {};
+  if (!tenantId || !clientId || !clientSecret) {
+    return res.status(400).json({ error: 'tenantId, clientId, and clientSecret required' });
+  }
+  setMicrosoftCredentials(tenantId, clientId, clientSecret);
+  res.json({ success: true });
+});
+
+app.get('/api/connections/microsoft/auth-url', (req, res) => {
+  const url = getMicrosoftAuthUrl(PORT);
+  if (!url) return res.status(400).json({ error: 'Microsoft credentials not configured' });
+  res.json({ url });
+});
+
+// Microsoft OAuth callback — receives the authorization code
+app.get('/oauth/microsoft/callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+  if (error) {
+    return res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Authorization Failed</h2><p>${error_description || error}</p><p>You can close this tab.</p></div></body></html>`);
+  }
+  if (!code) {
+    return res.status(400).send('Missing authorization code');
+  }
+  try {
+    await exchangeMicrosoftCode(code, PORT);
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#4ade80">Microsoft Connected!</h2><p>SharePoint search, files, lists, and pages are now available.</p><p>You can close this tab and return to PRE.</p><script>setTimeout(()=>window.close(),3000)</script></div></body></html>`);
+  } catch (err) {
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Token Exchange Failed</h2><p>${err.message}</p><p>You can close this tab.</p></div></body></html>`);
+  }
 });
 
 // Google OAuth callback — receives the authorization code

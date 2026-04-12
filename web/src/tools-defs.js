@@ -279,6 +279,28 @@ function buildToolDefs() {
     }, ['action']));
   }
 
+  if (conns.microsoft) {
+    tools.push(tool('sharepoint', 'Interact with Microsoft SharePoint. Actions: search, list_sites, list_drives, list_files, read_file, upload_file, list_lists, list_items, get_page, site_usage, get_recent, get_columns, create_list_item, update_list_item, create_folder, get_file_metadata, move_file, copy_file, delete_file, list_subsites', {
+      action: { type: 'string', description: 'Action to perform' },
+      query: { type: 'string', description: 'Search query text' },
+      site_id: { type: 'string', description: 'SharePoint site ID' },
+      drive_id: { type: 'string', description: 'Drive ID' },
+      folder_path: { type: 'string', description: 'Folder path (e.g. /General/Reports)' },
+      item_id: { type: 'string', description: 'File, item, or drive item ID' },
+      list_id: { type: 'string', description: 'List ID' },
+      page_id: { type: 'string', description: 'Page ID' },
+      fields: { type: 'string', description: 'JSON object of field values for create_list_item/update_list_item' },
+      folder_name: { type: 'string', description: 'Name for new folder (create_folder)' },
+      file_name: { type: 'string', description: 'Filename for upload' },
+      content: { type: 'string', description: 'File content for upload' },
+      dest_folder: { type: 'string', description: 'Destination folder path (upload, move, copy)' },
+      dest_drive_id: { type: 'string', description: 'Destination drive ID (move/copy across drives)' },
+      filename: { type: 'string', description: 'New filename (rename via move, or copy target name)' },
+      filter: { type: 'string', description: 'OData filter for list_items' },
+      count: { type: 'integer', description: 'Max results (default: 25)' },
+    }, ['action']));
+  }
+
   if (conns.slack) {
     tools.push(tool('slack', 'Interact with Slack', {
       action: { type: 'string', description: 'Action: list_channels|get_channel|history|send|reply|update|react|search|list_users|get_user|me' },
