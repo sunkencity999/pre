@@ -9611,8 +9611,8 @@ int main(int argc, char **argv) {
 
         // Health check
         if (!health_check()) {
-            fprintf(stderr, ANSI_RED "  Server not running on port %d.\n" ANSI_RESET, g.port);
-            fprintf(stderr, "  Start it: " ANSI_BOLD "./infer --serve %d" ANSI_RESET "\n\n", g.port);
+            fprintf(stderr, ANSI_RED "  Ollama not running on port %d.\n" ANSI_RESET, g.port);
+            fprintf(stderr, "  Start it: " ANSI_BOLD "ollama serve" ANSI_RESET " or launch " ANSI_BOLD "Ollama.app" ANSI_RESET "\n\n");
             return 1;
         }
         printf(ANSI_GREEN "  Server connected." ANSI_RESET "\n\n");
