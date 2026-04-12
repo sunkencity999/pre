@@ -33,6 +33,7 @@ PRE doesn't abstract away the hardware — it leans into it:
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
+| **TurboQuant KV cache** | 3.5-bit FWHT + Lloyd-Max quantization via Metal shaders | ~9x KV memory compression, up to 31% faster generation |
 | **Prompt compression** | Function-signature tool format (~800 tokens for 50+ tools) | More room for conversation, faster prefill |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
@@ -81,6 +82,7 @@ This means PRE can:
 - [Browser Agent](#browser-agent)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
+- [TurboQuant KV Cache](#turboquant-kv-cache)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -1054,6 +1056,58 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Full tool access matching CLI
 - Owner-based authorization
 - Automatic lifecycle management
+
+---
+
+## TurboQuant KV Cache
+
+PRE's custom Metal inference engine (`engine/infer.m`) implements [Google's TurboQuant](https://arxiv.org/abs/2504.19874) algorithm for KV cache compression. This compresses the key-value cache used during attention from fp32 down to **3.5 bits per value** with negligible quality loss, enabling dramatically longer context windows and faster generation at scale.
+
+### How It Works
+
+The implementation is a two-stage GPU pipeline running entirely in Metal compute shaders:
+
+1. **Write path** (`kv_rotate_quantize`): After each K/V projection, the 512-dimensional vector is rotated via a Fast Walsh-Hadamard Transform (FWHT), normalized by RMS scale, then quantized to mixed 3.5-bit using Lloyd-Max optimal codebooks (4-bit for the first 256 channels, 3-bit for the last 256). Result: **224 bytes + 4-byte scale per position** vs 2,048 bytes at fp32.
+
+2. **Read path** (`kv_dequant`): Before GPU attention, the quantized KV cache is bulk-dequantized back into fp32 buffers. The dequant is fused into the same Metal command buffer as the attention kernels (CMD2), adding zero extra dispatch overhead.
+
+### Memory Savings
+
+| Context Length | fp32 KV Cache | TurboQuant 3.5-bit | Compression |
+|:-:|:-:|:-:|:-:|
+| 8K tokens | 240 MB | 27 MB | 8.9x |
+| 65K tokens | 1.88 GB | 213 MB | 8.8x |
+| 1M tokens | 28.8 GB | 3.2 GB | 9.0x |
+
+### Performance Impact (M4 Max)
+
+Benchmarked with Gemma 4 26B-A4B, 4-bit quantized weights:
+
+| Context | Baseline (fp32) | TurboQuant | Speedup |
+|:-:|:-:|:-:|:-:|
+| ~430 tokens | 7.12 tok/s | 6.52 tok/s | 0.92x |
+| ~700 tokens | 6.99 tok/s | 9.15 tok/s | **1.31x** |
+| ~1060 tokens | 7.04 tok/s | 7.37 tok/s | 1.05x |
+
+Short contexts (below the 256-token threshold) use exact fp32 with no overhead. The sweet spot begins around 500+ tokens where attention memory bandwidth becomes significant. At longer contexts (4K-65K), the advantage grows to an estimated 3-7x as attention dominates the per-token cost.
+
+### Configuration
+
+TurboQuant KV auto-enables when the Metal shader pipelines compile successfully. Control via CLI flags on the `infer` binary:
+
+```bash
+./infer --serve 8090                    # TurboQuant KV auto-enabled
+./infer --serve 8090 --no-turboquant-kv # Disable for A/B testing
+./infer --serve 8090 --tqkv-threshold 512  # Activate at 512 tokens instead of 256
+```
+
+### Technical Details
+
+- **Shaders**: `shaders.metal` contains `kv_rotate_quantize` (write) and `kv_dequant` (read)
+- **Codebooks**: Lloyd-Max optimal for standard normal distribution (16 levels for 4-bit, 8 levels for 3-bit)
+- **Rotation**: FWHT is self-inverse, so the same butterfly kernel handles both rotate and un-rotate
+- **Bit packing**: 4-bit channels use nibble packing (2 values per byte); 3-bit channels use planar packing (3 x uint32 bit-planes per 32-value group)
+- **Session persistence**: Quantized buffers are snapshotted alongside fp32 KV caches after system prompt prefill, enabling instant session restore without re-quantizing
 
 ---
 
