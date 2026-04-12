@@ -17,6 +17,38 @@ function saveConnections(data) {
   fs.writeFileSync(CONNECTIONS_FILE, JSON.stringify(data, null, 2), { mode: 0o600 });
 }
 
+const TG_MAX_LENGTH = 4096;
+
+/**
+ * Split a message into chunks that fit within Telegram's 4096-char limit.
+ * Splits at newlines first, then spaces, to avoid breaking mid-word.
+ */
+function chunkMessage(text) {
+  if (text.length <= TG_MAX_LENGTH) return [text];
+
+  const chunks = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= TG_MAX_LENGTH) {
+      chunks.push(remaining);
+      break;
+    }
+    // Find the best split point within the limit
+    let splitAt = remaining.lastIndexOf('\n', TG_MAX_LENGTH);
+    if (splitAt < TG_MAX_LENGTH * 0.3) {
+      // Newline too far back — try a space
+      splitAt = remaining.lastIndexOf(' ', TG_MAX_LENGTH);
+    }
+    if (splitAt < TG_MAX_LENGTH * 0.3) {
+      // No good split point — hard cut
+      splitAt = TG_MAX_LENGTH;
+    }
+    chunks.push(remaining.slice(0, splitAt));
+    remaining = remaining.slice(splitAt).replace(/^\n/, ''); // trim leading newline from next chunk
+  }
+  return chunks;
+}
+
 function getBotToken() {
   return loadConnections().telegram_key || null;
 }
@@ -132,12 +164,18 @@ async function telegram(args) {
       }
       if (!args.text && !args.message) return 'Error: text required for send action';
       const text = args.text || args.message;
-      const result = await botRequest('sendMessage', {
-        chat_id: args.chat_id,
-        text,
-        parse_mode: args.parse_mode || 'Markdown',
-      });
-      return `Message sent to chat ${result.chat.id}! Message ID: ${result.message_id}`;
+      const parseMode = args.parse_mode || 'Markdown';
+      const chunks = chunkMessage(text);
+      let lastResult;
+      for (const chunk of chunks) {
+        lastResult = await botRequest('sendMessage', {
+          chat_id: args.chat_id,
+          text: chunk,
+          parse_mode: parseMode,
+        });
+      }
+      const plural = chunks.length > 1 ? ` (${chunks.length} messages)` : '';
+      return `Message sent to chat ${lastResult.chat.id}${plural}! Message ID: ${lastResult.message_id}`;
     }
 
     default:
