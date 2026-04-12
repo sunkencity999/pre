@@ -81,7 +81,7 @@ This means PRE can:
 - [Browser Agent](#browser-agent)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
-  - [Experimental: Metal Inference Engine](#experimental-metal-inference-engine)
+
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -1055,32 +1055,6 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Full tool access matching CLI
 - Owner-based authorization
 - Automatic lifecycle management
-
-### Experimental: Metal Inference Engine
-
-The `engine/` directory contains an **experimental custom inference engine** (`infer.m`) — a standalone Objective-C/Metal implementation of Gemma 4's forward pass with optimizations not yet available in Ollama/llama.cpp. This is a development testbed, not part of PRE's production inference path.
-
-**PRE's production inference runs entirely through Ollama.** The CLI, web GUI, Telegram bot, cron runner, and sub-agents all talk to Ollama's `/api/chat` endpoint, which provides the model serving, chat templating, streaming, and native tool calling that PRE's agentic loop depends on. The custom engine does not replace Ollama and is not used during normal operation.
-
-#### What the custom engine includes
-
-- **TurboQuant KV cache** — An implementation of [Google's TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026) for 3.5-bit KV cache compression via Metal compute shaders. Uses FWHT rotation + Lloyd-Max codebooks to achieve ~9x memory compression with negligible quality loss. Benchmarked at up to 31% faster generation on M4 Max at medium context lengths.
-- **Custom Metal shaders** — Fused dequant-matvec kernels, GPU attention, delta-net linear attention, expert routing
-- **Tiered expert I/O** — Cold/warm fd separation with F_NOCACHE for first reads, page cache for repeats
-- **Speculative expert prediction** — Temporal prediction pipeline for expert prefetch
-
-#### Why it exists
-
-This engine serves as a proving ground for inference optimizations targeting Apple Silicon. TurboQuant KV cache compression, for example, was prototyped and validated here before llama.cpp upstream support is available (estimated Q3 2026). Once llama.cpp integrates TurboQuant, Ollama will pick it up automatically and PRE will benefit with no code changes.
-
-#### Running it standalone
-
-```bash
-cd engine && make infer
-./infer --serve 8090              # Starts an OpenAI-compatible API (no tool calling)
-./infer --serve 8090 --timing     # With per-layer timing breakdown
-./infer --serve 8090 --no-turboquant-kv  # Disable TurboQuant for A/B testing
-```
 
 ---
 

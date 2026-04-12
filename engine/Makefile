@@ -1,65 +1,36 @@
 # Makefile for PRE — Personal Reasoning Engine
 #
 # Targets:
-#   make              — build infer + pre binaries
-#   make infer        — build inference server only
+#   make              — build PRE CLI binary
 #   make pre          — build PRE CLI only
-#   make chat         — build lightweight chat client
 #   make telegram     — build Telegram bot bridge
 #   make clean        — remove build artifacts
 #   make install      — symlink pre-launch into ~/.local/bin
-#
-# Metal shaders are compiled from source at runtime via
-# MTLDevice newLibraryWithSource:, so no offline metal compiler needed.
 
 CC = clang
 CFLAGS = -O3 -march=native -flto -Wall -Wextra -fobjc-arc -DACCELERATE_NEW_LAPACK
-FRAMEWORKS = -framework Metal -framework Foundation -framework Accelerate
 LDFLAGS = -flto -lpthread -lcompression
-
-INFER_TARGET = infer
-INFER_SRC = infer.m
 
 PRE_TARGET = pre
 PRE_SRC = pre.m
 
-CHAT_TARGET = chat
-CHAT_SRC = chat.m
-
 TG_TARGET = pre-telegram
 TG_SRC = telegram.m
 
-BENCH_TARGET = metal_infer
-BENCH_SRC = main.m
-SHADER_SRC = shaders.metal
+.PHONY: all clean install telegram
 
-.PHONY: all clean install build-pre build-infer build-chat build-telegram telegram
-
-all: $(INFER_TARGET) $(PRE_TARGET)
-
-$(INFER_TARGET): $(INFER_SRC) $(SHADER_SRC)
-	$(CC) $(CFLAGS) $(FRAMEWORKS) $(LDFLAGS) $(INFER_SRC) -o $(INFER_TARGET)
+all: $(PRE_TARGET)
 
 $(PRE_TARGET): $(PRE_SRC) linenoise.c linenoise.h
 	$(CC) $(CFLAGS) -framework Foundation -framework AppKit -framework WebKit $(PRE_SRC) linenoise.c -o $(PRE_TARGET)
 
-$(CHAT_TARGET): $(CHAT_SRC) linenoise.c linenoise.h
-	$(CC) $(CFLAGS) -framework Foundation $(CHAT_SRC) linenoise.c -o $(CHAT_TARGET)
-
 $(TG_TARGET): $(TG_SRC)
 	$(CC) $(CFLAGS) -framework Foundation $(TG_SRC) -o $(TG_TARGET)
 
-$(BENCH_TARGET): $(BENCH_SRC) $(SHADER_SRC)
-	$(CC) $(CFLAGS) $(FRAMEWORKS) $(LDFLAGS) $(BENCH_SRC) -o $(BENCH_TARGET)
-
-build-infer: $(INFER_TARGET)
-build-pre: $(PRE_TARGET)
-build-chat: $(CHAT_TARGET)
-build-telegram: $(TG_TARGET)
 telegram: $(TG_TARGET)
 
 clean:
-	rm -f $(INFER_TARGET) $(PRE_TARGET) $(CHAT_TARGET) $(TG_TARGET) $(BENCH_TARGET)
+	rm -f $(PRE_TARGET) $(TG_TARGET)
 
 install: $(PRE_TARGET)
 	@mkdir -p $(HOME)/.local/bin
