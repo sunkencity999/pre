@@ -1521,15 +1521,19 @@
     content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
 
     try {
-      const res = await fetch('/api/connections');
-      const connections = await res.json();
-      renderConnectionsPanel(content, connections);
+      const [connRes, mcpRes] = await Promise.all([
+        fetch('/api/connections'),
+        fetch('/api/mcp'),
+      ]);
+      const connections = await connRes.json();
+      const mcpStatus = await mcpRes.json();
+      renderConnectionsPanel(content, connections, mcpStatus);
     } catch {
-      content.innerHTML = '<p style="color:var(--danger)">Failed to load connections</p>';
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load settings</p>';
     }
   }
 
-  function renderConnectionsPanel(container, connections) {
+  function renderConnectionsPanel(container, connections, mcpStatus) {
     let html = '<div class="settings-section">';
     html += '<div class="settings-section-title">Connections</div>';
 
@@ -1611,6 +1615,52 @@
     }
 
     html += '</div>';
+
+    // ── MCP Servers section ──
+    html += '<div class="settings-section">';
+    html += '<div class="settings-section-title">MCP Servers</div>';
+
+    const mcpNames = Object.keys(mcpStatus || {});
+    if (mcpNames.length === 0) {
+      html += '<p style="font-size:0.8rem;color:var(--text-muted);margin:0 0 8px">No MCP servers configured. Add a server to extend PRE with external tools.</p>';
+    }
+
+    for (const name of mcpNames) {
+      const srv = mcpStatus[name];
+      const active = srv.connected && !srv.disabled;
+      const statusClass = active ? 'connected' : '';
+      let statusText = srv.disabled ? 'Disabled' : (srv.connected ? `Connected (${srv.tools} tool${srv.tools !== 1 ? 's' : ''})` : 'Disconnected');
+      const typeLabel = srv.type === 'http' ? srv.url : srv.command;
+
+      html += `<div class="connection-card ${active ? 'active' : ''}" data-mcp="${escapeHtml(name)}">`;
+      html += `<div class="connection-card-header">`;
+      html += `<div class="connection-card-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg></div>`;
+      html += `<div class="connection-card-info">`;
+      html += `<div class="connection-card-name">${escapeHtml(name)}</div>`;
+      html += `<div class="connection-card-status ${statusClass}">`;
+      html += statusText;
+      if (typeLabel) html += ` &middot; <span style="opacity:0.7">${escapeHtml(typeLabel)}</span>`;
+      html += `</div></div></div>`;
+
+      html += `<div class="connection-card-actions" id="mcp-actions-${CSS.escape(name)}">`;
+      if (srv.connected) {
+        if (srv.tools > 0) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.mcpShowTools('${escapeHtml(name)}')">Tools</button>`;
+        }
+        html += `<button class="btn btn-ghost btn-sm" onclick="Settings.mcpDisconnect('${escapeHtml(name)}')">Disconnect</button>`;
+      } else if (!srv.disabled) {
+        html += `<button class="btn btn-primary btn-sm" onclick="Settings.mcpConnect('${escapeHtml(name)}')">Connect</button>`;
+      }
+      html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.mcpRemove('${escapeHtml(name)}')">Remove</button>`;
+      html += `</div></div>`;
+    }
+
+    // Add server button
+    html += `<div id="mcp-add-area">`;
+    html += `<button class="btn btn-primary btn-sm" onclick="Settings.mcpShowAdd()">Add MCP Server</button>`;
+    html += `</div>`;
+    html += '</div>';
+
     container.innerHTML = html;
   }
 
@@ -1926,6 +1976,158 @@
         }
         this.refresh();
       } catch {}
+    },
+
+    // ── MCP Server management ──
+
+    mcpShowAdd() {
+      const area = document.getElementById('mcp-add-area');
+      if (!area) return;
+      area.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            Add a <strong>stdio</strong> server (local command) or an <strong>HTTP</strong> server (remote URL).
+          </p>
+          <div class="connection-input-row" style="margin-bottom:4px">
+            <label style="font-size:0.8rem;display:flex;align-items:center;gap:4px;cursor:pointer">
+              <input type="radio" name="mcp-type" value="stdio" checked onchange="Settings.mcpToggleType()"> Command (stdio)
+            </label>
+            <label style="font-size:0.8rem;display:flex;align-items:center;gap:4px;cursor:pointer">
+              <input type="radio" name="mcp-type" value="http" onchange="Settings.mcpToggleType()"> HTTP URL
+            </label>
+          </div>
+          <input type="text" id="mcp-add-name" placeholder="Server name (e.g. my-server)" autocomplete="off">
+          <div id="mcp-type-fields">
+            <input type="text" id="mcp-add-command" placeholder="Command (e.g. npx -y @modelcontextprotocol/server-filesystem)" autocomplete="off">
+            <input type="text" id="mcp-add-args" placeholder="Arguments, comma-separated (optional)" autocomplete="off">
+            <input type="text" id="mcp-add-env" placeholder="Environment: KEY=VALUE, KEY2=VALUE2 (optional)" autocomplete="off">
+          </div>
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.mcpSaveAdd()">Add & Connect</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+          <div id="mcp-add-status" style="font-size:0.8rem;min-height:1.2em"></div>
+        </div>
+      `;
+      document.getElementById('mcp-add-name').focus();
+    },
+
+    mcpToggleType() {
+      const isHttp = document.querySelector('input[name="mcp-type"]:checked')?.value === 'http';
+      const fields = document.getElementById('mcp-type-fields');
+      if (!fields) return;
+      if (isHttp) {
+        fields.innerHTML = `<input type="text" id="mcp-add-url" placeholder="Server URL (e.g. https://api.example.com/mcp)" autocomplete="off">`;
+      } else {
+        fields.innerHTML = `
+          <input type="text" id="mcp-add-command" placeholder="Command (e.g. npx -y @modelcontextprotocol/server-filesystem)" autocomplete="off">
+          <input type="text" id="mcp-add-args" placeholder="Arguments, comma-separated (optional)" autocomplete="off">
+          <input type="text" id="mcp-add-env" placeholder="Environment: KEY=VALUE, KEY2=VALUE2 (optional)" autocomplete="off">
+        `;
+      }
+    },
+
+    async mcpSaveAdd() {
+      const name = document.getElementById('mcp-add-name')?.value.trim();
+      const statusEl = document.getElementById('mcp-add-status');
+      if (!name) { statusEl.innerHTML = '<span style="color:var(--danger)">Name is required</span>'; return; }
+
+      const isHttp = document.querySelector('input[name="mcp-type"]:checked')?.value === 'http';
+      let body;
+
+      if (isHttp) {
+        const url = document.getElementById('mcp-add-url')?.value.trim();
+        if (!url) { statusEl.innerHTML = '<span style="color:var(--danger)">URL is required</span>'; return; }
+        body = { name, url };
+      } else {
+        const command = document.getElementById('mcp-add-command')?.value.trim();
+        if (!command) { statusEl.innerHTML = '<span style="color:var(--danger)">Command is required</span>'; return; }
+        const argsStr = document.getElementById('mcp-add-args')?.value.trim();
+        const envStr = document.getElementById('mcp-add-env')?.value.trim();
+        const args = argsStr ? argsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
+        const env = {};
+        if (envStr) {
+          for (const pair of envStr.split(',')) {
+            const [k, ...v] = pair.split('=');
+            if (k?.trim()) env[k.trim()] = v.join('=').trim();
+          }
+        }
+        body = { name, command, args, env };
+      }
+
+      statusEl.innerHTML = '<span style="color:var(--text-muted)">Connecting...</span>';
+
+      try {
+        const res = await fetch('/api/mcp/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error && !data.added) {
+          statusEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(data.error)}</span>`;
+        } else if (data.connected) {
+          statusEl.innerHTML = `<span style="color:var(--success)">Connected (${data.tools} tools)</span>`;
+          setTimeout(() => this.refresh(), 1000);
+        } else {
+          statusEl.innerHTML = `<span style="color:var(--warning)">Added but failed to connect: ${escapeHtml(data.error || 'unknown error')}</span>`;
+          setTimeout(() => this.refresh(), 2000);
+        }
+      } catch (err) {
+        statusEl.innerHTML = `<span style="color:var(--danger)">Failed: ${escapeHtml(err.message)}</span>`;
+      }
+    },
+
+    async mcpConnect(name) {
+      const actionsEl = document.getElementById(`mcp-actions-${CSS.escape(name)}`);
+      if (actionsEl) actionsEl.innerHTML = '<span style="font-size:0.8rem;color:var(--text-muted)">Connecting...</span>';
+      try {
+        await fetch('/api/mcp/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+      } catch {}
+      this.refresh();
+    },
+
+    async mcpDisconnect(name) {
+      try {
+        await fetch('/api/mcp/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name }),
+        });
+      } catch {}
+      this.refresh();
+    },
+
+    async mcpRemove(name) {
+      if (!confirm(`Remove MCP server "${name}"?`)) return;
+      try {
+        await fetch(`/api/mcp/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      } catch {}
+      this.refresh();
+    },
+
+    mcpShowTools(name) {
+      const actionsEl = document.getElementById(`mcp-actions-${CSS.escape(name)}`);
+      if (!actionsEl) return;
+      // Fetch current status to get tool names
+      fetch('/api/mcp').then(r => r.json()).then(status => {
+        const srv = status[name];
+        if (!srv || !srv.toolNames?.length) {
+          actionsEl.innerHTML = '<span style="font-size:0.8rem;color:var(--text-muted)">No tools available</span>';
+          return;
+        }
+        let html = '<div style="font-size:0.75rem;color:var(--text-muted);max-height:150px;overflow-y:auto;margin-bottom:6px">';
+        for (const tool of srv.toolNames) {
+          html += `<div style="padding:2px 0;font-family:monospace">${escapeHtml(tool)}</div>`;
+        }
+        html += '</div>';
+        html += `<button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Close</button>`;
+        actionsEl.innerHTML = html;
+      }).catch(() => {});
     },
 
     async refresh() {
