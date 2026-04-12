@@ -5,7 +5,7 @@
 const { execSync } = require('child_process');
 const { createSession, appendMessage, renameSession } = require('./sessions');
 const { runToolLoop } = require('./tools');
-const { loadJobs, saveJobs } = require('./tools/cron');
+const { loadJobs, saveJobs, previousMatchTime } = require('./tools/cron');
 const telegramTool = require('./tools/telegram');
 const fs = require('fs');
 const { CONNECTIONS_FILE } = require('./constants');
@@ -197,4 +197,46 @@ async function sendTelegramNotification(job, preview) {
 }
 
 
-module.exports = { executeCronJob };
+/**
+ * Check for cron jobs that should have fired while the system was down.
+ * For each enabled job, compute the most recent scheduled time. If that
+ * time is after the job's last_run_at, the job was missed — fire it now.
+ *
+ * @param {Object} opts
+ * @param {Function} opts.broadcastWS - WebSocket broadcast function
+ */
+async function checkMissedJobs({ broadcastWS } = {}) {
+  const jobs = loadJobs();
+  let changed = false;
+  const now = Date.now();
+
+  for (const job of jobs) {
+    if (!job.enabled) continue;
+
+    const prevMatch = previousMatchTime(job.schedule);
+    if (!prevMatch) continue;
+
+    const lastRun = job.last_run_at || 0;
+
+    // Job was missed if the previous scheduled time is after its last run
+    if (lastRun < prevMatch.getTime()) {
+      const missedAt = prevMatch.toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+      });
+      console.log(`[cron] Missed job ${job.id}: "${job.description}" (was due ${missedAt})`);
+
+      job.last_run_at = now;
+      job.run_count = (job.run_count || 0) + 1;
+      changed = true;
+
+      executeCronJob(job, { broadcastWS }).catch(err => {
+        console.error(`[cron] Missed job execution error for ${job.id}: ${err.message}`);
+      });
+    }
+  }
+
+  if (changed) saveJobs(jobs);
+  return changed;
+}
+
+module.exports = { executeCronJob, checkMissedJobs };

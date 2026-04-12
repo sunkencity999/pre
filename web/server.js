@@ -24,7 +24,7 @@ const {
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
-const { executeCronJob } = require('./src/cron-runner');
+const { executeCronJob, checkMissedJobs } = require('./src/cron-runner');
 const delegate = require('./src/tools/delegate');
 const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
@@ -676,6 +676,15 @@ server.listen(PORT, async () => {
   console.log(`  Working directory: ${CWD}`);
   console.log(`  Model context: ${MODEL_CTX} tokens`);
   console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total`);
+
+  // Check for cron jobs that were missed while the system was down
+  if (enabledCount > 0) {
+    checkMissedJobs({ broadcastWS }).then(fired => {
+      if (fired) console.log('  [cron] Missed jobs queued for execution');
+    }).catch(err => {
+      console.error(`  [cron] Missed job check failed: ${err.message}`);
+    });
+  }
 
   // Auto-connect MCP servers
   const mcpConfig = mcp.loadConfig();

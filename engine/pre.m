@@ -1927,6 +1927,110 @@ static int cron_matches_now(const char *schedule) {
            cron_field_matches(fields[4], tm->tm_wday, 0, 6);
 }
 
+// Check if a schedule matches a specific time (not just "now")
+static int cron_matches_time(const char *schedule, struct tm *tm) {
+    char buf[64];
+    strlcpy(buf, schedule, sizeof(buf));
+
+    char *fields[5] = {NULL};
+    char *p = buf;
+    for (int i = 0; i < 5 && *p; i++) {
+        while (*p == ' ') p++;
+        fields[i] = p;
+        while (*p && *p != ' ') p++;
+        if (*p) *p++ = 0;
+    }
+    if (!fields[0] || !fields[1] || !fields[2] || !fields[3] || !fields[4])
+        return 0;
+
+    return cron_field_matches(fields[0], tm->tm_min, 0, 59) &&
+           cron_field_matches(fields[1], tm->tm_hour, 0, 23) &&
+           cron_field_matches(fields[2], tm->tm_mday, 1, 31) &&
+           cron_field_matches(fields[3], tm->tm_mon + 1, 1, 12) &&
+           cron_field_matches(fields[4], tm->tm_wday, 0, 6);
+}
+
+// Find the most recent time before `before` that matches the cron schedule.
+// Walks backwards minute by minute, up to 7 days. Returns 0 if no match.
+static time_t cron_previous_match_time(const char *schedule, time_t before) {
+    time_t check = before - 60; // start one minute before
+    // Zero out seconds
+    struct tm *tm = localtime(&check);
+    tm->tm_sec = 0;
+    check = mktime(tm);
+
+    int max_lookback = 7 * 24 * 60; // 7 days in minutes
+    for (int i = 0; i < max_lookback; i++) {
+        tm = localtime(&check);
+        if (cron_matches_time(schedule, tm)) return check;
+        check -= 60;
+    }
+    return 0;
+}
+
+// Check for cron jobs that should have fired while the system was down.
+// Called once at startup after cron_load().
+static void cron_check_missed(void) {
+    if (g_cron_count == 0) return;
+
+    time_t now = time(NULL);
+    int any_ran = 0;
+
+    for (int i = 0; i < g_cron_count; i++) {
+        CronJob *j = &g_cron_jobs[i];
+        if (!j->enabled) continue;
+
+        time_t prev = cron_previous_match_time(j->schedule, now);
+        if (prev == 0) continue;
+
+        // Job was missed if the previous scheduled time is after its last run
+        if (j->last_run_at < prev) {
+            struct tm *missed_tm = localtime(&prev);
+            char time_str[64];
+            strftime(time_str, sizeof(time_str), "%b %d %I:%M %p", missed_tm);
+
+            printf(ANSI_YELLOW "  ⏰ Missed cron: \"%s\" (was due %s)" ANSI_RESET "\n",
+                   j->description[0] ? j->description : j->id, time_str);
+
+            // Fire it
+            session_save_turn(g.session_id, "user", j->prompt);
+            free(g_native_tool_calls);
+            g_native_tool_calls = NULL;
+
+            int sock = send_request(j->prompt, g.max_tokens, g.session_id);
+            if (sock >= 0) {
+                printf("\n");
+                char *response = stream_response(sock, g.max_tokens);
+                if (response && (strlen(response) > 0 || g_native_tool_calls)) {
+                    if (g_native_tool_calls) {
+                        session_save_assistant_with_tool_calls(g.session_id, response, g_native_tool_calls);
+                    } else {
+                        session_save_turn(g.session_id, "assistant", response);
+                    }
+                    free(g.last_response);
+                    g.last_response = strdup(response);
+                }
+                if (response && (g_native_tool_calls || strstr(response, "<tool_call>"))) {
+                    char *final = handle_tool_calls(response);
+                    free(final);
+                } else {
+                    free(response);
+                }
+                g.turn_count++;
+            }
+
+            j->last_run_at = now;
+            j->run_count++;
+            any_ran = 1;
+        }
+    }
+
+    if (any_ran) {
+        cron_save();
+        printf("\n");
+    }
+}
+
 // Check all cron jobs and execute any that are due.
 // Called from the main loop. Only checks once per minute.
 static void cron_check_and_run(void) {
@@ -9625,11 +9729,13 @@ int main(int argc, char **argv) {
 
         g.session_start_ms = now_ms();
 
-        // Load cron jobs
+        // Load cron jobs and catch up on any missed while system was down
         cron_load();
-        if (g_cron_count > 0)
+        if (g_cron_count > 0) {
             printf(ANSI_DIM "  %d cron job%s loaded" ANSI_RESET "\n",
                    g_cron_count, g_cron_count == 1 ? "" : "s");
+            cron_check_missed();
+        }
 
         // Load ComfyUI config
         comfyui_load_config();

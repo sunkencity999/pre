@@ -143,4 +143,33 @@ function cron(args) {
   }
 }
 
-module.exports = { cron, loadJobs, saveJobs, matchesNow, generateId };
+/**
+ * Find the most recent time before `before` that matches the cron schedule.
+ * Walks backwards minute by minute, up to 7 days.
+ * @param {string} schedule - 5-field cron expression
+ * @param {Date} [before] - Start searching before this time (default: now)
+ * @returns {Date|null} The most recent matching time, or null
+ */
+function previousMatchTime(schedule, before) {
+  const fields = schedule.trim().split(/\s+/);
+  if (fields.length !== 5) return null;
+
+  const check = new Date(before || Date.now());
+  check.setSeconds(0, 0);
+  check.setMinutes(check.getMinutes() - 1); // start one minute before
+
+  const MAX_LOOKBACK = 7 * 24 * 60; // 7 days in minutes
+  for (let i = 0; i < MAX_LOOKBACK; i++) {
+    if (fieldMatches(fields[0], check.getMinutes())
+      && fieldMatches(fields[1], check.getHours())
+      && fieldMatches(fields[2], check.getDate())
+      && fieldMatches(fields[3], check.getMonth() + 1)
+      && fieldMatches(fields[4], check.getDay())) {
+      return new Date(check);
+    }
+    check.setMinutes(check.getMinutes() - 1);
+  }
+  return null;
+}
+
+module.exports = { cron, loadJobs, saveJobs, matchesNow, previousMatchTime, generateId };
