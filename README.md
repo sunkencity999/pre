@@ -33,7 +33,6 @@ PRE doesn't abstract away the hardware — it leans into it:
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
-| **TurboQuant KV cache** | 3.5-bit FWHT + Lloyd-Max quantization via Metal shaders | ~9x KV memory compression, up to 31% faster generation |
 | **Prompt compression** | Function-signature tool format (~800 tokens for 50+ tools) | More room for conversation, faster prefill |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
@@ -82,7 +81,7 @@ This means PRE can:
 - [Browser Agent](#browser-agent)
 - [Telegram Integration](#telegram-integration)
 - [Architecture](#architecture)
-- [TurboQuant KV Cache](#turboquant-kv-cache)
+  - [Experimental: Metal Inference Engine](#experimental-metal-inference-engine)
 - [Configuration](#configuration)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
@@ -1057,57 +1056,31 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Owner-based authorization
 - Automatic lifecycle management
 
----
+### Experimental: Metal Inference Engine
 
-## TurboQuant KV Cache
+The `engine/` directory contains an **experimental custom inference engine** (`infer.m`) — a standalone Objective-C/Metal implementation of Gemma 4's forward pass with optimizations not yet available in Ollama/llama.cpp. This is a development testbed, not part of PRE's production inference path.
 
-PRE's custom Metal inference engine (`engine/infer.m`) implements [Google's TurboQuant](https://arxiv.org/abs/2504.19874) algorithm for KV cache compression. This compresses the key-value cache used during attention from fp32 down to **3.5 bits per value** with negligible quality loss, enabling dramatically longer context windows and faster generation at scale.
+**PRE's production inference runs entirely through Ollama.** The CLI, web GUI, Telegram bot, cron runner, and sub-agents all talk to Ollama's `/api/chat` endpoint, which provides the model serving, chat templating, streaming, and native tool calling that PRE's agentic loop depends on. The custom engine does not replace Ollama and is not used during normal operation.
 
-### How It Works
+#### What the custom engine includes
 
-The implementation is a two-stage GPU pipeline running entirely in Metal compute shaders:
+- **TurboQuant KV cache** — An implementation of [Google's TurboQuant](https://arxiv.org/abs/2504.19874) (ICLR 2026) for 3.5-bit KV cache compression via Metal compute shaders. Uses FWHT rotation + Lloyd-Max codebooks to achieve ~9x memory compression with negligible quality loss. Benchmarked at up to 31% faster generation on M4 Max at medium context lengths.
+- **Custom Metal shaders** — Fused dequant-matvec kernels, GPU attention, delta-net linear attention, expert routing
+- **Tiered expert I/O** — Cold/warm fd separation with F_NOCACHE for first reads, page cache for repeats
+- **Speculative expert prediction** — Temporal prediction pipeline for expert prefetch
 
-1. **Write path** (`kv_rotate_quantize`): After each K/V projection, the 512-dimensional vector is rotated via a Fast Walsh-Hadamard Transform (FWHT), normalized by RMS scale, then quantized to mixed 3.5-bit using Lloyd-Max optimal codebooks (4-bit for the first 256 channels, 3-bit for the last 256). Result: **224 bytes + 4-byte scale per position** vs 2,048 bytes at fp32.
+#### Why it exists
 
-2. **Read path** (`kv_dequant`): Before GPU attention, the quantized KV cache is bulk-dequantized back into fp32 buffers. The dequant is fused into the same Metal command buffer as the attention kernels (CMD2), adding zero extra dispatch overhead.
+This engine serves as a proving ground for inference optimizations targeting Apple Silicon. TurboQuant KV cache compression, for example, was prototyped and validated here before llama.cpp upstream support is available (estimated Q3 2026). Once llama.cpp integrates TurboQuant, Ollama will pick it up automatically and PRE will benefit with no code changes.
 
-### Memory Savings
-
-| Context Length | fp32 KV Cache | TurboQuant 3.5-bit | Compression |
-|:-:|:-:|:-:|:-:|
-| 8K tokens | 240 MB | 27 MB | 8.9x |
-| 65K tokens | 1.88 GB | 213 MB | 8.8x |
-| 1M tokens | 28.8 GB | 3.2 GB | 9.0x |
-
-### Performance Impact (M4 Max)
-
-Benchmarked with Gemma 4 26B-A4B, 4-bit quantized weights:
-
-| Context | Baseline (fp32) | TurboQuant | Speedup |
-|:-:|:-:|:-:|:-:|
-| ~430 tokens | 7.12 tok/s | 6.52 tok/s | 0.92x |
-| ~700 tokens | 6.99 tok/s | 9.15 tok/s | **1.31x** |
-| ~1060 tokens | 7.04 tok/s | 7.37 tok/s | 1.05x |
-
-Short contexts (below the 256-token threshold) use exact fp32 with no overhead. The sweet spot begins around 500+ tokens where attention memory bandwidth becomes significant. At longer contexts (4K-65K), the advantage grows to an estimated 3-7x as attention dominates the per-token cost.
-
-### Configuration
-
-TurboQuant KV auto-enables when the Metal shader pipelines compile successfully. Control via CLI flags on the `infer` binary:
+#### Running it standalone
 
 ```bash
-./infer --serve 8090                    # TurboQuant KV auto-enabled
-./infer --serve 8090 --no-turboquant-kv # Disable for A/B testing
-./infer --serve 8090 --tqkv-threshold 512  # Activate at 512 tokens instead of 256
+cd engine && make infer
+./infer --serve 8090              # Starts an OpenAI-compatible API (no tool calling)
+./infer --serve 8090 --timing     # With per-layer timing breakdown
+./infer --serve 8090 --no-turboquant-kv  # Disable TurboQuant for A/B testing
 ```
-
-### Technical Details
-
-- **Shaders**: `shaders.metal` contains `kv_rotate_quantize` (write) and `kv_dequant` (read)
-- **Codebooks**: Lloyd-Max optimal for standard normal distribution (16 levels for 4-bit, 8 levels for 3-bit)
-- **Rotation**: FWHT is self-inverse, so the same butterfly kernel handles both rotate and un-rotate
-- **Bit packing**: 4-bit channels use nibble packing (2 values per byte); 3-bit channels use planar packing (3 x uint32 bit-planes per 32-value group)
-- **Session persistence**: Quantized buffers are snapshotted alongside fp32 KV caches after system prompt prefill, enabling instant session restore without re-quantizing
 
 ---
 
