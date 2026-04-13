@@ -22,6 +22,7 @@ const {
   setTelegramChatId, testTelegramToken,
   setJiraConfig,
   setConfluenceConfig,
+  setZoomConfig,
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
@@ -184,6 +185,15 @@ app.post('/api/connections/confluence/config', (req, res) => {
   const { url, token } = req.body || {};
   if (!url || !token) return res.status(400).json({ error: 'url and token required' });
   setConfluenceConfig(url, token);
+  res.json({ success: true });
+});
+
+app.post('/api/connections/zoom/config', (req, res) => {
+  const { accountId, clientId, clientSecret } = req.body || {};
+  if (!accountId || !clientId || !clientSecret) {
+    return res.status(400).json({ error: 'accountId, clientId, and clientSecret required' });
+  }
+  setZoomConfig(accountId, clientId, clientSecret);
   res.json({ success: true });
 });
 

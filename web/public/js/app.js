@@ -1019,6 +1019,10 @@
     smartsheet: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M22.157 0H1.843A1.843 1.843 0 0 0 0 1.843v20.314A1.843 1.843 0 0 0 1.843 24h20.314A1.843 1.843 0 0 0 24 22.157V1.843A1.843 1.843 0 0 0 22.157 0zM5.5 7h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5zm0 4h13a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5z"/></svg>',
     slack: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.27 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.163 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.163 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.163 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.27a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.315A2.528 2.528 0 0 1 24 15.163a2.528 2.528 0 0 1-2.522 2.523h-6.315z"/></svg>',
     microsoft: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M0 0h11.377v11.372H0zm12.623 0H24v11.372H12.623zM0 12.623h11.377V24H0zm12.623 0H24V24H12.623z"/></svg>',
+    linear: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.652 11.422a.727.727 0 0 1 0-1.03L11.422 1.62a.727.727 0 0 1 .515-.213c.193 0 .378.077.515.213l8.926 8.926a.727.727 0 0 1 0 1.03l-8.926 8.926a.727.727 0 0 1-1.03 0l-8.77-8.08z"/></svg>',
+    zoom: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4.585 6.836A3.252 3.252 0 0 0 1.34 10.09v3.82a3.252 3.252 0 0 0 3.245 3.254h8.348v-3.82H6.53a1.95 1.95 0 0 1-1.945-1.954V8.79h11.608a1.95 1.95 0 0 1 1.945 1.6l3.358-2.26A1.3 1.3 0 0 0 22.66 7V5.75a.92.92 0 0 0-.917-.914H4.585v2zm17.07 3.234l-3.357 2.26v4.834a.92.92 0 0 1-.917.914h-4.453v2h5.37a3.25 3.25 0 0 0 3.245-3.254v-3.82a3.25 3.25 0 0 0-.888-2.934z"/></svg>',
+    figma: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 24c2.208 0 4-1.792 4-4v-4H8c-2.208 0-4 1.792-4 4s1.792 4 4 4zm0-20c-2.208 0-4 1.792-4 4s1.792 4 4 4h4V4c0-2.208-1.792-4-4-4zm0 8c-2.208 0-4 1.792-4 4s1.792 4 4 4h4v-8H8zm8-8h-4v8h4c2.208 0 4-1.792 4-4s-1.792-4-4-4zm0 12a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/></svg>',
+    asana: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="6" r="5.5"/><circle cx="5.5" cy="17.5" r="5.5"/><circle cx="18.5" cy="17.5" r="5.5"/></svg>',
   };
 
   document.getElementById('settings-btn').addEventListener('click', () => {
@@ -1610,6 +1614,13 @@
         } else {
           html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupSlack()">Setup</button>`;
         }
+      } else if (conn.type === 'zoom') {
+        if (conn.active) {
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupZoom()">Edit</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupZoom()">Setup</button>`;
+        }
       } else if (conn.type === 'telegram') {
         if (conn.active) {
           const chatStatus = conn.chatId
@@ -1946,6 +1957,43 @@
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ key: token }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    setupZoom() {
+      const actionsEl = document.getElementById('conn-actions-zoom');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            1. Create a Server-to-Server OAuth app at <a href="https://marketplace.zoom.us/develop/create" target="_blank" style="color:var(--primary)">Zoom Marketplace</a>.<br>
+            2. Add scopes: <code style="font-size:0.75rem">meeting:read</code>, <code style="font-size:0.75rem">meeting:write</code>, <code style="font-size:0.75rem">user:read</code>, <code style="font-size:0.75rem">recording:read</code>.<br>
+            3. Copy the Account ID, Client ID, and Client Secret.
+          </p>
+          <input type="text" id="zoom-account-id" placeholder="Account ID" autocomplete="off">
+          <input type="text" id="zoom-client-id" placeholder="Client ID" autocomplete="off">
+          <input type="password" id="zoom-client-secret" placeholder="Client Secret" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveZoom()">Save</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('zoom-account-id').focus();
+    },
+
+    async saveZoom() {
+      const accountId = document.getElementById('zoom-account-id')?.value.trim();
+      const clientId = document.getElementById('zoom-client-id')?.value.trim();
+      const clientSecret = document.getElementById('zoom-client-secret')?.value.trim();
+      if (!accountId || !clientId || !clientSecret) return;
+      try {
+        await fetch('/api/connections/zoom/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accountId, clientId, clientSecret }),
         });
         this.refresh();
       } catch {}

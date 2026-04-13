@@ -26,9 +26,13 @@ function getActiveConnections() {
       confluence: !!data.confluence_url && !!data.confluence_token,
       smartsheet: !!data.smartsheet_token,
       slack: !!data.slack_token,
+      linear: !!data.linear_token,
+      zoom: !!data.zoom_account_id && !!data.zoom_client_id && !!data.zoom_client_secret,
+      figma: !!data.figma_token,
+      asana: !!data.asana_token,
     };
   } catch {
-    return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false };
+    return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false, linear: false, zoom: false, figma: false, asana: false };
   }
 }
 
@@ -117,6 +121,33 @@ function buildSystemPrompt(cwd) {
       + `ALWAYS call it when images are requested. NEVER use Unsplash or external URLs instead. `
       + `The image is automatically displayed in the chat after generation — just respond naturally describing what was created. `
       + `For reports/artifacts that need the image embedded, use the returned /artifacts/ path as the src.\n`;
+  }
+
+  // Computer Use guidance
+  const computerTool = require('./tools/computer');
+  if (computerTool.isAvailable()) {
+    prompt += `\nCOMPUTER USE (Desktop Automation):\n`
+      + `You have a \`computer\` tool that takes screenshots and controls the mouse/keyboard.\n`
+      + `- For ANY task involving a desktop GUI app, use the computer tool's vision loop: screenshot → see screen → click/type/key → screenshot → repeat.\n`
+      + `- Do NOT use applescript to inspect or enumerate GUI elements. AppleScript UI introspection is fragile and fails on most modern apps. Use the computer tool to SEE the screen instead.\n`
+      + `- AppleScript is fine for non-visual tasks (open an app, activate a window), but NOT for reading GUI content.\n`
+      + `- After opening an app, IMMEDIATELY take a screenshot to see what's on screen, then act on what you see.\n`
+      + `- SEARCH FIRST: When looking for specific content in an app, ALWAYS use the search bar or Cmd+F FIRST:\n`
+      + `  1. Look at the screenshot for a search bar, search icon (magnifying glass), or filter field\n`
+      + `  2. If you see one, CLICK on it, then TYPE your search query, then press Return\n`
+      + `  3. If no visible search bar, try Cmd+F (universal find shortcut) before scrolling manually\n`
+      + `  4. Only browse/scroll manually if search is not available\n`
+      + `- BEFORE TYPING: Always CLICK on the target text field or search bar first. Never assume a field has focus. Look at the screenshot, find the input field, click it, THEN type.\n`
+      + `- Always take a screenshot after important actions (clicking, typing, pressing keys) to verify the result before proceeding.\n`
+      + `- Keep your computer use sessions focused: screenshot → act → verify. Don't over-plan — react to what you see.\n`
+      + `- AVOID CLICK LOOPS: If clicking an area does NOT produce results after 2 attempts, STOP and try a different approach:\n`
+      + `  • Try a keyboard shortcut instead (e.g. Cmd+F for search, Return to confirm)\n`
+      + `  • Click a different UI element nearby\n`
+      + `  • Scroll to reveal hidden content\n`
+      + `  • Take a fresh screenshot and reassess the entire screen layout\n`
+      + `  • If truly stuck after 3 different approaches, STOP and report what you see to the user\n`
+      + `- You have a LIMITED number of turns (~25). Be efficient — don't waste turns repeating failed actions.\n`
+      + `- Once you have the information the user asked for, STOP taking actions and report your findings immediately.\n`;
   }
 
   // Experience ledger guidance

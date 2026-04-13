@@ -181,6 +181,35 @@ function listConnections() {
       tenantId: data.microsoft_tenant_id || null,
       tokenExpiry: data.microsoft_token_expiry ? new Date(data.microsoft_token_expiry * 1000).toISOString() : null,
     },
+    {
+      service: 'linear',
+      label: 'Linear',
+      type: 'api_key',
+      active: !!data.linear_token,
+      masked: data.linear_token ? maskKey(data.linear_token) : null,
+    },
+    {
+      service: 'zoom',
+      label: 'Zoom',
+      type: 'zoom',
+      active: !!data.zoom_account_id && !!data.zoom_client_id && !!data.zoom_client_secret,
+      hasCredentials: !!data.zoom_client_id,
+      accountId: data.zoom_account_id || null,
+    },
+    {
+      service: 'figma',
+      label: 'Figma',
+      type: 'api_key',
+      active: !!data.figma_token,
+      masked: data.figma_token ? maskKey(data.figma_token) : null,
+    },
+    {
+      service: 'asana',
+      label: 'Asana',
+      type: 'api_key',
+      active: !!data.asana_token,
+      masked: data.asana_token ? maskKey(data.asana_token) : null,
+    },
   ];
 }
 
@@ -201,6 +230,9 @@ function setApiKey(service, key) {
     telegram: 'telegram_key',
     smartsheet: 'smartsheet_token',
     slack: 'slack_token',
+    linear: 'linear_token',
+    figma: 'figma_token',
+    asana: 'asana_token',
   };
   const field = keyMap[service];
   if (!field) return false;
@@ -231,6 +263,10 @@ function removeConnection(service) {
     delete data.microsoft_access_token;
     delete data.microsoft_refresh_token;
     delete data.microsoft_token_expiry;
+  } else if (service === 'zoom') {
+    delete data.zoom_account_id;
+    delete data.zoom_client_id;
+    delete data.zoom_client_secret;
   } else if (service === 'jira') {
     delete data.jira_url;
     delete data.jira_token;
@@ -519,6 +555,18 @@ function setConfluenceConfig(url, token) {
   return true;
 }
 
+/**
+ * Set Zoom Server-to-Server OAuth credentials
+ */
+function setZoomConfig(accountId, clientId, clientSecret) {
+  const data = loadConnections();
+  data.zoom_account_id = accountId;
+  data.zoom_client_id = clientId;
+  data.zoom_client_secret = clientSecret;
+  saveConnections(data);
+  return true;
+}
+
 module.exports = {
   listConnections,
   setApiKey,
@@ -535,4 +583,5 @@ module.exports = {
   testTelegramToken,
   setJiraConfig,
   setConfluenceConfig,
+  setZoomConfig,
 };

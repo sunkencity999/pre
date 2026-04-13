@@ -150,6 +150,24 @@ function buildToolDefs() {
     tool('memory_health', 'Check the health of the memory system: staleness report, aging warnings, maintenance status', {}),
   ];
 
+  // Conditional: computer use (desktop automation)
+  const computerTool = require('./tools/computer');
+  if (computerTool.isAvailable()) {
+    tools.push(tool('computer', 'Control the desktop — click, type, scroll, and take screenshots of any application. Returns a screenshot after each action so you can see the result. Use this for automating desktop applications, filling forms, navigating GUIs, and any task that requires interacting with non-browser applications.', {
+      action: { type: 'string', description: 'Action: screenshot|click|double_click|right_click|type|key|scroll|move|drag|screen_size|cursor_position' },
+      x: { type: 'integer', description: 'X coordinate for click/move/scroll' },
+      y: { type: 'integer', description: 'Y coordinate for click/move/scroll' },
+      text: { type: 'string', description: 'Text to type' },
+      key: { type: 'string', description: 'Key to press (return, tab, escape, space, cmd+c, ctrl+a, etc.)' },
+      direction: { type: 'string', description: 'Scroll direction: up|down' },
+      amount: { type: 'integer', description: 'Scroll amount (default: 3)' },
+      from_x: { type: 'integer', description: 'Drag start X' },
+      from_y: { type: 'integer', description: 'Drag start Y' },
+      to_x: { type: 'integer', description: 'Drag end X' },
+      to_y: { type: 'integer', description: 'Drag end Y' },
+    }, ['action']));
+  }
+
   // Conditional: browser
   const browserTool = require('./tools/browser');
   if (browserTool.isAvailable()) {
@@ -327,6 +345,76 @@ function buildToolDefs() {
       chat_id: { type: 'string', description: 'Chat ID to send to (auto-detected from recent messages if omitted)' },
       text: { type: 'string', description: 'Message text to send' },
       parse_mode: { type: 'string', description: 'Parse mode: Markdown|HTML (default: Markdown)' },
+    }, ['action']));
+  }
+
+  if (conns.linear) {
+    tools.push(tool('linear', 'Interact with Linear project tracking. Actions: list_issues, search, get_issue, create_issue, update_issue, add_comment, list_projects, list_teams, list_cycles, list_labels, me', {
+      action: { type: 'string', description: 'Action to perform' },
+      query: { type: 'string', description: 'Search query' },
+      id: { type: 'string', description: 'Issue ID or identifier (e.g. ENG-123)' },
+      key: { type: 'string', description: 'Issue identifier (e.g. ENG-123)' },
+      title: { type: 'string', description: 'Issue title (for create)' },
+      description: { type: 'string', description: 'Issue description' },
+      team: { type: 'string', description: 'Team key (e.g. ENG)' },
+      project: { type: 'string', description: 'Project name' },
+      status: { type: 'string', description: 'Status name or state ID' },
+      priority: { type: 'string', description: 'Priority (0=none, 1=urgent, 2=high, 3=medium, 4=low)' },
+      assignee: { type: 'string', description: 'Assignee ID' },
+      body: { type: 'string', description: 'Comment body text' },
+      count: { type: 'integer', description: 'Max results (default: 25)' },
+    }, ['action']));
+  }
+
+  if (conns.zoom) {
+    tools.push(tool('zoom', 'Interact with Zoom. Actions: list_meetings, get_meeting, create_meeting, update_meeting, delete_meeting, list_recordings, list_users, me', {
+      action: { type: 'string', description: 'Action to perform' },
+      id: { type: 'string', description: 'Meeting ID' },
+      topic: { type: 'string', description: 'Meeting topic/title' },
+      start_time: { type: 'string', description: 'Start time ISO 8601 (e.g. 2026-04-15T10:00:00Z)' },
+      duration: { type: 'integer', description: 'Duration in minutes' },
+      agenda: { type: 'string', description: 'Meeting agenda' },
+      timezone: { type: 'string', description: 'Timezone (e.g. America/Los_Angeles)' },
+      type: { type: 'string', description: 'Meeting type: scheduled|instant' },
+      user_id: { type: 'string', description: 'User ID (default: me)' },
+      from: { type: 'string', description: 'Start date for recordings (YYYY-MM-DD)' },
+      to: { type: 'string', description: 'End date for recordings (YYYY-MM-DD)' },
+      count: { type: 'integer', description: 'Max results' },
+    }, ['action']));
+  }
+
+  if (conns.figma) {
+    tools.push(tool('figma', 'Interact with Figma design files. Actions: get_file, get_file_nodes, get_comments, post_comment, list_projects, get_project_files, get_team_projects, get_file_versions, get_images, me', {
+      action: { type: 'string', description: 'Action to perform' },
+      file_key: { type: 'string', description: 'Figma file key (from URL: figma.com/file/<key>/...)' },
+      ids: { type: 'string', description: 'Comma-separated node IDs' },
+      team_id: { type: 'string', description: 'Team ID' },
+      project_id: { type: 'string', description: 'Project ID' },
+      message: { type: 'string', description: 'Comment message' },
+      comment_id: { type: 'string', description: 'Comment ID (for replies)' },
+      format: { type: 'string', description: 'Export format: png|jpg|svg|pdf' },
+      scale: { type: 'string', description: 'Export scale (default: 2)' },
+      depth: { type: 'integer', description: 'Traversal depth for get_file' },
+    }, ['action']));
+  }
+
+  if (conns.asana) {
+    tools.push(tool('asana', 'Interact with Asana project management. Actions: list_workspaces, list_projects, get_project, list_tasks, get_task, create_task, update_task, add_comment, search, list_sections, me', {
+      action: { type: 'string', description: 'Action to perform' },
+      id: { type: 'string', description: 'Task or project GID' },
+      gid: { type: 'string', description: 'Asana GID (same as id)' },
+      workspace: { type: 'string', description: 'Workspace GID' },
+      project: { type: 'string', description: 'Project GID' },
+      section: { type: 'string', description: 'Section GID' },
+      team: { type: 'string', description: 'Team GID' },
+      name: { type: 'string', description: 'Task name' },
+      notes: { type: 'string', description: 'Task description' },
+      assignee: { type: 'string', description: 'Assignee (GID or email)' },
+      due_on: { type: 'string', description: 'Due date (YYYY-MM-DD)' },
+      completed: { type: 'boolean', description: 'Mark task complete/incomplete' },
+      query: { type: 'string', description: 'Search query' },
+      text: { type: 'string', description: 'Comment text' },
+      count: { type: 'integer', description: 'Max results (default: 25)' },
     }, ['action']));
   }
 

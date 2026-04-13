@@ -77,6 +77,11 @@ const imageTool = require('./tools/image');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
 const browserTool = require('./tools/browser');
+const computerTool = require('./tools/computer');
+const linearTool = require('./tools/linear');
+const zoomTool = require('./tools/zoom');
+const figmaTool = require('./tools/figma');
+const asanaTool = require('./tools/asana');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -117,16 +122,23 @@ const ALIASES = {
   health: 'memory_health', staleness: 'memory_health',
   browse_web: 'browser', web_browser: 'browser', chrome: 'browser',
   open_browser: 'browser', puppeteer: 'browser', navigate: 'browser',
+  desktop: 'computer', computer_use: 'computer', screen: 'computer',
+  mouse: 'computer', keyboard: 'computer', click: 'computer',
+  linear_issue: 'linear', linear_search: 'linear', issues: 'linear',
+  zoom_meeting: 'zoom', meeting: 'zoom', zoom_create: 'zoom',
+  figma_file: 'figma', design: 'figma', figma_comments: 'figma',
+  asana_task: 'asana', task_manager: 'asana', asana_search: 'asana',
 };
 
 // Tools that require user confirmation before execution
 const CONFIRM_TOOLS = new Set([
-  'process_kill', 'applescript', 'memory_delete',
+  'process_kill', 'memory_delete',
 ]);
 
 // Tool+action combinations that require confirmation (for multi-action tools)
 const CONFIRM_ACTIONS = {
   sharepoint: new Set(['delete_file']),
+  zoom: new Set(['delete_meeting']),
 };
 
 // Dispatch a tool call to its handler
@@ -169,11 +181,36 @@ async function executeTool(name, args, cwd, opts) {
     case 'display_info': return systemTool.displayInfo();
     case 'clipboard_read': return systemTool.clipboardRead();
     case 'clipboard_write': return systemTool.clipboardWrite(args);
-    case 'open_app': return systemTool.openApp(args);
+    case 'open_app': {
+      // Track target app for computer use auto-focus
+      if (args?.target) computerTool.setTargetApp(args.target);
+      const openResult = systemTool.openApp(args);
+      // Maximize the window so the model gets a clear, full-size view
+      if (args?.target && computerTool.isAvailable()) {
+        try {
+          // Wait for the app to finish opening, then maximize
+          await new Promise(r => setTimeout(r, 1000));
+          computerTool.maximizeTargetWindow();
+          // Second attempt after brief delay — some apps need time to fully render
+          await new Promise(r => setTimeout(r, 500));
+          computerTool.maximizeTargetWindow();
+        } catch {}
+      }
+      return openResult;
+    }
     case 'notify': return systemTool.notify(args);
-    case 'screenshot': return systemTool.screenshot(args);
+    case 'screenshot':
+      // When computer use is available, redirect to the computer tool's vision pipeline
+      // so the model actually sees the screenshot (base64 for vision) instead of just saving a file
+      if (computerTool.isAvailable()) {
+        return computerTool.computerUse({ action: 'screenshot' });
+      }
+      return systemTool.screenshot(args);
     case 'window_list': return systemTool.windowList();
-    case 'window_focus': return systemTool.windowFocus(args);
+    case 'window_focus':
+      // Track target app for computer use auto-focus
+      if (args?.app) computerTool.setTargetApp(args.app);
+      return systemTool.windowFocus(args);
     case 'applescript': return systemTool.applescript(args);
 
     // Artifacts
@@ -205,8 +242,23 @@ async function executeTool(name, args, cwd, opts) {
     // Telegram
     case 'telegram': return telegramTool.telegram(args);
 
+    // Linear
+    case 'linear': return linearTool.linear(args);
+
+    // Zoom
+    case 'zoom': return zoomTool.zoom(args);
+
+    // Figma
+    case 'figma': return figmaTool.figma(args);
+
+    // Asana
+    case 'asana': return asanaTool.asana(args);
+
     // Image generation
     case 'image_generate': return imageTool.imageGenerate(args);
+
+    // Computer Use (desktop automation)
+    case 'computer': return computerTool.computerUse(args);
 
     // Browser
     case 'browser': return browserTool.browserAction(args);
@@ -278,6 +330,9 @@ async function executeTool(name, args, cwd, opts) {
 async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle }) {
   let tokensIn = 0;
   let tokensOut = 0;
+  let pendingScreenshots = []; // Screenshots from computer/browser tools, injected transiently
+  let usedComputerUse = false; // Track if computer use was invoked for completion notification
+  let pendingClickWarning = null; // Click-loop warning to inject with next screenshot
 
   for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
     if (signal?.aborted) break;
@@ -288,6 +343,25 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       { role: 'system', content: systemPrompt },
       ...history,
     ];
+
+    // Inject pending screenshots as a transient user message (not persisted to session).
+    // Ollama only processes images on user role messages. This message is ephemeral —
+    // it gets the model to see the screenshot without polluting the session history.
+    if (pendingScreenshots.length > 0) {
+      let screenshotPrompt = '[Screenshot captured by the computer tool is attached. Analyze the image and continue completing the task by calling tools. Do not just describe what you see — take action.';
+      if (pendingClickWarning) {
+        screenshotPrompt += `\n\n${pendingClickWarning}`;
+        pendingClickWarning = null;
+      }
+      screenshotPrompt += ']';
+      messages.push({
+        role: 'user',
+        content: screenshotPrompt,
+        images: pendingScreenshots,
+      });
+      pendingScreenshots = [];
+    }
+
     const tools = buildToolDefs();
 
     // Budget must be generous — Gemma 4 extended thinking consumes num_predict
@@ -342,6 +416,25 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
           pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX),
         },
       });
+      // When computer use session completes: notify and restore focus
+      if (usedComputerUse) {
+        try {
+          const { execSync } = require('child_process');
+          // Sanitize for AppleScript — strip all quotes and special chars
+          const preview = (result.response || '')
+            .replace(/["""''`]/g, "'")
+            .replace(/\\/g, '')
+            .replace(/[\n\r]/g, ' ')
+            .slice(0, 120);
+          execSync(`osascript -e 'display notification "${preview}" with title "PRE — Task Complete" sound name "Glass"'`, { timeout: 3000 });
+        } catch (err) {
+          console.log(`[computer] notification failed: ${err.message}`);
+        }
+        // Restore focus to the app that was active before computer use (browser/terminal)
+        try {
+          computerTool.restoreFocus();
+        } catch {}
+      }
       // Generate session title in background after first response
       if (needsTitle && userMessage) {
         generateSessionTitle(sessionId, userMessage, send);
@@ -447,9 +540,14 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       }
 
-      // Handle browser tool screenshots — extract base64 image for vision
+      // Track computer use for completion notification
+      if (toolName === 'computer' || toolName === 'screenshot') {
+        usedComputerUse = true;
+      }
+
+      // Handle browser/computer tool screenshots — extract base64 image for vision
       let browserScreenshot = null;
-      if (toolName === 'browser' && output) {
+      if ((toolName === 'browser' || toolName === 'computer' || toolName === 'screenshot') && output) {
         try {
           const parsed = JSON.parse(output);
           if (parsed.screenshot) {
@@ -485,12 +583,28 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       .map(r => `<tool_response name="${r.name}">\n${r.output}</tool_response>`)
       .join('\n');
     const toolMsg = { role: 'tool', content: combinedResult };
-    // Attach browser screenshots as images so the model can see them
+    appendMessage(sessionId, toolMsg);
+
+    // Collect screenshots for transient injection on the next loop iteration.
+    // NOT persisted to session — injected into the messages array at call time only.
     const screenshots = toolResults.filter(r => r.image).map(r => r.image);
     if (screenshots.length > 0) {
-      toolMsg.images = screenshots;
+      pendingScreenshots = screenshots;
+      // Check for click-loop warnings/blocks in computer tool results
+      for (const r of toolResults) {
+        if (r.name === 'computer' && r.output) {
+          try {
+            const parsed = JSON.parse(r.output);
+            if (parsed.blocked) {
+              // Hard block — force this into the transient user message
+              pendingClickWarning = parsed.message;
+            } else if (parsed.message && (parsed.message.includes('WARNING:') || parsed.message.includes('CLICK BLOCKED'))) {
+              pendingClickWarning = parsed.message.slice(parsed.message.indexOf('⚠️'));
+            }
+          } catch {}
+        }
+      }
     }
-    appendMessage(sessionId, toolMsg);
 
     // Start next iteration (model sees tool results and may call more tools)
   }
