@@ -116,8 +116,15 @@ code {
   background: var(--text-muted);
 }
 
+#sidebar-toggle {
+  display: none;
+}
+
 /* Mobile responsive */
 @media (max-width: 768px) {
+  #sidebar-toggle {
+    display: inline-flex;
+  }
   .sidebar {
     position: fixed;
     left: 0;

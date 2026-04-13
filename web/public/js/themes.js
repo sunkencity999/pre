@@ -5,8 +5,6 @@ const Themes = (() => {
   const THEMES = [
     { id: 'dark',       name: 'Dark',       icon: '◗' },
     { id: 'light',      name: 'Light',      icon: '◑' },
-    { id: 'evangelion', name: 'Evangelion',  icon: '★' },
-    { id: 'metalgear',  name: 'Metal Gear', icon: '◈' },
   ];
 
   function get() {

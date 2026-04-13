@@ -20,7 +20,7 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
 - **Persistent memory** — file-based memory system with auto-extraction, age annotations, and a GUI browser
-- **Three themes** — Dark, Light, and Evangelion (NERV-inspired)
+- **Two themes** — Dark and Light
 - **Calendas Plus typography** — serif display font for headings
 - **Thinking indicator** — animated bouncing dots during model's first-token latency
 - **Tool confirmation dialogs** — dangerous tools require approval
@@ -274,11 +274,10 @@ public/
 
 ## Themes
 
-Switch between themes using the buttons in the sidebar footer.
+Switch between themes using the dropdown in the sidebar footer.
 
 - **Dark** — `#0a0a0a` background, blue primary, clean and minimal
 - **Light** — `#fafafa` background, blue primary, bright and readable
-- **Evangelion** — deep purple-black background, NERV orange primary, amber text, hexagonal grid pattern, scan-line animations on focused elements
 
 ## Key Design Decisions
 

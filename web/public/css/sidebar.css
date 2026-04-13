@@ -33,16 +33,16 @@
 
 .sidebar-search-icon {
   position: absolute;
-  left: 26px;
+  left: 10px;
   top: 50%;
-  transform: translateY(-25%);
+  transform: translateY(-50%);
   color: var(--text-muted);
   pointer-events: none;
 }
 
 .sidebar-search input {
   width: 100%;
-  padding: 7px 10px 7px 30px;
+  padding: 7px 10px 7px 32px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
