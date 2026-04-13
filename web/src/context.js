@@ -138,6 +138,12 @@ function buildSystemPrompt(cwd) {
       + `  3. If no visible search bar, try Cmd+F (universal find shortcut) before scrolling manually\n`
       + `  4. Only browse/scroll manually if search is not available\n`
       + `- BEFORE TYPING: Always CLICK on the target text field or search bar first. Never assume a field has focus. Look at the screenshot, find the input field, click it, THEN type.\n`
+      + `- MULTI-LINE TEXT: Use \\n in your type text for line breaks. Example: "Line one\\nLine two\\nLine three" — each \\n becomes a Return key press.\n`
+      + `- DIALOGS & SAVE: When a dialog/popup appears (Save, Open, Confirm):\n`
+      + `  • Press Return to activate the default (blue/highlighted) button — this is fastest and most reliable\n`
+      + `  • Press Escape to cancel\n`
+      + `  • For Save dialogs: use Cmd+S, then type the filename in the "Save As" field, then press Return to save\n`
+      + `  • Do NOT try to click small dialog buttons — just use Return/Escape keyboard shortcuts\n`
       + `- Always take a screenshot after important actions (clicking, typing, pressing keys) to verify the result before proceeding.\n`
       + `- Keep your computer use sessions focused: screenshot → act → verify. Don't over-plan — react to what you see.\n`
       + `- AVOID CLICK LOOPS: If clicking an area does NOT produce results after 2 attempts, STOP and try a different approach:\n`

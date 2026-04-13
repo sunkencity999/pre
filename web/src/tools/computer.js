@@ -75,10 +75,9 @@ function setTargetApp(appName) {
   // Save the currently focused app so we can restore later
   if (!_targetApp && appName) {
     try {
-      _previousApp = execSync(
-        `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`,
-        { encoding: 'utf-8', timeout: 3000 }
-      ).trim();
+      _previousApp = runAppleScript(
+        'tell application "System Events" to get name of first application process whose frontmost is true'
+      );
     } catch {}
   }
   _targetApp = appName;
@@ -90,10 +89,21 @@ function setTargetApp(appName) {
 function ensureTargetFocused() {
   if (_targetApp) {
     try {
-      const safe = _targetApp.replace(/"/g, '\\"');
-      execSync(`osascript -e 'tell application "${safe}" to activate'`, { encoding: 'utf-8', timeout: 3000 });
+      runAppleScript(`tell application "${_targetApp}" to activate`);
     } catch {}
   }
+}
+
+/**
+ * Run an AppleScript via stdin to avoid shell quoting issues with app names
+ * that contain spaces (e.g. "Microsoft Word").
+ */
+function runAppleScript(script, timeout = 5000) {
+  return execSync('osascript', {
+    input: script,
+    encoding: 'utf-8',
+    timeout,
+  }).trim();
 }
 
 /**
@@ -107,23 +117,21 @@ function maximizeTargetWindow() {
     // Activate the app so it becomes frontmost
     ensureTargetFocused();
     // Query the actual System Events process name of the frontmost app
-    const processName = execSync(
-      `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`,
-      { encoding: 'utf-8', timeout: 3000 }
-    ).trim();
+    const processName = runAppleScript(
+      'tell application "System Events" to get name of first application process whose frontmost is true'
+    );
     if (!processName) return;
     const size = getScreenSize();
     const w = size.width;
     const h = size.height - 25;
-    const safe = processName.replace(/"/g, '\\"');
-    execSync(
-      `osascript -e 'tell application "System Events" to tell process "${safe}" to set position of window 1 to {0, 25}'`,
-      { encoding: 'utf-8', timeout: 5000 }
-    );
-    execSync(
-      `osascript -e 'tell application "System Events" to tell process "${safe}" to set size of window 1 to {${w}, ${h}}'`,
-      { encoding: 'utf-8', timeout: 5000 }
-    );
+    runAppleScript(`
+      tell application "System Events"
+        tell process "${processName}"
+          set position of window 1 to {0, 25}
+          set size of window 1 to {${w}, ${h}}
+        end tell
+      end tell
+    `);
     console.log(`[computer] Maximized ${processName} to ${w}x${h}`);
   } catch (err) {
     console.log(`[computer] maximizeTargetWindow failed: ${err.message}`);
@@ -137,8 +145,7 @@ function maximizeTargetWindow() {
 function restoreFocus() {
   if (_previousApp) {
     try {
-      const safe = _previousApp.replace(/"/g, '\\"');
-      execSync(`osascript -e 'tell application "${safe}" to activate'`, { encoding: 'utf-8', timeout: 3000 });
+      runAppleScript(`tell application "${_previousApp}" to activate`);
       console.log(`[computer] Restored focus to ${_previousApp}`);
     } catch {}
   }
@@ -152,11 +159,14 @@ function restoreFocus() {
  */
 function getWindowBounds(appName) {
   try {
-    const safe = appName.replace(/"/g, '\\"');
-    const out = execSync(
-      `osascript -e 'tell application "System Events" to tell process "${safe}" to get {position, size} of window 1'`,
-      { encoding: 'utf-8', timeout: 5000 }
-    ).trim();
+    // Use stdin to avoid shell quoting issues with names containing spaces
+    const out = runAppleScript(`
+      tell application "System Events"
+        tell process "${appName}"
+          get {position, size} of window 1
+        end tell
+      end tell
+    `);
     // Returns "x, y, w, h"
     const parts = out.split(',').map(s => parseInt(s.trim()));
     if (parts.length >= 4) {
@@ -387,21 +397,36 @@ async function computerUse(args) {
       resetClickHistory(); // Typing = new approach, reset loop detection
       ensureTargetFocused();
       await sleep(150);
-      const escaped = text.replace(/'/g, "'\\''");
-      if (text.length > 5) {
-        const chunks = text.match(/.{1,4}/g) || [text];
-        const cmd = chunks.map(c => `t:'${c.replace(/'/g, "'\\''")}'`).join(' w:50 ');
-        run(`${cliclickPath} ${cmd}`);
-      } else {
-        run(`${cliclickPath} t:'${escaped}'`);
+
+      // Normalize newlines: models often send literal "\n" (backslash + n) instead of
+      // actual newline characters. Convert both forms to real newlines before splitting.
+      const normalized = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+
+      // Split on newlines — type each line, press Return between them.
+      // cliclick t: cannot handle literal newlines in shell quotes.
+      const lines = normalized.split(/\r?\n/);
+      for (let li = 0; li < lines.length; li++) {
+        const line = lines[li];
+        if (line.length > 0) {
+          // Chunk long lines to avoid shell command length limits and app lag
+          const chunks = line.length > 5 ? (line.match(/.{1,4}/g) || [line]) : [line];
+          const cmd = chunks.map(c => `t:'${c.replace(/'/g, "'\\''")}'`).join(' w:50 ');
+          run(`${cliclickPath} ${cmd}`, 30000);
+        }
+        // Press Return between lines (not after the last one)
+        if (li < lines.length - 1) {
+          run(`${cliclickPath} kp:return`, 5000);
+          await sleep(100);
+        }
       }
+
       await sleep(200);
-      const { base64, width, height } = takeScreenshot();
+      const { base64 } = takeScreenshot();
       return JSON.stringify({
         action: 'type',
         text: text.slice(0, 50),
         screenshot: base64,
-        message: `Typed "${text.slice(0, 50)}"`,
+        message: `Typed "${text.slice(0, 50).replace(/\\n/g, '↵').replace(/\n/g, '↵')}"`,
       });
     }
 

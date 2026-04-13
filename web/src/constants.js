@@ -8,7 +8,7 @@ const PRE_DIR = path.join(os.homedir(), '.pre');
 const MODEL = 'pre-gemma4';
 const MODEL_CTX = 65536;
 const OLLAMA_PORT = parseInt(process.env.PRE_PORT || '11434', 10);
-const MAX_TOOL_TURNS = 25;
+const MAX_TOOL_TURNS = 35;
 
 // Session files live in ~/.pre/sessions/<project>:<channel>.jsonl
 const SESSIONS_DIR = path.join(PRE_DIR, 'sessions');
