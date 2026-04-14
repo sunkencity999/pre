@@ -6,7 +6,7 @@ const os = require('os');
 
 const PRE_DIR = path.join(os.homedir(), '.pre');
 const MODEL = 'pre-gemma4';
-const MODEL_CTX = 65536;
+const MODEL_CTX = 131072;
 const OLLAMA_PORT = parseInt(process.env.PRE_PORT || '11434', 10);
 const MAX_TOOL_TURNS = 35;
 
