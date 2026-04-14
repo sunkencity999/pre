@@ -2,6 +2,36 @@
 
 Browser interface for the Personal Reasoning Engine. Runs alongside the CLI, sharing the same sessions, memory, and tools.
 
+## Why PRE? What Frontier Models Can't Do
+
+PRE isn't competing with Claude, GPT, or Gemini on raw reasoning. Frontier models are better at that and will continue to be. PRE exists because there are things frontier models structurally cannot offer — and those things matter in enterprise environments.
+
+### Data Sovereignty
+
+Every token, every prompt, every tool result stays on your machine. Nothing leaves. For organizations handling ITAR-controlled data, proprietary operational information, or sensitive internal communications, this isn't a preference — it's a requirement. PRE lets you use AI on work that cloud APIs are off-limits for.
+
+### Autonomous Scheduled Operations
+
+Frontier models only work when you're talking to them. PRE runs on its own schedule. The cron system executes prompts at specified times — daily briefings, recurring reports, monitoring checks — and delivers results via Telegram, macOS notifications, or stored sessions. AI that works while you sleep, without a human in the loop.
+
+### Enterprise Integration Density
+
+PRE connects to Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Gmail, Google Drive, GitHub, and Telegram — all accessible through natural language in a single conversational interface. No frontier product lets you search Jira, cross-reference with Confluence, pull a file from SharePoint, and post a summary to Slack in one conversation. PRE does, and it does it locally.
+
+### Zero Marginal Cost
+
+Once running, PRE generates tokens for free. No per-token pricing, no API rate limits, no monthly seat fees. At enterprise scale, where teams can burn through thousands of dollars in API costs per month, local inference eliminates an entire budget line. Every prompt, every scheduled job, every sub-agent loop — zero incremental cost. The only resource consumed is electricity and GPU time you already own.
+
+### Persistent Local Memory
+
+PRE builds a durable understanding of who you are, how you work, and what's happening across your projects. Its memory system — with automatic extraction, age-aware staleness tracking, and semantic search — accumulates context over weeks and months. Frontier models offer limited memory that resets across sessions or is managed opaquely. PRE's memory is local, auditable, and under your control.
+
+### Desktop Automation Without Cloud Dependencies
+
+Computer Use gives PRE control over any desktop application through a vision-action loop. Fill out forms in apps that have no API, navigate complex GUIs, automate repetitive desktop workflows — all running locally with no screenshots sent to external servers.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -469,6 +499,7 @@ src/
     memory.js              save, search, list, delete
     system.js              17 system tools (info, processes, clipboard, etc.)
     artifact.js            Interactive HTML artifacts
+    export.js              Artifact sharing (PDF, PNG, self-contained HTML via Puppeteer)
     image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)
     google.js              Gmail, Google Drive, Google Docs
