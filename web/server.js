@@ -613,6 +613,29 @@ wss.on('connection', (ws) => {
       } else if (msg.image) {
         userMsg.images = [msg.image];
       }
+      // Auto-save uploaded images to artifacts so they can be referenced in HTML artifacts.
+      // Stores paths in userMsg.imagePaths for the model to use.
+      if (userMsg.images && userMsg.images.length > 0) {
+        const uploadsDir = path.join(ARTIFACTS_DIR, 'uploads');
+        if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+        userMsg.imagePaths = [];
+        for (let i = 0; i < userMsg.images.length; i++) {
+          try {
+            const buf = Buffer.from(userMsg.images[i], 'base64');
+            // Detect format from magic bytes
+            const ext = (buf[0] === 0x89 && buf[1] === 0x50) ? 'png'
+              : (buf[0] === 0xFF && buf[1] === 0xD8) ? 'jpg'
+              : (buf[0] === 0x47 && buf[1] === 0x49) ? 'gif' : 'png';
+            const fname = `upload-${Date.now()}-${i}.${ext}`;
+            fs.writeFileSync(path.join(uploadsDir, fname), buf);
+            userMsg.imagePaths.push(`/artifacts/uploads/${fname}`);
+          } catch {}
+        }
+        if (userMsg.imagePaths.length > 0) {
+          // Append path info to message so the model knows where to find the images
+          userMsg.content += `\n[Uploaded image(s) saved to: ${userMsg.imagePaths.join(', ')}. Use these paths in HTML artifacts with <img src="..."> to embed them.]`;
+        }
+      }
       appendMessage(sessionId, userMsg);
 
       // Run the full tool loop

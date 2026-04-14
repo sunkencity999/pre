@@ -3,7 +3,8 @@
 
 const { execSync } = require('child_process');
 const fs = require('fs');
-const { CONNECTIONS_FILE } = require('../constants');
+const path = require('path');
+const { CONNECTIONS_FILE, ARTIFACTS_DIR } = require('../constants');
 
 function getConnectionKey(name) {
   try {
@@ -17,6 +18,14 @@ function getConnectionKey(name) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Check if a URL points to an image based on extension or explicit save_image flag.
+ */
+function isImageUrl(url) {
+  const imageExts = /\.(png|jpg|jpeg|gif|webp|svg|bmp|ico)(\?|$)/i;
+  return imageExts.test(url);
 }
 
 function webFetch(args) {
@@ -40,6 +49,23 @@ function webFetch(args) {
       if (ghKey) {
         authHeader = `-H 'Authorization: token ${ghKey}' -H 'Accept: application/vnd.github+json' `;
       }
+    }
+
+    // If URL is an image or save_image flag is set, download as binary and save locally
+    if (isImageUrl(url) || args.save_image) {
+      const downloadsDir = path.join(ARTIFACTS_DIR, 'downloads');
+      if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
+      const ext = (url.match(/\.(png|jpg|jpeg|gif|webp|svg)/) || [null, 'png'])[1];
+      const fname = `web-${Date.now()}.${ext}`;
+      const outPath = path.join(downloadsDir, fname);
+      execSync(`curl -sL --max-time 15 ${authHeader}-o '${outPath}' '${url}'`, { timeout: 20000 });
+      const stat = fs.statSync(outPath);
+      if (stat.size < 100) {
+        fs.unlinkSync(outPath);
+        return `Error: downloaded file too small (${stat.size} bytes), likely not a valid image`;
+      }
+      const sizeFmt = stat.size < 1024 ? `${stat.size}B` : `${(stat.size / 1024).toFixed(0)}KB`;
+      return `Image downloaded and saved locally.\nPath: /artifacts/downloads/${fname}\nSize: ${sizeFmt}\nUse this path in HTML artifacts: <img src="/artifacts/downloads/${fname}">`;
     }
 
     // Try HTML-to-text conversion first, fall back to raw

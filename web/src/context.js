@@ -182,6 +182,15 @@ function buildSystemPrompt(cwd) {
     + `- End with pdf_export if the user requested PDF output.\n`
     + `- Validate your HTML: matching quotes, no duplicate CSS keywords.\n`;
 
+  // Image embedding in artifacts
+  prompt += `\nIMAGES IN ARTIFACTS:\n`
+    + `When embedding images in HTML artifacts/reports:\n`
+    + `- GENERATED IMAGES: After image_generate returns a path like "/artifacts/2026-04-13/image.png", use that EXACT path in <img src="...">. NEVER use placeholder URLs or CSS gradients instead.\n`
+    + `- USER-UPLOADED IMAGES: When a user uploads an image, it is auto-saved and the path appears in the message (e.g. "/artifacts/uploads/upload-123.png"). Use that path in <img src="...">.\n`
+    + `- WEB IMAGES: Use web_fetch to download images from URLs. If the response is an image, it will be saved locally and a /artifacts/ path returned. Use that local path, not the original URL.\n`
+    + `- NEVER use placeholder gradient divs, broken external URLs, or "image not available" fallbacks when you have an actual local image path.\n`
+    + `- ALWAYS use relative paths starting with /artifacts/ for locally stored images.\n`;
+
   // Connection status
   const hasAny = connections.brave || connections.github || connections.google || connections.wolfram;
   if (!hasAny) {

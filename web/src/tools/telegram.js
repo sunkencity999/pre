@@ -168,11 +168,23 @@ async function telegram(args) {
       const chunks = chunkMessage(text);
       let lastResult;
       for (const chunk of chunks) {
-        lastResult = await botRequest('sendMessage', {
-          chat_id: args.chat_id,
-          text: chunk,
-          parse_mode: parseMode,
-        });
+        try {
+          lastResult = await botRequest('sendMessage', {
+            chat_id: args.chat_id,
+            text: chunk,
+            parse_mode: parseMode,
+          });
+        } catch (err) {
+          // If Markdown parsing fails (unclosed formatting), retry without parse_mode
+          if (parseMode && err.message && err.message.includes("can't parse")) {
+            lastResult = await botRequest('sendMessage', {
+              chat_id: args.chat_id,
+              text: chunk,
+            });
+          } else {
+            throw err;
+          }
+        }
       }
       const plural = chunks.length > 1 ? ` (${chunks.length} messages)` : '';
       return `Message sent to chat ${lastResult.chat.id}${plural}! Message ID: ${lastResult.message_id}`;

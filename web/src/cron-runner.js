@@ -129,18 +129,18 @@ async function executeCronJob(job, { broadcastWS } = {}) {
 async function sendNotifications(job, sessionId, response) {
   const guiUrl = `http://localhost:${PORT}?session=${encodeURIComponent(sessionId)}`;
 
-  // Truncate response for notifications
-  const preview = response.length > 500
+  // Short preview for macOS notification (limited display space)
+  const macPreview = response.length > 500
     ? response.slice(0, 500) + '...'
     : response;
 
   // 1. macOS notification (always — it's local)
-  sendMacNotification(job.description, preview, guiUrl);
+  sendMacNotification(job.description, macPreview, guiUrl);
 
-  // 2. Telegram (if configured)
+  // 2. Telegram (if configured) — send full response, chunking handles the 4096 limit
   const conns = loadConnections();
   if (conns.telegram_key) {
-    sendTelegramNotification(job, preview).catch(err => {
+    sendTelegramNotification(job, response).catch(err => {
       console.log(`[cron-runner] Telegram notification failed: ${err.message}`);
     });
   }
