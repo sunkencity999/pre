@@ -184,6 +184,41 @@ function buildToolDefs() {
       id: { type: 'string', description: 'Contact ID (from search results)' },
       count: { type: 'integer', description: 'Max search results (default: 20)' },
     }, ['action']),
+
+    // Spotlight (mdfind — full-text search across the machine)
+    tool('spotlight', 'Search the entire Mac using Spotlight (mdfind). Finds files by name, content, or metadata. Can filter by file type and folder. Dramatically faster than manual file searches.', {
+      action: { type: 'string', description: 'Action: search|find_files|preview' },
+      query: { type: 'string', description: 'Search query (searches file names AND content)' },
+      folder: { type: 'string', description: 'Limit search to a specific folder path' },
+      type: { type: 'string', description: 'File type filter: pdf|image|audio|video|email|presentation|spreadsheet|document|text|code|app' },
+      path: { type: 'string', description: 'File path (for preview action — shows metadata)' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['action']),
+
+    // macOS Reminders (zero-config)
+    tool('apple_reminders', 'Create, list, complete, and search reminders using the macOS Reminders app. Works with any configured account (iCloud, Exchange). No API keys needed.', {
+      action: { type: 'string', description: 'Action: add|list|complete|search|list_lists|delete' },
+      title: { type: 'string', description: 'Reminder title (for add/complete)' },
+      notes: { type: 'string', description: 'Reminder notes/description' },
+      list: { type: 'string', description: 'Reminder list name (default: default list)' },
+      due: { type: 'string', description: 'Due date, e.g. "April 15, 2026 10:00:00 AM"' },
+      priority: { type: 'string', description: 'Priority: high|medium|low|none' },
+      id: { type: 'string', description: 'Reminder ID (from search/list results)' },
+      query: { type: 'string', description: 'Search query' },
+      count: { type: 'integer', description: 'Max results (default: 25)' },
+      completed: { type: 'boolean', description: 'Show completed reminders too (default: false)' },
+    }, ['action']),
+
+    // macOS Notes (zero-config)
+    tool('apple_notes', 'Search, read, and create notes using the macOS Notes app. Works with any configured account (iCloud, Google, Exchange). No API keys needed.', {
+      action: { type: 'string', description: 'Action: search|read|create|list_recent|list_folders' },
+      title: { type: 'string', description: 'Note title (for create/read)' },
+      body: { type: 'string', description: 'Note body content (for create)' },
+      folder: { type: 'string', description: 'Folder name (for create/list_recent)' },
+      query: { type: 'string', description: 'Search query (searches titles and content)' },
+      id: { type: 'string', description: 'Note ID (from search/list results)' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['action']),
   ];
 
   // Conditional: computer use (desktop automation)

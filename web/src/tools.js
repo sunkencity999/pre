@@ -80,6 +80,9 @@ const exportTool = require('./tools/export');
 const mailTool = require('./tools/mail');
 const calendarTool = require('./tools/calendar');
 const contactsTool = require('./tools/contacts');
+const spotlightTool = require('./tools/spotlight');
+const remindersTool = require('./tools/reminders');
+const notesTool = require('./tools/notes');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
 const browserTool = require('./tools/browser');
@@ -142,6 +145,12 @@ const ALIASES = {
   my_calendar: 'apple_calendar', today_events: 'apple_calendar', agenda: 'apple_calendar',
   find_contact: 'apple_contacts', lookup: 'apple_contacts', address_book: 'apple_contacts',
   people: 'apple_contacts', phone: 'apple_contacts',
+  mdfind: 'spotlight', find_file: 'spotlight', search_files_spotlight: 'spotlight',
+  file_search: 'spotlight', locate: 'spotlight',
+  reminder: 'apple_reminders', reminders: 'apple_reminders', todo: 'apple_reminders',
+  todos: 'apple_reminders', add_reminder: 'apple_reminders', tasks: 'apple_reminders',
+  note: 'apple_notes', notes: 'apple_notes', create_note: 'apple_notes',
+  search_notes: 'apple_notes', apple_note: 'apple_notes',
 };
 
 // Tools that require user confirmation before execution
@@ -155,6 +164,7 @@ const CONFIRM_ACTIONS = {
   zoom: new Set(['delete_meeting']),
   apple_mail: new Set(['send']),
   apple_calendar: new Set(['delete_event']),
+  apple_reminders: new Set(['delete']),
 };
 
 // Dispatch a tool call to its handler
@@ -317,6 +327,9 @@ async function executeTool(name, args, cwd, opts) {
     case 'apple_mail': return mailTool.mail(args);
     case 'apple_calendar': return calendarTool.calendar(args);
     case 'apple_contacts': return contactsTool.contacts(args);
+    case 'spotlight': return spotlightTool.spotlight(args);
+    case 'apple_reminders': return remindersTool.reminders(args);
+    case 'apple_notes': return notesTool.notes(args);
 
     // PDF Export (artifact → PDF via Puppeteer)
     case 'pdf_export': {
@@ -367,7 +380,7 @@ async function executeTool(name, args, cwd, opts) {
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
       }
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document, pdf_export, apple_mail, apple_calendar, apple_contacts`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document, pdf_export, apple_mail, apple_calendar, apple_contacts, spotlight, apple_reminders, apple_notes`;
   }
 }
 

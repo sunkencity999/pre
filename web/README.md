@@ -45,7 +45,7 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 
 - **Computer Use** — desktop automation via screenshot + mouse/keyboard control; the model sees your screen and operates any application
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
-- **Full tool execution** — 55+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
+- **Full tool execution** — 60+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
 - **Local image generation** — ComfyUI + Stable Diffusion XL on Apple Silicon GPU, inline image preview in chat
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
@@ -68,18 +68,25 @@ These tools work immediately with no setup — they use the native macOS apps an
 | **Mail** | Mail.app | Send, draft, search, read, list recent, list mailboxes, list accounts |
 | **Calendar** | Calendar.app | Today's events, this week, list events by range, create events, search, list calendars, delete events |
 | **Contacts** | Contacts.app | Search by name/org, read full contact details, list groups, count |
+| **Reminders** | Reminders.app | Add, list, complete, search, list lists, delete |
+| **Notes** | Notes.app | Search (title + content), read, create, list recent, list folders |
+| **Spotlight** | mdfind | Full-text search across entire machine, find files by type, file metadata preview |
 
 These work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. No OAuth flows, no API keys, no developer console. Just ask PRE to check your calendar or send an email.
 
 > "What's on my calendar today?"
 
-> "Send an email to sarah@company.com — subject: Q2 Report, body: Hi Sarah, the report is attached."
+> "Remind me to review the Q3 report on Friday"
+
+> "Search my notes for anything about the API migration"
+
+> "Find all PDFs in my Documents folder about Azure"
 
 > "Search my contacts for someone at Acme Corp"
 
-The Calendar tool uses a compiled EventKit binary for fast date-range queries (~50ms), even across many calendars. The binary is compiled on first use and cached at `/tmp/pre-cal-events`.
+The Calendar and Reminders tools use compiled EventKit binaries for fast queries (~50ms), even across many calendars/lists. Binaries are compiled on first use and cached at `/tmp/pre-cal-events` and `/tmp/pre-reminders`. Spotlight uses `mdfind` directly — the same engine behind Cmd+Space.
 
-**Note:** macOS will prompt for Automation permissions on first use (allow Terminal to control Mail/Calendar/Contacts). This is a one-time approval. Sending email requires user confirmation in the chat.
+**Note:** macOS will prompt for Automation permissions on first use (allow Terminal to control Mail/Calendar/Contacts/Notes/Reminders). This is a one-time approval. Sending email and deleting reminders require user confirmation in the chat.
 
 For advanced email features (threading, labels, batch operations, Drive/Docs), the Google OAuth integration is still available as an optional upgrade in Settings.
 
@@ -529,6 +536,9 @@ src/
     mail.js                macOS Mail.app (AppleScript, zero-config)
     calendar.js            macOS Calendar.app (EventKit via compiled Swift binary)
     contacts.js            macOS Contacts.app (AppleScript, zero-config)
+    spotlight.js           macOS Spotlight/mdfind (full-text file search)
+    reminders.js           macOS Reminders.app (EventKit via compiled Swift binary)
+    notes.js               macOS Notes.app (AppleScript, zero-config)
     image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)
     google.js              Gmail, Google Drive, Google Docs
