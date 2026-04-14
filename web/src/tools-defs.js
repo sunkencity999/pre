@@ -148,6 +148,42 @@ function buildToolDefs() {
     tool('experience_list', 'List all entries in the experience ledger (lessons from past tasks)', {}),
 
     tool('memory_health', 'Check the health of the memory system: staleness report, aging warnings, maintenance status', {}),
+
+    // macOS native apps (zero-config — works with whatever accounts are set up in macOS)
+    tool('apple_mail', 'Send, read, and search email using the macOS Mail app. Works with any configured email account (iCloud, Gmail, Exchange, Outlook). No API keys needed — uses the native mail client.', {
+      action: { type: 'string', description: 'Action: send|draft|search|read|list_recent|list_mailboxes|list_accounts' },
+      to: { type: 'string', description: 'Recipient email address' },
+      cc: { type: 'string', description: 'CC email address' },
+      bcc: { type: 'string', description: 'BCC email address' },
+      subject: { type: 'string', description: 'Email subject line' },
+      body: { type: 'string', description: 'Email body text' },
+      query: { type: 'string', description: 'Search query (subject or sender)' },
+      id: { type: 'string', description: 'Message ID (from search/list results)' },
+      mailbox: { type: 'string', description: 'Mailbox name (default: inbox)' },
+      account: { type: 'string', description: 'Account name filter (optional)' },
+      count: { type: 'integer', description: 'Max results (default: 15)' },
+    }, ['action']),
+
+    tool('apple_calendar', 'View and create calendar events using the macOS Calendar app. Works with any configured calendar (iCloud, Google, Exchange). No API keys needed.', {
+      action: { type: 'string', description: 'Action: today|week|list_events|create_event|search|list_calendars|delete_event' },
+      title: { type: 'string', description: 'Event title (for create_event)' },
+      start: { type: 'string', description: 'Start date/time, e.g. "April 15, 2026 10:00:00 AM"' },
+      end: { type: 'string', description: 'End date/time (defaults to 1 hour after start)' },
+      location: { type: 'string', description: 'Event location' },
+      notes: { type: 'string', description: 'Event notes/description' },
+      calendar: { type: 'string', description: 'Calendar name (optional — defaults to first calendar)' },
+      query: { type: 'string', description: 'Search query for event titles' },
+      days: { type: 'integer', description: 'Number of days to show (default: 7)' },
+      id: { type: 'string', description: 'Event UID (for delete_event)' },
+    }, ['action']),
+
+    tool('apple_contacts', 'Search and read contacts from the macOS Contacts app. Works with any synced account (iCloud, Google, Exchange). No API keys needed.', {
+      action: { type: 'string', description: 'Action: search|read|list_groups|count' },
+      query: { type: 'string', description: 'Search by name or organization' },
+      name: { type: 'string', description: 'Contact name to search or read' },
+      id: { type: 'string', description: 'Contact ID (from search results)' },
+      count: { type: 'integer', description: 'Max search results (default: 20)' },
+    }, ['action']),
   ];
 
   // Conditional: computer use (desktop automation)

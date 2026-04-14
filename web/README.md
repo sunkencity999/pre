@@ -59,9 +59,35 @@ Or let `pre-launch` start it automatically — the web GUI launches in the backg
 - **Auto-generated titles** — sessions are named from the first message
 - **Responsive** — three-panel desktop, hamburger drawer on mobile
 
-## Integrations
+## Native macOS Integrations (Zero Config)
 
-All integrations are configured through the Settings panel (gear icon in sidebar footer). Credentials are stored in `~/.pre/connections.json` and never exposed to the browser.
+These tools work immediately with no setup — they use the native macOS apps and whatever accounts you've already configured on your Mac.
+
+| Tool | App | Actions |
+|------|-----|---------|
+| **Mail** | Mail.app | Send, draft, search, read, list recent, list mailboxes, list accounts |
+| **Calendar** | Calendar.app | Today's events, this week, list events by range, create events, search, list calendars, delete events |
+| **Contacts** | Contacts.app | Search by name/org, read full contact details, list groups, count |
+
+These work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. No OAuth flows, no API keys, no developer console. Just ask PRE to check your calendar or send an email.
+
+> "What's on my calendar today?"
+
+> "Send an email to sarah@company.com — subject: Q2 Report, body: Hi Sarah, the report is attached."
+
+> "Search my contacts for someone at Acme Corp"
+
+The Calendar tool uses a compiled EventKit binary for fast date-range queries (~50ms), even across many calendars. The binary is compiled on first use and cached at `/tmp/pre-cal-events`.
+
+**Note:** macOS will prompt for Automation permissions on first use (allow Terminal to control Mail/Calendar/Contacts). This is a one-time approval. Sending email requires user confirmation in the chat.
+
+For advanced email features (threading, labels, batch operations, Drive/Docs), the Google OAuth integration is still available as an optional upgrade in Settings.
+
+---
+
+## Cloud Integrations
+
+All cloud integrations are configured through the Settings panel (gear icon in sidebar footer). Credentials are stored in `~/.pre/connections.json` and never exposed to the browser.
 
 | Service | Auth | Actions |
 |---------|------|---------|
@@ -500,6 +526,9 @@ src/
     system.js              17 system tools (info, processes, clipboard, etc.)
     artifact.js            Interactive HTML artifacts
     export.js              Artifact sharing (PDF, PNG, self-contained HTML via Puppeteer)
+    mail.js                macOS Mail.app (AppleScript, zero-config)
+    calendar.js            macOS Calendar.app (EventKit via compiled Swift binary)
+    contacts.js            macOS Contacts.app (AppleScript, zero-config)
     image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)
     google.js              Gmail, Google Drive, Google Docs

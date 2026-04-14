@@ -77,6 +77,9 @@ const slackTool = require('./tools/slack');
 const sharepointTool = require('./tools/sharepoint');
 const imageTool = require('./tools/image');
 const exportTool = require('./tools/export');
+const mailTool = require('./tools/mail');
+const calendarTool = require('./tools/calendar');
+const contactsTool = require('./tools/contacts');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
 const browserTool = require('./tools/browser');
@@ -133,6 +136,12 @@ const ALIASES = {
   asana_task: 'asana', task_manager: 'asana', asana_search: 'asana',
   export_pdf: 'pdf_export', share_pdf: 'pdf_export', artifact_pdf: 'pdf_export',
   export_artifact: 'pdf_export', share: 'pdf_export',
+  send_mail: 'apple_mail', email_send: 'apple_mail', read_mail: 'apple_mail',
+  inbox: 'apple_mail', mailbox: 'apple_mail',
+  events: 'apple_calendar', schedule_event: 'apple_calendar', create_event: 'apple_calendar',
+  my_calendar: 'apple_calendar', today_events: 'apple_calendar', agenda: 'apple_calendar',
+  find_contact: 'apple_contacts', lookup: 'apple_contacts', address_book: 'apple_contacts',
+  people: 'apple_contacts', phone: 'apple_contacts',
 };
 
 // Tools that require user confirmation before execution
@@ -144,6 +153,8 @@ const CONFIRM_TOOLS = new Set([
 const CONFIRM_ACTIONS = {
   sharepoint: new Set(['delete_file']),
   zoom: new Set(['delete_meeting']),
+  apple_mail: new Set(['send']),
+  apple_calendar: new Set(['delete_event']),
 };
 
 // Dispatch a tool call to its handler
@@ -302,6 +313,11 @@ async function executeTool(name, args, cwd, opts) {
         + (summary.oldestStale ? `\nOldest stale: "${summary.oldestStale.name}" (${summary.oldestStale.verifiedAge}d)` : '');
     }
 
+    // macOS native Mail, Calendar, Contacts (zero-config)
+    case 'apple_mail': return mailTool.mail(args);
+    case 'apple_calendar': return calendarTool.calendar(args);
+    case 'apple_contacts': return contactsTool.contacts(args);
+
     // PDF Export (artifact → PDF via Puppeteer)
     case 'pdf_export': {
       // Find the artifact to export — by title search or explicit path
@@ -351,7 +367,7 @@ async function executeTool(name, args, cwd, opts) {
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
       }
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document, pdf_export, apple_mail, apple_calendar, apple_contacts`;
   }
 }
 
