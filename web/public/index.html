@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PRE — Personal Reasoning Engine</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300..800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/base.css">
   <link rel="stylesheet" href="css/themes.css">
   <link rel="stylesheet" href="css/chat.css">
@@ -109,6 +112,42 @@
                 <span>Gemini</span>
                 <span class="delegate-status" data-delegate="gemini"></span>
               </button>
+            </div>
+          </div>
+          <div id="research-selector" class="research-selector">
+            <button type="button" id="research-btn" class="btn btn-icon btn-research" title="Toggle Deep Research mode">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 1a.5.5 0 0 0 0 1h1v2.379L4.03 8.607A2.5 2.5 0 0 0 3.5 10.1V13.5A1.5 1.5 0 0 0 5 15h6a1.5 1.5 0 0 0 1.5-1.5V10.1a2.5 2.5 0 0 0-.53-1.493L9.5 4.379V2h1a.5.5 0 0 0 0-1h-5zM8.5 4.586L10.94 8H5.06L7.5 4.586V2h1v2.586zM4.5 10.1c0-.212.052-.42.15-.607L5.06 9h5.88l.41.493c.098.187.15.395.15.607V13.5a.5.5 0 0 1-.5.5H5a.5.5 0 0 1-.5-.5V10.1z"/></svg>
+            </button>
+            <div id="research-dropdown" class="research-dropdown hidden">
+              <div class="research-dropdown-header">Deep Research</div>
+              <label class="research-option">
+                <input type="radio" name="research-synth" value="local" checked>
+                <span class="research-option-text">
+                  <strong>Multi-pass local</strong>
+                  <small>Draft, critique, revise — all on-device</small>
+                </span>
+              </label>
+              <label class="research-option">
+                <input type="radio" name="research-synth" value="claude">
+                <span class="research-option-text">
+                  <strong>Frontier: Claude</strong>
+                  <small>Deep thinking synthesis via Claude</small>
+                </span>
+              </label>
+              <label class="research-option">
+                <input type="radio" name="research-synth" value="codex">
+                <span class="research-option-text">
+                  <strong>Frontier: Codex</strong>
+                  <small>Synthesis via OpenAI Codex</small>
+                </span>
+              </label>
+              <label class="research-option">
+                <input type="radio" name="research-synth" value="gemini">
+                <span class="research-option-text">
+                  <strong>Frontier: Gemini</strong>
+                  <small>Synthesis via Google Gemini</small>
+                </span>
+              </label>
             </div>
           </div>
           <textarea id="chat-input" class="chat-input" placeholder="Message PRE..." rows="1" autofocus></textarea>

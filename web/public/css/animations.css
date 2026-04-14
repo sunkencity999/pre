@@ -1,4 +1,31 @@
 /* PRE Web GUI — Transitions, loading states, animations */
+/* 2026 refresh: micro-interactions, kinetic type, organic motion */
+
+/* ═══ Respect user motion preferences ═══ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ═══ Message & element entrance ═══ */
+
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.005);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
 
 @keyframes fadeSlideIn {
   from {
@@ -22,8 +49,67 @@
   }
 }
 
+@keyframes toolCardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scaleY(0.95);
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+    max-height: 500px;
+  }
+}
+
+@keyframes cardPopIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ═══ Streaming cursor ═══ */
+
+@keyframes cursorBlink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Legacy alias */
 @keyframes blink {
   50% { opacity: 0; }
+}
+
+/* ═══ Thinking / breathing indicators ═══ */
+
+@keyframes breathe {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+}
+
+@keyframes thinkingWave {
+  0%, 80%, 100% {
+    transform: scaleY(0.4);
+    opacity: 0.3;
+  }
+  40% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
 }
 
 @keyframes pulse {
@@ -31,11 +117,12 @@
   50% { opacity: 0.5; }
 }
 
+/* ═══ Spinners ═══ */
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
 
-/* Loading spinner */
 .spinner {
   width: 20px;
   height: 20px;
@@ -45,25 +132,22 @@
   animation: spin 0.8s linear infinite;
 }
 
-/* Thinking dots animation */
-.thinking-dots::after {
-  content: '';
-  animation: thinkingDots 1.5s infinite;
+/* ═══ Send button states ═══ */
+
+@keyframes sendPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(0.85); }
+  100% { transform: scale(1); }
 }
 
-@keyframes thinkingDots {
-  0% { content: ''; }
-  25% { content: '.'; }
-  50% { content: '..'; }
-  75% { content: '...'; }
+@keyframes sendSuccess {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.15); }
+  100% { transform: scale(1); }
 }
 
-/* Smooth theme transition */
-html {
-  transition: background-color 0.4s ease;
-}
+/* ═══ Skeleton loading ═══ */
 
-/* Skeleton loading */
 .skeleton {
   background: linear-gradient(
     90deg,
@@ -81,3 +165,102 @@ html {
   100% { background-position: -200% 0; }
 }
 
+/* ═══ Welcome screen kinetic type ═══ */
+
+@keyframes logoReveal {
+  from {
+    opacity: 0;
+    letter-spacing: 20px;
+    filter: blur(8px);
+  }
+  60% {
+    opacity: 1;
+    letter-spacing: 8px;
+    filter: blur(0);
+  }
+  to {
+    opacity: 1;
+    letter-spacing: 6px;
+    filter: blur(0);
+  }
+}
+
+@keyframes subtitleFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 0.8;
+    transform: translateY(0);
+  }
+}
+
+@keyframes taglineFadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ═══ Notification / toast entrance ═══ */
+
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ═══ Status dot pulse ═══ */
+
+@keyframes statusPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(74, 222, 128, 0);
+  }
+}
+
+/* ═══ Agent status ═══ */
+
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ═══ Progress bar shimmer ═══ */
+
+@keyframes progressShimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+/* ═══ Thinking dots (legacy) ═══ */
+
+.thinking-dots::after {
+  content: '';
+  animation: thinkingDots 1.5s infinite;
+}
+
+@keyframes thinkingDots {
+  0% { content: ''; }
+  25% { content: '.'; }
+  50% { content: '..'; }
+  75% { content: '...'; }
+}
+
+/* ═══ Theme transition ═══ */
+
+html {
+  transition: background-color 0.4s ease;
+}

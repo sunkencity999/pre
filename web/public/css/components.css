@@ -6,7 +6,7 @@
   justify-content: center;
   gap: 6px;
   padding: 8px 16px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid transparent;
   font-family: inherit;
   font-size: 0.85rem;
@@ -60,8 +60,12 @@
 
 .btn-send {
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: 10px;
   min-width: 36px;
+  transition: all 0.15s ease, transform 0.15s ease;
+}
+.btn-send:active {
+  animation: sendPulse 0.3s ease;
 }
 
 /* Panel header */
@@ -94,13 +98,13 @@
 
 .toast {
   padding: 12px 20px;
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
   font-size: 0.85rem;
-  box-shadow: 0 4px 20px var(--shadow);
-  animation: slideInRight 0.3s ease;
+  box-shadow: 0 4px 24px var(--shadow);
+  animation: toastSlideIn 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .toast.error {
   border-color: var(--danger);
@@ -126,7 +130,7 @@
 .confirm-dialog {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 24px;
   max-width: 480px;
   width: 90%;
@@ -180,10 +184,11 @@
   max-width: 800px;
   margin: 12px auto;
   border: 1px solid var(--primary);
-  border-radius: 10px;
+  border-radius: 14px;
   overflow: hidden;
   background: var(--surface);
-  box-shadow: 0 0 12px rgba(108, 180, 238, 0.1);
+  box-shadow: 0 4px 16px rgba(108, 180, 238, 0.1);
+  animation: cardPopIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .artifact-card-header {
   display: flex;
@@ -225,9 +230,10 @@
   max-width: 420px;
   margin: 12px auto;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   overflow: hidden;
   background: var(--surface);
+  animation: cardPopIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .document-card-header {
   display: flex;
@@ -272,10 +278,11 @@
 .image-card {
   max-width: 600px;
   margin: 12px 0;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--surface);
   overflow: hidden;
+  animation: cardPopIn 0.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .image-card-preview {
   position: relative;
@@ -326,11 +333,14 @@
 
 .connection-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   padding: 14px 16px;
   margin-bottom: 8px;
   background: var(--surface);
-  transition: border-color 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.connection-card:hover {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 }
 .connection-card.active {
   border-color: var(--success);

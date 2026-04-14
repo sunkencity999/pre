@@ -13,6 +13,8 @@ const DELEGATES = {
     command: 'claude',
     // -p = print mode, --output-format text = plain text, --tools "" = no tool use
     buildArgs: (prompt) => ['-p', prompt, '--output-format', 'text', '--tools', ''],
+    // For large prompts: pass via stdin to avoid OS ARG_MAX limits
+    buildStdinArgs: () => ['-p', '-', '--output-format', 'text', '--tools', ''],
     icon: 'C',
     color: '#cc785c',
   },
@@ -136,7 +138,12 @@ function execute(target, prompt, { onToken, signal, timeout = 300000 } = {}) {
       return reject(new Error(`${config.name} CLI not installed. Install with: ${getInstallHint(target)}`));
     }
 
-    const args = config.buildArgs(prompt);
+    // Use stdin for large prompts to avoid OS ARG_MAX limits (~256KB on macOS).
+    // The prompt data in research mode can be 40KB+ of gathered findings.
+    const STDIN_THRESHOLD = 50000; // bytes — use stdin for prompts over 50KB
+    const useStdin = prompt.length > STDIN_THRESHOLD && config.buildStdinArgs;
+    const args = useStdin ? config.buildStdinArgs() : config.buildArgs(prompt);
+
     const startTime = Date.now();
     let output = '';
     let timedOut = false;
@@ -180,6 +187,13 @@ function execute(target, prompt, { onToken, signal, timeout = 300000 } = {}) {
       const duration = Date.now() - startTime;
 
       if (timedOut) {
+        // If we have partial output, don't reject — return what we have
+        if (output.length > 1000) {
+          let cleaned = stripAnsi(output).trim();
+          if (config.cleanOutput) cleaned = config.cleanOutput(cleaned);
+          console.log(`[delegate] ${config.name} timed out after ${Math.round(timeout / 1000)}s but has ${cleaned.length} chars of partial output`);
+          return resolve({ response: cleaned, duration, partial: true });
+        }
         return reject(new Error(`${config.name} timed out after ${Math.round(timeout / 1000)}s`));
       }
 
@@ -211,8 +225,13 @@ function execute(target, prompt, { onToken, signal, timeout = 300000 } = {}) {
       reject(new Error(`Failed to start ${config.name}: ${err.message}`));
     });
 
-    // Close stdin immediately
-    child.stdin.end();
+    // Write prompt to stdin for large prompts, then close
+    if (useStdin) {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } else {
+      child.stdin.end();
+    }
   });
 }
 

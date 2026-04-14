@@ -22,9 +22,10 @@ const AGENT_TOOLS = [
  * @param {object} args - { task, tools_allowed }
  * @param {string} cwd - working directory
  * @param {Function} onStatus - callback for status updates
+ * @param {object} [overrides] - { maxTurns, allowedTools, systemPrompt } for research mode
  * @returns {string} result summary
  */
-async function spawnAgent(args, cwd, onStatus) {
+async function spawnAgent(args, cwd, onStatus, overrides) {
   const { task } = args;
   if (!task) return 'Error: task description is required';
 
@@ -42,7 +43,7 @@ async function spawnAgent(args, cwd, onStatus) {
   if (onStatus) onStatus({ type: 'agent_started', id, task });
 
   try {
-    const result = await runAgent(agent, cwd, onStatus);
+    const result = await runAgent(agent, cwd, onStatus, overrides);
     agent.status = 'completed';
     agent.result = result;
     agent.completedAt = Date.now();
@@ -59,9 +60,13 @@ async function spawnAgent(args, cwd, onStatus) {
 
 /**
  * Run the agent's internal loop — single-turn or multi-turn with tools
+ * @param {object} agent
+ * @param {string} cwd
+ * @param {Function} onStatus
+ * @param {object} [overrides] - { maxTurns, allowedTools, systemPrompt }
  */
-async function runAgent(agent, cwd, onStatus) {
-  const systemPrompt = `You are a research sub-agent spawned by PRE (Personal Reasoning Engine). Your task is to complete the following assignment and return a concise, factual summary of your findings.
+async function runAgent(agent, cwd, onStatus, overrides) {
+  const systemPrompt = (overrides && overrides.systemPrompt) || `You are a research sub-agent spawned by PRE (Personal Reasoning Engine). Your task is to complete the following assignment and return a concise, factual summary of your findings.
 
 RULES:
 - Focus only on the assigned task
@@ -71,8 +76,9 @@ RULES:
 - Do NOT ask follow-up questions — complete the task autonomously
 - Maximum 10 tool calls`;
 
+  const allowedTools = (overrides && overrides.allowedTools) || AGENT_TOOLS;
   const tools = buildToolDefs().filter(t =>
-    AGENT_TOOLS.includes(t.function?.name) || t.function?.name?.startsWith('mcp__')
+    allowedTools.includes(t.function?.name) || t.function?.name?.startsWith('mcp__')
   );
 
   const messages = [
@@ -80,7 +86,7 @@ RULES:
     { role: 'user', content: agent.task },
   ];
 
-  const MAX_TURNS = 10;
+  const MAX_TURNS = (overrides && overrides.maxTurns) || 10;
   let turn = 0;
 
   while (turn < MAX_TURNS) {

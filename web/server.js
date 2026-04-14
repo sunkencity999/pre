@@ -27,6 +27,7 @@ const {
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
 const { executeCronJob, checkMissedJobs } = require('./src/cron-runner');
+const { runDeepResearch } = require('./src/research');
 const delegate = require('./src/tools/delegate');
 const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
@@ -638,8 +639,37 @@ wss.on('connection', (ws) => {
       }
       appendMessage(sessionId, userMsg);
 
-      // Run the full tool loop
+      // Helper to send WS events safely
+      const wsSend = (event) => {
+        if (ws.readyState === 1) ws.send(JSON.stringify(event));
+      };
+
       abortController = new AbortController();
+
+      // ── Deep Research mode ──
+      if (msg.researchMode) {
+        const frontier = msg.useFrontier || false;
+        console.log(`[ws] Deep Research mode for: ${userContent.slice(0, 80)}... (frontier: ${frontier || 'off'})`);
+        try {
+          await runDeepResearch({
+            sessionId,
+            query: userContent,
+            cwd: CWD,
+            send: wsSend,
+            signal: abortController.signal,
+            useFrontier: frontier,
+          });
+        } catch (err) {
+          if (err.message !== 'Research cancelled' && ws.readyState === 1) {
+            ws.send(JSON.stringify({ type: 'error', message: err.message }));
+          }
+          wsSend({ type: 'done', stats: {}, context: { used: 0, max: 0, pct: 0 } });
+        }
+        abortController = null;
+        return;
+      }
+
+      // ── Normal tool loop ──
       try {
         await runToolLoop({
           sessionId,
@@ -647,11 +677,7 @@ wss.on('connection', (ws) => {
           signal: abortController.signal,
           userMessage: needsTitle ? userContent : null,
           needsTitle,
-          send: (event) => {
-            if (ws.readyState === 1) {
-              ws.send(JSON.stringify(event));
-            }
-          },
+          send: wsSend,
           onConfirmRequest: (id, toolName, toolArgs) => {
             return new Promise((resolve) => {
               pendingConfirms.set(id, resolve);

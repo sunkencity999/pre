@@ -172,12 +172,28 @@ const Chat = (() => {
   }
 
   /**
+   * Strip <tool_call> blocks from display text.
+   * The server parses and executes these — they shouldn't be shown to the user.
+   */
+  function stripToolCallDisplay(text) {
+    // Remove complete <tool_call>...</tool_call> blocks
+    let cleaned = text.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '');
+    // Hide unclosed <tool_call> blocks (still streaming)
+    const unclosedIdx = cleaned.indexOf('<tool_call>');
+    if (unclosedIdx !== -1) {
+      cleaned = cleaned.slice(0, unclosedIdx);
+    }
+    return cleaned.trim();
+  }
+
+  /**
    * Append a token to the streaming message
    */
   function appendToken(content) {
     if (!currentStreamEl) return;
     streamContent += content;
-    currentStreamEl.innerHTML = Markdown.render(streamContent);
+    const displayContent = stripToolCallDisplay(streamContent);
+    currentStreamEl.innerHTML = Markdown.render(displayContent);
     scrollToBottom();
     setTypingIndicator('Generating...');
   }
@@ -204,6 +220,12 @@ const Chat = (() => {
 
     // Remove streaming cursor
     currentStreamEl.classList.remove('streaming-cursor');
+
+    // Final cleanup: strip any <tool_call> blocks from rendered content
+    if (streamContent.includes('<tool_call>')) {
+      const cleaned = stripToolCallDisplay(streamContent);
+      currentStreamEl.innerHTML = Markdown.render(cleaned);
+    }
 
     // Close thinking details
     const thinkBlock = document.getElementById('stream-thinking');
@@ -449,16 +471,63 @@ const Chat = (() => {
     for (const msg of messages) {
       if (msg.role === 'system') continue;
       if (msg.role === 'tool') {
-        // Show tool results as collapsed cards
-        const container2 = messagesEl();
-        const card = document.createElement('div');
-        card.className = 'tool-card';
-        card.style.maxWidth = '800px';
-        card.style.margin = '0 auto 8px';
-        const preview = msg.content.slice(0, 300);
-        card.innerHTML = `<div class="tool-card-header"><span>Tool Result</span></div>
-          <div class="tool-card-body"><pre><code>${Markdown.escapeHtml(preview)}${msg.content.length > 300 ? '...' : ''}</code></pre></div>`;
-        container2.appendChild(card);
+        // Parse <tool_response> tags for rich rendering of images/artifacts/documents
+        const responses = msg.content.match(/<tool_response\s+name="([^"]+)">([\s\S]*?)<\/tool_response>/g) || [];
+        let renderedRich = false;
+
+        for (const tr of responses) {
+          const nameMatch = tr.match(/<tool_response\s+name="([^"]+)">/);
+          const bodyMatch = tr.match(/<tool_response[^>]*>([\s\S]*?)<\/tool_response>/);
+          const toolName = nameMatch ? nameMatch[1] : '';
+          const body = bodyMatch ? bodyMatch[1].trim() : '';
+
+          // Image generation → image card
+          if (toolName === 'image_generate') {
+            const pathMatch = body.match(/View at: (\/artifacts\/[^\s]+)/);
+            if (pathMatch) {
+              const promptMatch = body.match(/^Image generated:.*?([^\/]+)\.\w+$/m);
+              addImageCard(promptMatch ? promptMatch[1].replace(/_/g, ' ') : '', pathMatch[1]);
+              renderedRich = true;
+              continue;
+            }
+          }
+
+          // Artifact → artifact card
+          if (toolName === 'artifact') {
+            const pathMatch = body.match(/View at: (\/artifacts\/[^\s]+)/);
+            if (pathMatch) {
+              const titleMatch = body.match(/Artifact saved: .+\/([^\/]+)\.\w+/);
+              addArtifactCard(titleMatch ? decodeURIComponent(titleMatch[1]).replace(/_/g, ' ') : 'Artifact', pathMatch[1], 'html');
+              renderedRich = true;
+              continue;
+            }
+          }
+
+          // Document → document card
+          if (toolName === 'document') {
+            const pathMatch = body.match(/Download: (\/artifacts\/[^\s]+)/);
+            if (pathMatch) {
+              const ext = pathMatch[1].split('.').pop() || 'txt';
+              const titleMatch = body.match(/Document created: ([^(]+)/);
+              addDocumentCard(titleMatch ? titleMatch[1].trim() : 'Document', pathMatch[1], ext);
+              renderedRich = true;
+              continue;
+            }
+          }
+        }
+
+        // Fallback: show as generic tool result card if no rich cards were rendered
+        if (!renderedRich) {
+          const container2 = messagesEl();
+          const card = document.createElement('div');
+          card.className = 'tool-card';
+          card.style.maxWidth = '800px';
+          card.style.margin = '0 auto 8px';
+          const preview = msg.content.slice(0, 300);
+          card.innerHTML = `<div class="tool-card-header"><span>Tool Result</span></div>
+            <div class="tool-card-body"><pre><code>${Markdown.escapeHtml(preview)}${msg.content.length > 300 ? '...' : ''}</code></pre></div>`;
+          container2.appendChild(card);
+        }
         continue;
       }
       addMessage(msg.role, msg.content, {

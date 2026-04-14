@@ -135,6 +135,88 @@ function healthCheck() {
 }
 
 /**
+ * Repair common JSON issues from model output.
+ * Models often output literal newlines, tabs, and unescaped control chars
+ * inside JSON string values instead of proper escape sequences.
+ */
+function repairJSON(str) {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+
+    if (escaped) {
+      result += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      result += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      result += ch;
+      continue;
+    }
+
+    if (inString) {
+      if (ch === '\n') { result += '\\n'; continue; }
+      if (ch === '\r') { result += '\\r'; continue; }
+      if (ch === '\t') { result += '\\t'; continue; }
+    }
+
+    result += ch;
+  }
+
+  return result;
+}
+
+/**
+ * Fix Python-style triple-quoted strings in JSON.
+ * Models sometimes output """...""" for multiline string values.
+ */
+function fixTripleQuotes(str) {
+  if (!str.includes('"""')) return str;
+  return str.replace(/"""([\s\S]*?)"""/g, (_match, inner) => {
+    const escaped = inner
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')
+      .replace(/\t/g, '\\t');
+    return '"' + escaped + '"';
+  });
+}
+
+/**
+ * Try to parse JSON, falling back to repaired JSON on failure.
+ */
+function safeParseJSON(str) {
+  try {
+    return JSON.parse(str);
+  } catch {
+    // Try repairing literal newlines/tabs in string values
+    try {
+      return JSON.parse(repairJSON(str));
+    } catch {
+      // Try fixing triple quotes (Python-style multiline) + newlines
+      try {
+        return JSON.parse(repairJSON(fixTripleQuotes(str)));
+      } catch (err) {
+        console.log(`[tool-parse] JSON repair failed: ${err.message.slice(0, 100)}`);
+        return null;
+      }
+    }
+  }
+}
+
+/**
  * Parse <tool_call> tags from model text output.
  * Fallback for when model outputs tool calls as text instead of native API.
  * Returns array of tool calls in Ollama format, or null if none found.
@@ -176,9 +258,9 @@ function parseTextToolCalls(text) {
       scan = scan.slice(end + 1);
     }
 
-    // Parse the JSON
-    try {
-      const obj = JSON.parse(body);
+    // Parse the JSON (with repair fallback for literal newlines in strings)
+    const obj = safeParseJSON(body);
+    if (obj) {
       const name = obj.name;
       const args = obj.arguments || obj.parameters || obj.params || {};
       // If no nested args object, treat all non-name keys as args
@@ -196,9 +278,6 @@ function parseTextToolCalls(text) {
           function: { name, arguments: finalArgs },
         });
       }
-    } catch {
-      // Try to find raw JSON without tags
-      continue;
     }
   }
 
@@ -206,17 +285,15 @@ function parseTextToolCalls(text) {
   if (calls.length === 0 && text.includes('"name"') && (text.includes('"arguments"') || text.includes('"parameters"'))) {
     const jsonMatch = text.match(/\{[^{}]*"name"\s*:\s*"[^"]+?"[^{}]*(?:"arguments"|"parameters"|"params")\s*:\s*\{[\s\S]*?\}\s*\}/);
     if (jsonMatch) {
-      try {
-        const obj = JSON.parse(jsonMatch[0]);
-        if (obj.name) {
-          calls.push({
-            function: {
-              name: obj.name,
-              arguments: obj.arguments || obj.parameters || obj.params || {},
-            },
-          });
-        }
-      } catch {}
+      const obj = safeParseJSON(jsonMatch[0]);
+      if (obj && obj.name) {
+        calls.push({
+          function: {
+            name: obj.name,
+            arguments: obj.arguments || obj.parameters || obj.params || {},
+          },
+        });
+      }
     }
   }
 
@@ -280,4 +357,4 @@ function embed(input) {
   });
 }
 
-module.exports = { streamChat, healthCheck, parseTextToolCalls, stripToolCallText, embed };
+module.exports = { streamChat, healthCheck, parseTextToolCalls, stripToolCallText, embed, safeParseJSON };

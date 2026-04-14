@@ -18,6 +18,11 @@ const CONNECTIONS_FILE = path.join(PRE_DIR, 'connections.json');
 const COMFYUI_FILE = path.join(PRE_DIR, 'comfyui.json');
 const CRON_FILE = path.join(PRE_DIR, 'cron.json');
 
+// Deep Research mode constants
+const RESEARCH_AGENT_MAX_TURNS = 20;   // Each research sub-agent gets more turns than normal
+const RESEARCH_MAX_SECTIONS = 8;       // Max sections in a research outline
+const RESEARCH_MAX_SOURCES = 5;        // Sources to gather per section
+
 module.exports = {
   PRE_DIR,
   MODEL,
@@ -30,4 +35,7 @@ module.exports = {
   CONNECTIONS_FILE,
   COMFYUI_FILE,
   CRON_FILE,
+  RESEARCH_AGENT_MAX_TURNS,
+  RESEARCH_MAX_SECTIONS,
+  RESEARCH_MAX_SOURCES,
 };

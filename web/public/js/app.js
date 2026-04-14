@@ -13,6 +13,11 @@
   // ── Delegate (frontier AI) state ──
   let currentDelegate = 'local'; // 'local', 'claude', 'codex', 'gemini'
   let delegateAvailability = {}; // populated on connect
+
+  // ── Deep Research mode ──
+  let researchMode = false;
+  let researchFrontier = false; // false = local multi-pass, or 'claude'/'codex'/'gemini'
+  let researchProgressEl = null; // tracks the current progress card in the chat
   function setCurrentSession(id) {
     currentSession = id;
     if (id) sessionStorage.setItem('pre-session', id);
@@ -121,6 +126,11 @@
         break;
       }
 
+      // ── Deep Research events ──
+      case 'research_status':
+        handleResearchStatus(msg);
+        break;
+
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
@@ -140,6 +150,7 @@
       const dRes = await fetch('/api/delegates');
       delegateAvailability = await dRes.json();
       initDelegateSelector();
+      initResearchOptions();
     } catch {}
 
     // Load session list first so we can pick the most recent if needed
@@ -348,6 +359,12 @@
         return `<file name="${f.name}">\n\`\`\`${ext}\n${f.text}\n\`\`\`\n</file>`;
       }).join('\n\n');
       wsMsg.content = fileBlocks + (wsMsg.content ? '\n\n' + wsMsg.content : '');
+    }
+
+    // Attach research mode flags if active
+    if (researchMode) {
+      wsMsg.researchMode = true;
+      if (researchFrontier) wsMsg.useFrontier = researchFrontier;
     }
 
     // Send to server — delegate or local
@@ -616,6 +633,220 @@
       o.classList.toggle('active', o.dataset.target === target);
     });
   });
+
+  // ── Research mode toggle + dropdown ──
+  const researchBtn = document.getElementById('research-btn');
+  const researchDropdown = document.getElementById('research-dropdown');
+
+  function updateResearchPlaceholder() {
+    if (researchMode) {
+      const label = researchFrontier
+        ? `Deep Research (${researchFrontier}): ask a research question...`
+        : 'Deep Research (local multi-pass): ask a research question...';
+      input.placeholder = label;
+    } else {
+      if (currentDelegate !== 'local') {
+        input.placeholder = `Message ${DELEGATE_NAMES[currentDelegate]}...`;
+      } else {
+        input.placeholder = 'Message PRE...';
+      }
+    }
+  }
+
+  // Click the flask: toggle research on/off
+  researchBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (researchMode) {
+      // Turn off — hide dropdown too
+      researchMode = false;
+      researchBtn.classList.remove('research-active');
+      researchDropdown.classList.add('hidden');
+      updateResearchPlaceholder();
+    } else {
+      // Turn on — show dropdown for settings
+      researchMode = true;
+      researchBtn.classList.add('research-active');
+      researchDropdown.classList.remove('hidden');
+      updateResearchPlaceholder();
+    }
+  });
+
+  // Right-click the flask: open settings without toggling
+  researchBtn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (researchMode) {
+      researchDropdown.classList.toggle('hidden');
+    }
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (!researchDropdown.contains(e.target) && e.target !== researchBtn) {
+      researchDropdown.classList.add('hidden');
+    }
+  });
+
+  // Handle radio selection in dropdown
+  researchDropdown.addEventListener('change', (e) => {
+    if (e.target.name === 'research-synth') {
+      const val = e.target.value;
+      researchFrontier = val === 'local' ? false : val;
+      updateResearchPlaceholder();
+    }
+  });
+
+  // On WS connect, hide unavailable frontier options
+  function initResearchOptions() {
+    const frontierModels = ['claude', 'codex', 'gemini'];
+    for (const model of frontierModels) {
+      const radio = researchDropdown.querySelector(`input[value="${model}"]`);
+      if (!radio) continue;
+      const label = radio.closest('.research-option');
+      if (!label) continue;
+      const available = delegateAvailability[model]?.available;
+      if (!available) {
+        label.style.display = 'none';
+        radio.disabled = true;
+      } else {
+        label.style.display = '';
+        radio.disabled = false;
+      }
+    }
+  }
+
+  // ── Research progress handler ──
+  function handleResearchStatus(msg) {
+    const messagesContainer = document.getElementById('messages');
+
+    switch (msg.phase) {
+      case 'starting':
+        // Create the research progress card
+        researchProgressEl = document.createElement('div');
+        researchProgressEl.className = 'research-progress';
+        researchProgressEl.innerHTML = `
+          <div class="research-progress-header">
+            <div class="research-progress-spinner"></div>
+            <span>Deep Research</span>
+          </div>
+          <div class="research-progress-bar"><div class="research-progress-fill" style="width:5%"></div></div>
+          <div class="research-progress-status">${msg.message}</div>
+          <ul class="research-progress-sections"></ul>
+        `;
+        messagesContainer.appendChild(researchProgressEl);
+        Chat.scrollToBottom();
+        break;
+
+      case 'outline_done': {
+        if (!researchProgressEl) break;
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = '15%';
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) status.textContent = msg.message;
+        // Populate section list
+        const list = researchProgressEl.querySelector('.research-progress-sections');
+        if (list && msg.sections) {
+          list.innerHTML = msg.sections.map(s =>
+            `<li><span class="research-section-check">-</span> ${s}</li>`
+          ).join('');
+        }
+        Chat.scrollToBottom();
+        break;
+      }
+
+      case 'gather_section': {
+        if (!researchProgressEl) break;
+        const total = msg.total || 1;
+        const pct = 15 + Math.round((msg.current - 1) / total * 60);
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = `${pct}%`;
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) status.textContent = msg.message;
+        // Mark current section as active
+        const items = researchProgressEl.querySelectorAll('.research-progress-sections li');
+        items.forEach((li, i) => {
+          li.className = i < msg.current - 1 ? 'done' : i === msg.current - 1 ? 'active' : '';
+          const check = li.querySelector('.research-section-check');
+          if (check) check.textContent = i < msg.current - 1 ? '\u2713' : i === msg.current - 1 ? '\u25B6' : '-';
+        });
+        Chat.scrollToBottom();
+        break;
+      }
+
+      case 'gather_section_done': {
+        if (!researchProgressEl) break;
+        const total = msg.total || 1;
+        const pct = 15 + Math.round(msg.current / total * 60);
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = `${pct}%`;
+        // Mark section done
+        const items = researchProgressEl.querySelectorAll('.research-progress-sections li');
+        if (items[msg.current - 1]) {
+          items[msg.current - 1].className = 'done';
+          const check = items[msg.current - 1].querySelector('.research-section-check');
+          if (check) check.textContent = '\u2713';
+        }
+        break;
+      }
+
+      case 'synthesize': {
+        if (!researchProgressEl) break;
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = '80%';
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) status.textContent = msg.message;
+        // Mark all sections done
+        researchProgressEl.querySelectorAll('.research-progress-sections li').forEach(li => {
+          li.className = 'done';
+          const check = li.querySelector('.research-section-check');
+          if (check) check.textContent = '\u2713';
+        });
+        Chat.scrollToBottom();
+        break;
+      }
+
+      case 'synthesize_progress': {
+        if (!researchProgressEl) break;
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) status.textContent = msg.message;
+        break;
+      }
+
+      case 'assemble': {
+        if (!researchProgressEl) break;
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = '95%';
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) status.textContent = msg.message;
+        Chat.scrollToBottom();
+        break;
+      }
+
+      case 'complete': {
+        if (!researchProgressEl) break;
+        const fill = researchProgressEl.querySelector('.research-progress-fill');
+        if (fill) fill.style.width = '100%';
+        const spinner = researchProgressEl.querySelector('.research-progress-spinner');
+        if (spinner) spinner.style.display = 'none';
+        const status = researchProgressEl.querySelector('.research-progress-status');
+        if (status) {
+          status.textContent = msg.message;
+          status.style.color = '#8b5cf6';
+        }
+        researchProgressEl = null;
+        Chat.scrollToBottom();
+        break;
+      }
+
+      default: {
+        // Generic status update
+        if (researchProgressEl) {
+          const status = researchProgressEl.querySelector('.research-progress-status');
+          if (status) status.textContent = msg.message || '';
+        }
+      }
+    }
+  }
 
   function showCronToast(description, sessionId, preview) {
     const toast = document.createElement('div');
