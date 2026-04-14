@@ -1,6 +1,8 @@
 // PRE Web GUI — Tool dispatcher + execution loop
 // Mirrors the CLI's execute_tool() + tool loop from pre.m
 
+const fs = require('fs');
+const path = require('path');
 const { streamChat, parseTextToolCalls, stripToolCallText } = require('./ollama');
 const { buildSystemPrompt } = require('./context');
 const { buildToolDefs } = require('./tools-defs');
@@ -74,6 +76,7 @@ const smartsheetTool = require('./tools/smartsheet');
 const slackTool = require('./tools/slack');
 const sharepointTool = require('./tools/sharepoint');
 const imageTool = require('./tools/image');
+const exportTool = require('./tools/export');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
 const browserTool = require('./tools/browser');
@@ -128,6 +131,8 @@ const ALIASES = {
   zoom_meeting: 'zoom', meeting: 'zoom', zoom_create: 'zoom',
   figma_file: 'figma', design: 'figma', figma_comments: 'figma',
   asana_task: 'asana', task_manager: 'asana', asana_search: 'asana',
+  export_pdf: 'pdf_export', share_pdf: 'pdf_export', artifact_pdf: 'pdf_export',
+  export_artifact: 'pdf_export', share: 'pdf_export',
 };
 
 // Tools that require user confirmation before execution
@@ -295,6 +300,41 @@ async function executeTool(name, args, cwd, opts) {
       return `Memory Health: ${summary.healthPct}% fresh\n`
         + `Total: ${summary.total} | Fresh: ${summary.fresh} | Aging: ${summary.aging} | Stale: ${summary.stale} | Unverified: ${summary.unverified}`
         + (summary.oldestStale ? `\nOldest stale: "${summary.oldestStale.name}" (${summary.oldestStale.verifiedAge}d)` : '');
+    }
+
+    // PDF Export (artifact → PDF via Puppeteer)
+    case 'pdf_export': {
+      // Find the artifact to export — by title search or explicit path
+      const artTitle = args.title || 'latest';
+      const artPath = args.path; // optional explicit web path
+      let webPath = artPath;
+
+      if (!webPath) {
+        // Search artifacts directory for a matching HTML file
+        const artDir = require('./constants').ARTIFACTS_DIR;
+        const files = fs.readdirSync(artDir)
+          .filter(f => f.endsWith('.html'))
+          .map(f => ({ name: f, mtime: fs.statSync(path.join(artDir, f)).mtimeMs }))
+          .sort((a, b) => b.mtime - a.mtime);
+
+        if (artTitle.toLowerCase() === 'latest') {
+          if (files.length === 0) return 'No HTML artifacts found to export.';
+          webPath = `/artifacts/${files[0].name}`;
+        } else {
+          const slug = artTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          const match = files.find(f => f.name.includes(slug));
+          if (match) {
+            webPath = `/artifacts/${match.name}`;
+          } else if (files.length > 0) {
+            webPath = `/artifacts/${files[0].name}`;
+          } else {
+            return `No artifact found matching "${artTitle}".`;
+          }
+        }
+      }
+
+      const result = await exportTool.exportPdf(webPath, artTitle);
+      return `PDF exported: ${result.filename}\nDownload: ${result.webPath}`;
     }
 
     // Documents
@@ -536,6 +576,19 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
             title: toolArgs.title || (isDoc ? 'Document' : 'Artifact'),
             path: urlMatch[0],
             artifactType: isDoc ? (toolArgs.format || 'txt') : (toolArgs.type || 'html'),
+          });
+        }
+      }
+
+      // Notify client about PDF exports so they can display download cards
+      if (toolName === 'pdf_export' && output && output.includes('/artifacts/')) {
+        const urlMatch = output.match(/Download: (\/artifacts\/[^\s]+)/);
+        if (urlMatch) {
+          send({
+            type: 'document',
+            title: `${toolArgs.title || 'Export'} (PDF)`,
+            path: urlMatch[1],
+            artifactType: 'pdf',
           });
         }
       }

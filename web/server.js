@@ -28,6 +28,7 @@ const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
 const { executeCronJob, checkMissedJobs } = require('./src/cron-runner');
 const { runDeepResearch } = require('./src/research');
+const exportTool = require('./src/tools/export');
 const delegate = require('./src/tools/delegate');
 const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
@@ -323,6 +324,37 @@ app.post('/api/artifacts/reveal', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ ok: true });
   });
+});
+
+// Export an artifact to PDF, PNG, or self-contained HTML
+app.post('/api/artifacts/export', async (req, res) => {
+  const { path: artPath, format, title } = req.body || {};
+  if (!artPath) return res.status(400).json({ error: 'path required' });
+  if (!['pdf', 'png', 'html'].includes(format)) {
+    return res.status(400).json({ error: 'format must be pdf, png, or html' });
+  }
+
+  // Derive title from filename if not provided
+  const exportTitle = title || artPath.replace(/^\/artifacts\//, '').replace(/\.[^.]+$/, '').replace(/-[a-z0-9]+$/, '').replace(/-/g, ' ');
+
+  try {
+    let result;
+    switch (format) {
+      case 'pdf':
+        result = await exportTool.exportPdf(artPath, exportTitle);
+        break;
+      case 'png':
+        result = await exportTool.exportPng(artPath, exportTitle);
+        break;
+      case 'html':
+        result = await exportTool.exportSelfContainedHtml(artPath, exportTitle);
+        break;
+    }
+    res.json({ path: result.webPath, filename: result.filename });
+  } catch (err) {
+    console.error(`[export] Error: ${err.message}`);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Cron API ──

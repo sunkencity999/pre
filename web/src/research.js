@@ -2,16 +2,14 @@
 // Four-phase pipeline: Outline → Gather → Synthesize → Assemble
 // Produces thorough, multi-source research documents with proper citations.
 
-const fs = require('fs');
-const path = require('path');
 const { streamChat } = require('./ollama');
 const { appendMessage, renameSession } = require('./sessions');
 const { spawnAgent } = require('./tools/agents');
 const { createArtifact } = require('./tools/artifact');
 const delegate = require('./tools/delegate');
+const { exportPdf } = require('./tools/export');
 const {
   MODEL_CTX,
-  ARTIFACTS_DIR,
   RESEARCH_AGENT_MAX_TURNS,
   RESEARCH_MAX_SECTIONS,
   RESEARCH_MAX_SOURCES,
@@ -118,7 +116,8 @@ async function runDeepResearch({ sessionId, query, cwd, send, signal, useFrontie
   if (pathMatch) {
     send({ type: 'research_status', phase: 'pdf', message: 'Generating PDF...' });
     try {
-      pdfPath = await htmlToPdf(pathMatch[0], reportTitle);
+      const pdfResult = await exportPdf(pathMatch[0], reportTitle);
+      pdfPath = pdfResult.webPath;
       send({ type: 'document', title: `${reportTitle} (PDF)`, path: pdfPath, artifactType: 'pdf' });
     } catch (err) {
       console.log(`[research] PDF generation failed: ${err.message}`);
@@ -528,63 +527,6 @@ Output ONLY the complete HTML document. No markdown wrapping, no preamble, no ex
   send({ type: 'research_status', phase: 'synthesize_progress', message: `Frontier synthesis complete (${synthDuration}s, ${responseText.length} chars)` });
 
   return cleanHtml(responseText, outline.title);
-}
-
-// ═══════════════════════════════════════════════
-// PDF Export — render HTML artifact to PDF via Puppeteer
-// ═══════════════════════════════════════════════
-
-/**
- * Convert an HTML artifact to PDF using headless Chrome.
- * @param {string} htmlWebPath - Web-relative path like /artifacts/report-abc.html
- * @param {string} title - Report title for the PDF filename
- * @returns {Promise<string>} Web-relative path to the generated PDF
- */
-async function htmlToPdf(htmlWebPath, title) {
-  const puppeteer = require('puppeteer-core');
-
-  // Resolve filesystem path from web path
-  const htmlFile = path.join(ARTIFACTS_DIR, htmlWebPath.replace(/^\/artifacts\//, ''));
-  if (!fs.existsSync(htmlFile)) {
-    throw new Error(`HTML artifact not found: ${htmlFile}`);
-  }
-
-  // Generate PDF filename
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
-  const timestamp = Date.now().toString(36);
-  const pdfFilename = `${slug}-${timestamp}.pdf`;
-  const pdfPath = path.join(ARTIFACTS_DIR, pdfFilename);
-
-  // Find Chrome
-  const chromePaths = [
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  ];
-  const executablePath = chromePaths.find(p => fs.existsSync(p));
-  if (!executablePath) throw new Error('Chrome not found for PDF generation');
-
-  const browser = await puppeteer.launch({
-    headless: true,
-    executablePath,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  });
-
-  try {
-    const page = await browser.newPage();
-    await page.goto(`file://${htmlFile}`, { waitUntil: 'networkidle0', timeout: 30000 });
-
-    await page.pdf({
-      path: pdfPath,
-      format: 'Letter',
-      margin: { top: '0.5in', bottom: '0.5in', left: '0.5in', right: '0.5in' },
-      printBackground: true,
-    });
-
-    console.log(`[research] PDF exported: ${pdfFilename}`);
-    return `/artifacts/${pdfFilename}`;
-  } finally {
-    await browser.close();
-  }
 }
 
 module.exports = { runDeepResearch };

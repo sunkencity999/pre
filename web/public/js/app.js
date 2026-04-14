@@ -328,6 +328,39 @@
     }).catch(() => {});
   };
 
+  // Export an artifact to PDF, PNG, or self-contained HTML
+  window._exportArtifact = async (btn, artPath, format, title) => {
+    const origText = btn.textContent;
+    btn.textContent = 'Exporting...';
+    btn.disabled = true;
+    btn.classList.add('btn-share-loading');
+
+    try {
+      const res = await fetch('/api/artifacts/export', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: artPath, format, title }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Export failed');
+
+      // Trigger download of the exported file
+      const a = document.createElement('a');
+      a.href = data.path;
+      a.download = data.filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      btn.textContent = 'Done!';
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; btn.classList.remove('btn-share-loading'); }, 2000);
+    } catch (err) {
+      btn.textContent = 'Failed';
+      setTimeout(() => { btn.textContent = origText; btn.disabled = false; btn.classList.remove('btn-share-loading'); }, 2000);
+      console.error('[export]', err);
+    }
+  };
+
   function sendMessage() {
     const content = input.value.trim();
     if ((!content && pendingAttachments.length === 0) || Chat.isStreaming) return;

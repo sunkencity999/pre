@@ -403,6 +403,7 @@ const Chat = (() => {
     const safePath = Markdown.escapeHtml(artPath);
     const safeTitle = Markdown.escapeHtml(title);
     const safeType = Markdown.escapeHtml(type || 'html');
+    const isHtml = (type || 'html').toLowerCase() === 'html';
     card.innerHTML = `
       <div class="artifact-card-header">
         <span class="artifact-card-icon">&#9672;</span>
@@ -414,6 +415,12 @@ const Chat = (() => {
         <a href="${safePath}" download class="btn btn-ghost btn-sm">Download</a>
         <button class="btn btn-ghost btn-sm" onclick="window._revealInFinder('${safePath}')">Show in Finder</button>
       </div>
+      ${isHtml ? `<div class="artifact-card-share">
+        <span class="artifact-share-label">Share as</span>
+        <button class="btn btn-share btn-sm" onclick="window._exportArtifact(this, '${safePath}', 'pdf', '${safeTitle}')">PDF</button>
+        <button class="btn btn-share btn-sm" onclick="window._exportArtifact(this, '${safePath}', 'png', '${safeTitle}')">PNG</button>
+        <button class="btn btn-share btn-sm" onclick="window._exportArtifact(this, '${safePath}', 'html', '${safeTitle}')">Standalone HTML</button>
+      </div>` : ''}
     `;
     container.appendChild(card);
     scrollToBottom();
