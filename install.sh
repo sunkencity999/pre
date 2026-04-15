@@ -65,7 +65,7 @@ if [ "$RAM_GB" -lt 16 ]; then
     fail "PRE requires at least 16GB unified memory. Detected: ${RAM_GB}GB"
 fi
 if [ "$RAM_GB" -lt 32 ]; then
-    warn "  RAM: ${RAM_GB}GB — functional, but 32GB+ recommended for full 262K context."
+    warn "  RAM: ${RAM_GB}GB — functional, but 32GB+ recommended for full 128K context."
 else
     ok "  RAM: ${RAM_GB}GB unified memory"
 fi
@@ -203,6 +203,14 @@ if ! command -v clang &>/dev/null; then
 fi
 ok "  Compiler: $(clang --version | head -1)"
 
+# Swift compiler (needed for EventKit-based Calendar/Reminders tools)
+if command -v swiftc &>/dev/null; then
+    ok "  Swift: $(swiftc --version 2>&1 | head -1 | sed 's/.*version: //')"
+else
+    warn "  swiftc not found — Calendar/Reminders tools will compile on first use."
+    warn "  Install Xcode CLI tools to resolve: xcode-select --install"
+fi
+
 # Check for Metal framework (should always be present on Apple Silicon macOS)
 if ! xcrun --sdk macosx --show-sdk-path &>/dev/null; then
     warn "  macOS SDK not found. You may need to run: xcode-select --install"
@@ -239,7 +247,7 @@ if [ -f "$WEB_DIR/package.json" ]; then
             echo "  Installing web dependencies..."
             cd "$WEB_DIR"
             npm install --silent 2>&1 | tail -3
-            ok "  Web GUI dependencies installed (express, ws, docx, exceljs, pdfkit)"
+            ok "  Web GUI dependencies installed"
 
             # Install terminal-notifier for clickable cron notifications
             if ! command -v terminal-notifier &>/dev/null; then
@@ -545,29 +553,39 @@ echo -e "    Web GUI auto-starts at ${CYAN}http://localhost:7749${RESET}"
 echo ""
 echo -e "  ${BOLD}First Launch:${RESET}"
 echo -e "    PRE will ask you to name your agent and optionally"
-echo -e "    configure connections (Google, GitHub, Brave, Wolfram)."
+echo -e "    configure cloud connections via ${BOLD}/connections${RESET} or Web GUI Settings."
 echo ""
-echo -e "  ${BOLD}Connections (optional):${RESET}"
+echo -e "  ${BOLD}Native macOS (works immediately — no setup):${RESET}"
+echo -e "    • ${GREEN}Mail, Calendar, Contacts, Reminders, Notes, Spotlight${RESET}"
+echo -e "    ${DIM}Uses your existing macOS accounts (iCloud, Gmail, Exchange, etc.)${RESET}"
+echo -e "    ${DIM}macOS will prompt for Automation permissions on first use.${RESET}"
+echo ""
+echo -e "  ${BOLD}Cloud Connections (optional):${RESET}"
 echo -e "    Type ${BOLD}/connections${RESET} inside PRE or use the Web GUI Settings to set up:"
-echo -e "    • ${DIM}Google        — Gmail, Drive, Docs (built-in OAuth)${RESET}"
-echo -e "    • ${DIM}Telegram      — chat from your phone + cron delivery${RESET}"
-echo -e "    • ${DIM}Slack         — channel messaging${RESET}"
-echo -e "    • ${DIM}Brave Search  — web search${RESET}"
-echo -e "    • ${DIM}GitHub        — repos, issues, PRs${RESET}"
-echo -e "    • ${DIM}Jira          — issues, projects, transitions${RESET}"
-echo -e "    • ${DIM}Confluence    — wiki pages, search${RESET}"
-echo -e "    • ${DIM}Smartsheet    — spreadsheets, rows, search${RESET}"
-echo -e "    • ${DIM}Wolfram Alpha — computation${RESET}"
+echo -e "    • ${DIM}Google         — Gmail, Drive, Docs (built-in OAuth)${RESET}"
+echo -e "    • ${DIM}Microsoft      — SharePoint, OneDrive (Azure AD OAuth)${RESET}"
+echo -e "    • ${DIM}Slack          — channel messaging${RESET}"
+echo -e "    • ${DIM}Telegram       — chat from your phone + cron delivery${RESET}"
+echo -e "    • ${DIM}GitHub         — repos, issues, PRs${RESET}"
+echo -e "    • ${DIM}Jira           — issues, projects, transitions${RESET}"
+echo -e "    • ${DIM}Confluence     — wiki pages, search${RESET}"
+echo -e "    • ${DIM}Smartsheet     — spreadsheets, rows, search${RESET}"
+echo -e "    • ${DIM}Linear         — issue tracking, projects, cycles${RESET}"
+echo -e "    • ${DIM}Zoom           — meetings, recordings${RESET}"
+echo -e "    • ${DIM}Figma          — design files, comments, export${RESET}"
+echo -e "    • ${DIM}Asana          — tasks, projects, search${RESET}"
+echo -e "    • ${DIM}Brave Search   — web search${RESET}"
+echo -e "    • ${DIM}Wolfram Alpha  — computation${RESET}"
 if [ -f "$HOME/.pre/comfyui.json" ]; then
-echo -e "    • ${GREEN}ComfyUI       — image generation (installed ✓)${RESET}"
+echo -e "    • ${GREEN}ComfyUI        — image generation (installed ✓)${RESET}"
 else
-echo -e "    • ${DIM}ComfyUI       — image generation (re-run install.sh to add)${RESET}"
+echo -e "    • ${DIM}ComfyUI        — image generation (re-run install.sh to add)${RESET}"
 fi
 echo ""
 echo -e "  ${BOLD}Features:${RESET}"
-echo -e "    50+ tools including sub-agents, browser automation, hooks,"
-echo -e "    experience ledger (learns from past tasks), and temporal"
-echo -e "    memory awareness. Chrome enables headless browser control."
+echo -e "    60+ tools including computer use (desktop automation), sub-agents,"
+echo -e "    browser automation, document/artifact export, hooks, experience"
+echo -e "    ledger, and temporal memory awareness."
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
 echo -e "    ${DIM}~/.pre/identity.json${RESET}      Agent name"

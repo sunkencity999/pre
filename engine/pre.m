@@ -79,9 +79,9 @@
 
 // Approximate context window budget for the model (tokens)
 #define MAX_CONTEXT     262144
-// Actual num_ctx configured in the Modelfile — must match exactly.
+// Actual num_ctx sent per-request — must match across CLI and Web GUI.
 // Sending any different value to Ollama triggers a full model reload (300s+).
-#define MODEL_CTX       65536
+#define MODEL_CTX       131072
 
 typedef struct {
     int port;

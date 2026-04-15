@@ -48,13 +48,13 @@ fi
 # Pre-warm the model into GPU memory (avoids cold-start TTFT penalty).
 # CRITICAL: Send a real message with explicit num_ctx to force full KV cache
 # allocation. Ollama loads lazily — empty messages defer KV allocation to the
-# first real request. Explicit num_ctx=65536 ensures the KV cache is fully
+# first real request. Explicit num_ctx=131072 ensures the KV cache is fully
 # allocated during warmup, not during the user's first prompt.
 if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
     echo "  Loading model into GPU..."
     # Send a trivial real request with matching num_ctx to force full load.
     curl -sf --max-time 300 http://localhost:${PORT}/api/chat \
-        -d '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"keep_alive":"24h","options":{"num_predict":1,"num_ctx":65536}}' \
+        -d '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"keep_alive":"24h","options":{"num_predict":1,"num_ctx":131072}}' \
         >/dev/null 2>&1 || true
     # Verify it loaded
     if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
