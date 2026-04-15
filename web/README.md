@@ -524,7 +524,7 @@ src/
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
-  constants.js             MODEL_CTX=65536, paths
+  constants.js             MODEL_CTX=131072, paths
   tools/
     bash.js                Shell execution (stderr capture)
     files.js               read_file, list_dir, glob, grep, file_write, file_edit
@@ -578,7 +578,7 @@ Switch between themes using the dropdown in the sidebar footer.
 
 ## Key Design Decisions
 
-1. **Always send `num_ctx=65536`** — must match the Modelfile exactly to prevent Ollama model reload (300s+ penalty)
+1. **Always send `num_ctx=131072`** — must match across CLI and Web GUI to prevent Ollama model reload (300s+ penalty)
 2. **Vanilla JS, no framework** — local tool, one user, loads instantly, no build step
 3. **Credentials stay server-side** — API keys never sent to the browser
 4. **Tool execution server-side** — security, CORS, file system access

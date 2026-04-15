@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant that actually works. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 65K context window, 50+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 128K context window, 60+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -18,7 +18,7 @@ Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, con
 
 - **Speed without sacrifice.** 26B-parameter quality at ~4B computational cost. On Apple Silicon with q4_K_M quantization (~17 GB), this means **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
 
-- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **65K token window** — large enough for extended multi-step workflows (read 20 files, chain tool calls, iterate) while cold-loading in just 1.5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
+- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **128K token window** — large enough for deep multi-step workflows (read 20 files, chain tool calls, iterate across 60+ tools) while cold-loading in under 5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
 
 - **Strong instruction following.** Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable.
 
@@ -31,7 +31,7 @@ PRE doesn't abstract away the hardware — it leans into it:
 | Layer | Optimization | Effect |
 |-------|-------------|--------|
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
-| **Context allocation** | Fixed `num_ctx=65536` matching Modelfile exactly | 1.5s cold load, no runtime reload penalty |
+| **Context allocation** | Fixed `num_ctx=131072` matching across CLI and Web GUI | ~5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
 | **Prompt compression** | Function-signature tool format (~800 tokens for 50+ tools) | More room for conversation, faster prefill |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
@@ -43,7 +43,7 @@ The difference is the **tool-call loop**. A chatbot generates text. An agent gen
 
 1. **Reliable tool calling** via Ollama's native structured function calling
 2. **Fast execution** — each round-trip completes in 1-3 seconds for typical tools
-3. **Sufficient context** — 65K window with auto-compaction holds extended multi-step sessions
+3. **Sufficient context** — 128K window with auto-compaction holds extended multi-step sessions
 4. **Autonomous scheduling** — cron jobs execute server-side, even when you're not at the computer
 
 This means PRE can:
@@ -582,12 +582,12 @@ Raw cron expressions (e.g. `0 */2 * * 1-5`) are also accepted with passthrough.
 
 ### Context Management
 
-PRE manages Gemma 4's context window with a **fixed 65K token allocation**.
+PRE manages Gemma 4's context window with a **fixed 128K token allocation** (131,072 tokens).
 
-**Why fixed?** Changing `num_ctx` at runtime triggers a full model unload/reload in Ollama — 300+ seconds for large models. PRE sets 65K once in the Modelfile, matches it exactly in every request, and the model cold-loads in ~1.5 seconds on M4 Max 128GB.
+**Why fixed?** Changing `num_ctx` at runtime triggers a full model unload/reload in Ollama — 300+ seconds for large models. PRE sets 128K consistently across both CLI and Web GUI, and the model cold-loads in ~5 seconds on M4 Max 128GB.
 
 - **Context bar** — Shown after every response (color-coded: grey > yellow at 50% > red at 75%). Also visible in the web GUI topbar.
-- **Auto-compaction** — At 75% usage (~49K tokens), older turns are summarized and compressed. The last 6 exchanges are kept intact.
+- **Auto-compaction** — At 75% usage (~98K tokens), older turns are summarized and compressed. The last 6 exchanges are kept intact.
 - **Tool response cap** — Tool outputs truncated to 8KB to prevent context blowout.
 - **Rewind** — `/rewind N` removes the last N turns to free space.
 - **Channels** — Separate channels for separate tasks to avoid context pollution.
@@ -976,7 +976,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 │ ~10000 lines│                     │                   │
 │  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
 └──┬──────┬───┘                     │  MoE, q4_K_M      │
-   │      │                         │  num_ctx=65536     │
+   │      │                         │  num_ctx=131072    │
    │      │ fork/exec               │  ~70 tok/s         │
    │      │                         └──────────▲────────┘
    │  ┌───▼──────────┐  /api/chat (non-stream) │
@@ -1022,7 +1022,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines) handling:
 - Raw `recv()` NDJSON streaming with 64KB ring buffer
-- Fixed `num_ctx=65536` matching Modelfile (avoids Ollama reload)
+- Fixed `num_ctx=131072` matching across CLI and Web GUI (avoids Ollama reload)
 - 50+ tool implementations with two-tier permissions + hook-based policy enforcement
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` fallback
 - Local image generation via ComfyUI (checkpoint-adaptive workflow)
@@ -1122,7 +1122,7 @@ pre/
 │   ├── telegram.m          # Telegram bot bridge (~2000 lines)
 │   ├── linenoise.c/h       # Terminal line editor (patched)
 │   ├── Makefile             # Build: make pre telegram
-│   ├── Modelfile            # Ollama model config (num_ctx=65536)
+│   ├── Modelfile            # Ollama model config (base num_ctx=8192, overridden per-request)
 │   ├── pre-launch           # Universal launcher script
 │   └── launch-telegram      # Standalone Telegram launcher
 ├── web/                     # Web GUI (Node.js + vanilla JS)
@@ -1136,7 +1136,7 @@ pre/
 │   │   ├── context.js       # System prompt builder
 │   │   ├── memory.js        # Auto-extraction engine
 │   │   ├── connections.js   # Credential management
-│   │   ├── constants.js     # MODEL_CTX=65536, paths
+│   │   ├── constants.js     # MODEL_CTX=131072, paths
 │   │   ├── cron-runner.js   # Headless cron execution + notifications
 │   │   ├── mcp.js           # MCP client manager (stdio + HTTP)
 │   │   ├── hooks.js         # Pre/post tool execution hooks
