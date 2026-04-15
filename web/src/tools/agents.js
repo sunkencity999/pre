@@ -76,10 +76,18 @@ RULES:
 - Do NOT ask follow-up questions — complete the task autonomously
 - Maximum 10 tool calls`;
 
+  const deniedTools = overrides && overrides.deniedTools;
   const allowedTools = (overrides && overrides.allowedTools) || AGENT_TOOLS;
-  const tools = buildToolDefs().filter(t =>
-    allowedTools.includes(t.function?.name) || t.function?.name?.startsWith('mcp__')
-  );
+  const tools = buildToolDefs().filter(t => {
+    const name = t.function?.name;
+    if (!name) return false;
+    // MCP tools always allowed
+    if (name.startsWith('mcp__')) return true;
+    // Denylist mode: include everything EXCEPT denied tools
+    if (deniedTools) return !deniedTools.includes(name);
+    // Allowlist mode (default): include only specified tools
+    return allowedTools.includes(name);
+  });
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -88,11 +96,11 @@ RULES:
 
   const MAX_TURNS = (overrides && overrides.maxTurns) || 10;
   let turn = 0;
+  let didToolCalls = false;
 
   while (turn < MAX_TURNS) {
     turn++;
 
-    // Call Ollama — streamChat returns a Promise directly
     let fullResponse = '';
     const chatResult = await streamChat({
       messages,
@@ -118,12 +126,19 @@ RULES:
     }
 
     if (toolCalls.length === 0) {
-      // No tool calls — agent is done
-      return cleanResponse(fullResponse);
+      // No tool calls — agent is done, return its text response
+      const cleaned = cleanResponse(fullResponse);
+      if (cleaned) return cleaned;
+      // Empty response after tool calls — fall through to summary
+      break;
     }
 
-    // Execute tool calls
-    messages.push({ role: 'assistant', content: fullResponse });
+    didToolCalls = true;
+
+    // Execute tool calls — include tool_calls so the model can see its own calls
+    const assistantMsg = { role: 'assistant', content: fullResponse };
+    if (chatResult && chatResult.toolCalls) assistantMsg.tool_calls = chatResult.toolCalls;
+    messages.push(assistantMsg);
 
     for (const tc of toolCalls) {
       if (onStatus) onStatus({ type: 'agent_tool', id: agent.id, tool: tc.name });
@@ -144,9 +159,26 @@ RULES:
     }
   }
 
-  // Max turns reached — return whatever we have
-  const lastAssistant = messages.filter(m => m.role === 'assistant').pop();
-  return lastAssistant ? cleanResponse(lastAssistant.content) : 'Agent reached maximum turns without a final answer.';
+  // Turns exhausted (or empty response after tools) — force a summary WITHOUT tools
+  if (didToolCalls) {
+    messages.push({
+      role: 'user',
+      content: 'Your tool turns are complete. Now summarize ALL findings from your research above. Include every specific fact, number, date, statistic, and source URL you gathered. Output raw findings only.',
+    });
+    let summary = '';
+    const summaryResult = await streamChat({
+      messages,
+      maxTokens: 16384, // Generous limit — agent summaries feed directly into report synthesis
+      // No tools — force a text response
+      onToken: (event) => {
+        if (event && event.type === 'token') summary += event.content || '';
+      },
+    });
+    summary = (summaryResult && summaryResult.response) || summary;
+    if (summary.trim()) return summary.trim();
+  }
+
+  return 'Agent reached maximum turns without producing findings.';
 }
 
 /**

@@ -82,19 +82,21 @@ function webSearch(args) {
   if (!query) return 'Error: no query provided';
 
   const apiKey = getConnectionKey('brave_search');
-  if (!apiKey) {
-    return 'Error: Brave Search not configured. Run /connections add brave_search';
-  }
-
-  // URL-encode query
-  const encoded = query.replace(/ /g, '+').replace(/[`$;']/g, '').replace(/&/g, '%26');
   const count = Math.min(Math.max(args.count || 5, 1), 20);
 
+  // Use Brave API if configured, otherwise fall back to DuckDuckGo HTML
+  if (apiKey) {
+    return braveSearch(query, count, apiKey);
+  }
+  return duckDuckGoSearch(query, count);
+}
+
+function braveSearch(query, count, apiKey) {
+  const encoded = query.replace(/ /g, '+').replace(/[`$;']/g, '').replace(/&/g, '%26');
   try {
     const cmd = `curl -s --max-time 10 -H 'Accept: application/json' -H 'X-Subscription-Token: ${apiKey}' 'https://api.search.brave.com/res/v1/web/search?q=${encoded}&count=${count}' 2>/dev/null`;
     const raw = execSync(cmd, { encoding: 'utf-8', maxBuffer: 128 * 1024, timeout: 15000 });
 
-    // Parse JSON and extract results
     try {
       const data = JSON.parse(raw);
       const results = data.web?.results || [];
@@ -109,9 +111,77 @@ function webSearch(args) {
       }
       return output;
     } catch {
-      // Fallback: return raw if JSON parse fails
       return raw.slice(0, 8000);
     }
+  } catch (err) {
+    return `Error: search failed: ${err.message}`;
+  }
+}
+
+function duckDuckGoSearch(query, count) {
+  // DuckDuckGo HTML search — no API key needed
+  const encoded = encodeURIComponent(query);
+  try {
+    const cmd = `curl -sL --max-time 15 -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' 'https://html.duckduckgo.com/html/?q=${encoded}' 2>/dev/null`;
+    const html = execSync(cmd, { encoding: 'utf-8', maxBuffer: 512 * 1024, timeout: 20000 });
+
+    // Parse results from DuckDuckGo HTML response
+    const results = [];
+    // Each result is in a <div class="result ..."> block
+    const resultBlocks = html.match(/<a class="result__a"[^>]*>[\s\S]*?<\/a>[\s\S]*?<a class="result__snippet"[^>]*>[\s\S]*?<\/a>/g)
+      || html.match(/<a class="result__a"[^>]*>[\s\S]*?<\/a>[\s\S]*?<td class="result__snippet">[\s\S]*?<\/td>/g)
+      || [];
+
+    for (const block of resultBlocks) {
+      if (results.length >= count) break;
+      // Extract URL and title from the result link
+      const linkMatch = block.match(/<a class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
+      // Extract snippet
+      const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|td)>/);
+
+      if (linkMatch) {
+        let url = linkMatch[1];
+        // DuckDuckGo wraps URLs in a redirect — extract the actual URL
+        const uddgMatch = url.match(/uddg=([^&]+)/);
+        if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
+
+        const title = linkMatch[2].replace(/<[^>]+>/g, '').trim();
+        const snippet = snippetMatch
+          ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim()
+          : '';
+
+        if (url && title) {
+          results.push({ title, url, snippet });
+        }
+      }
+    }
+
+    if (results.length === 0) {
+      // Fallback: try simpler regex for older DDG format
+      const simpleLinks = html.match(/<a[^>]*class="result__url"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g) || [];
+      for (const link of simpleLinks) {
+        if (results.length >= count) break;
+        const m = link.match(/href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
+        if (m) {
+          let url = m[1];
+          const uddgMatch = url.match(/uddg=([^&]+)/);
+          if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
+          results.push({ title: m[2].replace(/<[^>]+>/g, '').trim(), url, snippet: '' });
+        }
+      }
+    }
+
+    if (results.length === 0) return `No search results found for: ${query}`;
+
+    let output = `Search results for: ${query}\n\n`;
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      output += `${i + 1}. ${r.title}\n`;
+      output += `   ${r.url}\n`;
+      if (r.snippet) output += `   ${r.snippet}\n`;
+      output += '\n';
+    }
+    return output;
   } catch (err) {
     return `Error: search failed: ${err.message}`;
   }

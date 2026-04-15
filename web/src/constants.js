@@ -19,7 +19,7 @@ const COMFYUI_FILE = path.join(PRE_DIR, 'comfyui.json');
 const CRON_FILE = path.join(PRE_DIR, 'cron.json');
 
 // Deep Research mode constants
-const RESEARCH_AGENT_MAX_TURNS = 20;   // Each research sub-agent gets more turns than normal
+const RESEARCH_AGENT_MAX_TURNS = 30;   // Each research sub-agent gets generous turns — local model, no cost constraint
 const RESEARCH_MAX_SECTIONS = 8;       // Max sections in a research outline
 const RESEARCH_MAX_SOURCES = 5;        // Sources to gather per section
 

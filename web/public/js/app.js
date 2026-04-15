@@ -104,6 +104,11 @@
         // A cron job finished running server-side — show toast with link to its session
         showCronToast(msg.description, msg.sessionId, msg.preview);
         loadSessionList(); // refresh sidebar to show new cron session
+        // Refresh cron panel if it's currently open so stats are up to date
+        if (!document.getElementById('right-panel').classList.contains('hidden')
+            && document.getElementById('panel-title').textContent === 'Scheduled Jobs') {
+          openCronPanel();
+        }
         break;
 
       // ── Delegate (frontier AI) events ──
@@ -896,12 +901,18 @@
     `;
     document.body.appendChild(toast);
     // Click to switch to the cron session
-    toast.querySelector('.cron-toast-open').addEventListener('click', () => {
+    toast.querySelector('.cron-toast-open').addEventListener('click', async () => {
       setCurrentSession(sessionId);
-      WS.send({ type: 'switch_session', sessionId });
-      loadSessionList();
       updateSessionName();
+      loadSessionList();
       toast.remove();
+      // Load via REST (reliable even when WS is disconnected)
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+        const messages = await res.json();
+        Chat.loadHistory(messages);
+      } catch {}
+      WS.send({ type: 'switch_session', sessionId });
     });
     // Auto-dismiss after 30 seconds
     setTimeout(() => { if (toast.parentNode) toast.remove(); }, 30000);
@@ -1619,13 +1630,20 @@
       await fetch(`/api/cron/${id}`, { method: 'DELETE' });
       openCronPanel();
     },
-    viewResult(sessionId) {
+    async viewResult(sessionId) {
       // Close the cron panel and switch to the cron result session
       document.getElementById('right-panel').classList.add('hidden');
       setCurrentSession(sessionId);
-      WS.send({ type: 'switch_session', sessionId });
-      loadSessionList();
       updateSessionName();
+      loadSessionList();
+      // Load session history via REST (reliable even when WS is disconnected)
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+        const messages = await res.json();
+        Chat.loadHistory(messages);
+      } catch {}
+      // Notify server of the active session for future messages
+      WS.send({ type: 'switch_session', sessionId });
     },
   };
 

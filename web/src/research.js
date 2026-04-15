@@ -163,7 +163,7 @@ async function generateOutline(query, cwd, signal) {
   const messages = [
     {
       role: 'system',
-      content: `You are a research planner. Given a research question, create a structured outline for a comprehensive research document.
+      content: `You are a research planner. Given a research question, create a structured outline for a comprehensive, in-depth research document.
 
 Output ONLY valid JSON with this structure:
 {
@@ -171,17 +171,19 @@ Output ONLY valid JSON with this structure:
   "sections": [
     {
       "title": "Section Title",
-      "description": "What this section should cover",
-      "queries": ["search query 1", "search query 2", "search query 3"]
+      "description": "Detailed description of what this section should cover, including specific subtopics, data tables to include, and comparison angles to explore",
+      "queries": ["search query 1", "search query 2", "search query 3", "search query 4"]
     }
   ]
 }
 
 RULES:
-- Create ${RESEARCH_MAX_SECTIONS} or fewer focused sections
-- Each section needs 2-${RESEARCH_MAX_SOURCES} specific web search queries
-- Queries should be diverse — different angles, sources, data types
-- Include sections for: background/context, current state, key findings, analysis, implications
+- Create ${RESEARCH_MAX_SECTIONS} focused sections (use all ${RESEARCH_MAX_SECTIONS})
+- Each section needs 3-${RESEARCH_MAX_SOURCES} specific web search queries — be creative and varied
+- Queries should target different angles: official sources, reviews, technical specs, comparisons, community discussion, news articles
+- Section descriptions must be DETAILED (2-3 sentences each) listing specific subtopics, data points to gather, and any tables or comparisons that would enrich the section
+- Include sections for: background/history, current state, detailed technical/feature analysis, comparative analysis (vs alternatives or predecessors), community/market reception, future outlook
+- At least one section should be explicitly about comparison or competitive analysis
 - The title should be descriptive and professional
 - Output ONLY the JSON — no markdown, no explanation, no code fences`,
     },
@@ -232,7 +234,7 @@ RULES:
 // ═══════════════════════════════════════════════
 
 async function gatherSection(section, originalQuery, cwd, onStatus) {
-  const agentTask = `You are researching the following section for a comprehensive report.
+  const agentTask = `You are researching the following section for a comprehensive, in-depth report.
 
 RESEARCH TOPIC: ${originalQuery}
 SECTION: ${section.title}
@@ -240,30 +242,52 @@ SECTION GOAL: ${section.description}
 SUGGESTED SEARCH QUERIES: ${section.queries.join(', ')}
 
 INSTRUCTIONS:
-1. Use web_search with each suggested query (and add your own if needed)
-2. Use web_fetch to read the most relevant pages from search results
-3. Extract SPECIFIC facts, data, statistics, quotes, and source URLs
-4. Collect at least 3 distinct sources
+1. Execute EVERY suggested search query — use web_search for each one
+2. For the top 2-3 results from EACH search, fetch the full page content with web_fetch (or browser for JS-heavy pages)
+3. Read thoroughly — extract EVERY useful specific fact, not just the first paragraph
+4. If you find links to additional relevant pages (e.g., spec sheets, patch notes, reviews), follow them
+5. Collect at least 4-5 distinct sources minimum
 
-Return your findings as structured text with:
-- Key facts and data points (with specific numbers, dates, names)
-- Direct quotes where relevant (with attribution)
-- Source URLs for each finding
-- Any data suitable for charts or tables
+WHAT TO EXTRACT (be exhaustive):
+- Every specific number, date, price, measurement, version, spec
+- Direct quotes from developers, reviewers, or official sources (with attribution)
+- Comparison data: how does this compare to alternatives/competitors/predecessors?
+- Structured data suitable for tables (feature lists, specifications, timelines)
+- Community reception: ratings, user counts, sentiment
+- Source URL for EVERY fact (format: [Source: URL])
 
-Be thorough — this data will be used to write a detailed report section. Do not summarize prematurely; include raw findings.`;
+OUTPUT FORMAT:
+Return raw findings organized by source. For each source:
+SOURCE: [URL]
+FACTS:
+- fact 1
+- fact 2
+QUOTES:
+- "quote" — attribution
+TABLE DATA:
+- any structured/tabular data found
+
+Be EXHAUSTIVE — this data directly determines report quality. Every fact you miss is a fact missing from the final report. Do not summarize prematurely; include all raw data.`;
 
   const overrides = {
     maxTurns: RESEARCH_AGENT_MAX_TURNS,
-    allowedTools: [
-      'bash', 'read_file', 'list_dir', 'glob', 'grep',
-      'web_fetch', 'web_search', 'memory_search', 'memory_list',
-      'system_info',
+    // Denylist: block destructive/recursive tools, allow everything else
+    // (browser, web_search, cloud integrations, etc. all available for research)
+    deniedTools: [
+      'file_write', 'file_edit', 'process_kill', 'memory_delete',
+      'cron', 'spawn_agent', 'spawn_multi', 'image_generate',
     ],
-    systemPrompt: `You are a deep research agent for PRE (Personal Reasoning Engine). You gather thorough, factual information using web searches and page fetches. Be methodical: search → read → extract facts → repeat. Collect SPECIFIC data, not vague summaries.
+    systemPrompt: `You are a deep research agent for PRE (Personal Reasoning Engine). You gather thorough, factual information using all available tools. Be methodical and use the best tool for each task:
+
+TOOL STRATEGY:
+- Use web_search (if available) for broad topic queries
+- Use browser to navigate and read JavaScript-heavy or interactive pages
+- Use web_fetch for direct URL retrieval (articles, APIs, docs)
+- Use bash for curl, jq, or other CLI data gathering when useful
+- Cloud tools (github, jira, slack, etc.) are available if the research topic involves those platforms
 
 RULES:
-- Execute ALL suggested search queries
+- Execute ALL suggested search queries using the best available tool
 - Fetch and read the top 2-3 results from each search
 - Extract specific facts: numbers, dates, names, statistics
 - Note the source URL for every fact
@@ -283,30 +307,99 @@ RULES:
 //   Pass 3 — Revise: produce the final improved report
 // ═══════════════════════════════════════════════
 
+// ── CSS template embedded in every local report ──
+// Providing this eliminates CSS bugs from the model and ensures professional styling.
+const REPORT_CSS = `
+  :root { --bg: #ffffff; --fg: #1a1a2e; --accent: #2563eb; --accent-light: #dbeafe;
+    --border: #e2e8f0; --muted: #64748b; --callout-bg: #f0f9ff; --callout-border: #38bdf8;
+    --blockquote-border: #6366f1; --table-stripe: #f8fafc; --shadow: rgba(0,0,0,0.06); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f172a; --fg: #e2e8f0; --accent: #60a5fa; --accent-light: #1e3a5f;
+      --border: #334155; --muted: #94a3b8; --callout-bg: #1e293b; --callout-border: #38bdf8;
+      --blockquote-border: #818cf8; --table-stripe: #1e293b; --shadow: rgba(0,0,0,0.3); } }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; font-size: 17px;
+    line-height: 1.7; color: var(--fg); background: var(--bg); padding: 2rem 1rem; }
+  .container { max-width: 52rem; margin: 0 auto; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 2.2rem; font-weight: 700;
+    margin-bottom: 0.5rem; line-height: 1.25; border-bottom: 3px solid var(--accent); padding-bottom: 0.5rem; }
+  .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 2rem; }
+  h2 { font-family: Georgia, 'Times New Roman', serif; font-size: 1.6rem; font-weight: 600;
+    margin: 2.5rem 0 1rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.2rem; font-weight: 600; margin: 1.5rem 0 0.75rem; }
+  p { max-width: 72ch; margin-bottom: 1rem; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  /* Table of Contents */
+  .toc { background: var(--callout-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1.25rem 1.5rem; margin: 1.5rem 0 2rem; }
+  .toc h2 { font-size: 1.1rem; margin: 0 0 0.75rem; border: none; }
+  .toc ol { padding-left: 1.5rem; } .toc li { margin: 0.3rem 0; }
+  .toc a { font-weight: 500; }
+  /* Data tables */
+  table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.95rem;
+    box-shadow: 0 1px 3px var(--shadow); border-radius: 6px; overflow: hidden; }
+  thead { background: var(--accent); color: #fff; }
+  th { padding: 0.65rem 1rem; text-align: left; font-weight: 600; font-size: 0.85rem;
+    text-transform: uppercase; letter-spacing: 0.03em; }
+  td { padding: 0.6rem 1rem; border-bottom: 1px solid var(--border); }
+  tbody tr:nth-child(even) { background: var(--table-stripe); }
+  tbody tr:hover { background: var(--accent-light); }
+  /* Callout boxes */
+  .callout { background: var(--callout-bg); border-left: 4px solid var(--callout-border);
+    border-radius: 0 6px 6px 0; padding: 1rem 1.25rem; margin: 1.5rem 0; }
+  .callout strong { display: block; margin-bottom: 0.3rem; color: var(--accent); }
+  /* Blockquotes */
+  blockquote { border-left: 4px solid var(--blockquote-border); padding: 0.75rem 1.25rem;
+    margin: 1.25rem 0; font-style: italic; color: var(--muted); background: var(--callout-bg);
+    border-radius: 0 6px 6px 0; }
+  blockquote cite { display: block; font-style: normal; font-size: 0.85rem; margin-top: 0.5rem; color: var(--accent); }
+  /* Footnotes */
+  .footnotes { margin-top: 3rem; padding-top: 1.5rem; border-top: 2px solid var(--border); font-size: 0.9rem; }
+  .footnotes ol { padding-left: 1.5rem; } .footnotes li { margin: 0.5rem 0; }
+  sup a { color: var(--accent); font-weight: 600; text-decoration: none; font-size: 0.75rem; }
+  /* Back to top */
+  .back-to-top { display: inline-block; margin-top: 1rem; font-size: 0.85rem; color: var(--muted); }
+  /* Print */
+  @media print { body { font-size: 11pt; padding: 0; }
+    .back-to-top, .toc { break-inside: avoid; } table { font-size: 9pt; }
+    h2 { break-after: avoid; } a { color: inherit; } }
+`;
+
 const REPORT_SYSTEM_PROMPT = `You are a professional report writer for PRE (Personal Reasoning Engine). You synthesize raw research data into polished, comprehensive HTML documents.
 
 OUTPUT FORMAT:
-Create a COMPLETE, standalone HTML document with embedded CSS. The document should be professional and well-formatted.
+Create a COMPLETE standalone HTML document. The CSS is pre-built — you MUST use the exact stylesheet provided below by embedding it in a <style> tag. Focus your effort on writing RICH, DETAILED HTML content.
 
-STRUCTURE:
-- Clean, modern HTML with embedded <style> in <head>
-- Professional typography (system font stack)
-- Responsive layout
-- Table of contents with anchor links
-- Each section: title, 2-4 substantive paragraphs with SPECIFIC facts from the research
-- Citations as numbered footnotes or inline [Source: URL]
-- Data tables where appropriate (with real data from research, NOT placeholders)
-- A Sources/References section at the end with all URLs
+PRE-BUILT CSS — embed this exactly in <style>:
+${REPORT_CSS}
 
-QUALITY STANDARDS:
-- USE SPECIFIC DATA from the research findings: names, dates, numbers, statistics, quotes
-- Every claim must be backed by data from the research
-- Do not invent or assume data — only use what was gathered
-- Include analysis and insights, not just data regurgitation
-- Professional tone appropriate for a research report
-- Minimum 2-3 paragraphs per section with substantive content
+HTML STRUCTURE REQUIRED (use these exact elements and classes):
+- Wrap all content in <div class="container">
+- <h1> for the report title, followed by <p class="subtitle"> with date and source count
+- <nav class="toc"> containing <h2>Contents</h2> and <ol> with <li><a href="#section-N"> links
+- Each section: <h2 id="section-N"> title, then 3-5 detailed paragraphs
+- Use <h3> for subsections within sections
+- <div class="callout"><strong>Key Insight:</strong> text</div> for important takeaways (at least 2-3 per report)
+- <blockquote>quote text<cite>— Attribution, Source</cite></blockquote> for notable quotes
+- <table> with <thead>/<tbody> for any structured data, comparisons, or specifications
+- Footnote references as <sup><a href="#fn-N">[N]</a></sup> in text
+- <section class="footnotes"> at the end with <ol> of <li id="fn-N"> entries
+- <a href="#top" class="back-to-top">↑ Back to top</a> after each major section
 
-Output ONLY the complete HTML document. No markdown wrapping, no explanation.`;
+CONTENT QUALITY — THIS IS CRITICAL:
+- Write 3-5 SUBSTANTIVE paragraphs per section, each 4-8 sentences long
+- USE EVERY specific fact, number, date, statistic from the research data — do not leave data on the table
+- Include comparison/analysis tables where you can contrast items (e.g., feature comparisons, timelines, specifications)
+- Add cross-references between sections ("As discussed in Section 3, ...")
+- Provide analytical insight: don't just state facts, explain significance and implications
+- Include at least one callout box per section highlighting a key takeaway
+- Use blockquotes for direct quotes from developers, press, or official sources
+- Every factual claim needs a footnote reference to its source URL
+- The Sources section must list EVERY URL from the research data with descriptive titles
+- Target report length: 40,000-60,000 characters of HTML (this is a COMPREHENSIVE report)
+
+Output ONLY the complete HTML document starting with <!DOCTYPE html>. No markdown, no explanation.`;
 
 function buildGatherContext(gathered) {
   let ctx = '';
@@ -315,8 +408,8 @@ function buildGatherContext(gathered) {
     ctx += `Search queries used: ${(section.queries || []).join(', ')}\n`;
     ctx += `Findings:\n${section.findings}\n`;
   }
-  if (ctx.length > 40000) {
-    ctx = ctx.slice(0, 40000) + '\n\n[... truncated for length ...]';
+  if (ctx.length > 120000) {
+    ctx = ctx.slice(0, 120000) + '\n\n[... truncated for length ...]';
   }
   return ctx;
 }
@@ -340,7 +433,11 @@ function cleanHtml(raw, title) {
   const fenceMatch = html.match(/```(?:html)?\s*([\s\S]*?)```/);
   if (fenceMatch) html = fenceMatch[1];
   if (!html.trim().toLowerCase().startsWith('<!doctype') && !html.trim().toLowerCase().startsWith('<html')) {
-    html = `<!DOCTYPE html>\n<html>\n<head><meta charset="UTF-8"><title>${title}</title></head>\n<body>\n${html}\n</body>\n</html>`;
+    html = `<!DOCTYPE html>\n<html>\n<head><meta charset="UTF-8"><title>${title}</title><style>${REPORT_CSS}</style></head>\n<body>\n${html}\n</body>\n</html>`;
+  }
+  // If the model produced a full HTML doc but forgot the CSS, inject it
+  if (html.includes('<head>') && !html.includes('--callout-bg')) {
+    html = html.replace('</head>', `<style>${REPORT_CSS}</style>\n</head>`);
   }
   return html;
 }
@@ -357,7 +454,7 @@ async function synthesizeMultiPass(query, outline, gathered, signal, send) {
       { role: 'system', content: REPORT_SYSTEM_PROMPT },
       { role: 'user', content: buildReportUserPrompt(query, outline, gatherContext) },
     ],
-    maxTokens: 16384,
+    maxTokens: 65536,
     signal,
     onToken: (event) => {
       if (event.type === 'token') {
@@ -378,26 +475,34 @@ async function synthesizeMultiPass(query, outline, gathered, signal, send) {
     messages: [
       {
         role: 'system',
-        content: `You are a senior research editor. You review draft reports and provide detailed, actionable critique to improve quality.
+        content: `You are a senior research editor. You review draft reports and provide detailed, actionable critique to improve quality. The revision author will use your critique to produce the final report — be SPECIFIC and THOROUGH.
 
-Evaluate the draft on these dimensions:
-1. DATA USAGE — Are specific facts, numbers, dates, and statistics from the research included? Are any findings from the raw data NOT used that should be?
-2. COMPLETENESS — Does every section have substantial content (2-4 paragraphs)? Are any sections thin or vague?
-3. CITATIONS — Are sources properly attributed? Are any claims unsourced?
-4. ANALYSIS — Does the report merely list facts, or does it provide insight and synthesis?
-5. STRUCTURE — Is the table of contents complete? Do section transitions flow logically?
-6. HTML QUALITY — Is the CSS professional? Are there formatting issues?
+Evaluate the draft on these dimensions, flagging EVERY issue:
 
-For each issue found, cite the specific section and provide the EXACT improvement needed — referencing data from the raw research that should be incorporated.
+1. DATA COMPLETENESS — List every specific fact, number, statistic, date, or quote from the raw research data that is NOT present in the draft. Quote the missing data verbatim so the revision author can paste it in.
 
-Be thorough and specific. This critique drives the final revision pass.`,
+2. SECTION DEPTH — Each section needs 3-5 paragraphs of 4-8 sentences each. Flag any section with fewer than 3 paragraphs or with vague/generic content. State exactly what additional content each thin section needs.
+
+3. CITATIONS — Every factual claim needs a footnote (<sup>[N]</sup>). Count how many footnotes exist vs. how many should exist. List uncited claims.
+
+4. RICH HTML FEATURES — Check for presence of:
+   - Callout boxes (<div class="callout">) — need at least 2-3 across the report. List sections that would benefit from one.
+   - Blockquotes with <cite> — at least 1-2 for notable quotes. List good candidates from the raw data.
+   - Comparison/data tables — list any structured data in the raw research that should be in a table but isn't.
+   - Cross-references between sections — flag opportunities where one section should reference another.
+
+5. ANALYSIS DEPTH — Does the report explain WHY facts matter, or just list them? Flag sections that read like bullet points converted to prose. Suggest specific analytical angles.
+
+6. REPORT LENGTH — A comprehensive report should be 40,000-60,000 characters. If the draft is under 30,000, flag this and list which sections need the most expansion.
+
+For each issue, state the section, the problem, and the specific fix (including data from the raw research to incorporate). Be relentless — every improvement you flag makes the final report better.`,
       },
       {
         role: 'user',
         content: `DRAFT REPORT:\n${draftHtml}\n\nRAW RESEARCH DATA (for verifying completeness):\n${gatherContext}\n\nProvide your detailed critique now.`,
       },
     ],
-    maxTokens: 8192,
+    maxTokens: 16384,
     signal,
     onToken: (event) => {
       if (event.type === 'token') {
@@ -422,20 +527,23 @@ Be thorough and specific. This critique drives the final revision pass.`,
 
 Key priorities for revision:
 - Incorporate ALL specific data points the critique identifies as missing
-- Expand any sections flagged as thin or vague
-- Add proper citations where the critique notes they are missing
-- Improve analysis and insight where flagged
-- Fix any HTML/CSS issues noted
-- The final document must be substantially improved over the draft
+- Expand any sections flagged as thin or vague — target 3-5 substantial paragraphs per section
+- Add footnote citations (<sup><a href="#fn-N">[N]</a></sup>) where the critique notes they are missing
+- Add callout boxes (<div class="callout">) for key insights in every section
+- Add blockquotes with <cite> tags for notable direct quotes
+- Add comparison or data tables wherever structured data exists
+- Include cross-references between sections ("As noted in Section N, ...")
+- Improve analysis and insight where flagged — explain WHY facts matter, not just WHAT they are
+- The final document must be 40,000+ characters of HTML — this is a comprehensive deep-dive
 
-Output the COMPLETE revised HTML document.`,
+Output the COMPLETE revised HTML document starting with <!DOCTYPE html>.`,
       },
       {
         role: 'user',
-        content: `ORIGINAL DRAFT:\n${draftHtml}\n\nEDITOR CRITIQUE:\n${critique}\n\nRAW RESEARCH DATA (for incorporating missing facts):\n${gatherContext}\n\nProduce the complete, revised HTML report now. Address every critique point.`,
+        content: `ORIGINAL DRAFT:\n${draftHtml}\n\nEDITOR CRITIQUE:\n${critique}\n\nRAW RESEARCH DATA (for incorporating missing facts):\n${gatherContext}\n\nProduce the complete, revised HTML report now. Address every critique point. Remember: use the pre-built CSS classes (callout, toc, footnotes, back-to-top, blockquote with cite). Target 40,000+ chars total.`,
       },
     ],
-    maxTokens: 16384,
+    maxTokens: 65536,
     signal,
     onToken: (event) => {
       if (event.type === 'token') {

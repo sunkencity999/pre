@@ -270,14 +270,12 @@ function buildToolDefs() {
       }, ['prompt']));
   }
 
-  // Conditional: web_search
+  // web_search: always available (Brave API if configured, DuckDuckGo fallback otherwise)
   const conns = getActiveConnections();
-  if (conns.brave) {
-    tools.push(tool('web_search', 'Search the web', {
-      query: { type: 'string', description: 'Search query' },
-      count: { type: 'integer', description: 'Number of results (default: 5)' },
-    }, ['query']));
-  }
+  tools.push(tool('web_search', 'Search the web (returns titles, URLs, and snippets)', {
+    query: { type: 'string', description: 'Search query' },
+    count: { type: 'integer', description: 'Number of results (default: 5)' },
+  }, ['query']));
 
   if (conns.github) {
     tools.push(tool('github', 'Interact with GitHub', {

@@ -170,7 +170,7 @@ function buildSystemPrompt(cwd) {
     + `- Use spawn_multi when the user asks to compare, analyze, or investigate multiple independent topics (e.g. "compare frameworks A, B, and C") — agents run sequentially with progress updates\n`
     + `- Sub-agents keep the main context clean — their tool calls and outputs stay in their own session\n`
     + `- Do NOT use sub-agents for simple tasks (one file read, one search, one web fetch) — handle those directly, it's faster\n`
-    + `- Each sub-agent has access to: bash, file reading, glob, grep, web_fetch, web_search, memory, and system info\n`;
+    + `- Each sub-agent has broad tool access: bash, file reading, web_fetch, web_search, browser (headless Chrome), cloud integrations, and more — only destructive tools (file_write, process_kill, etc.) are blocked\n`;
 
   // Report quality
   prompt += `\nREPORT QUALITY STANDARDS:\n`
