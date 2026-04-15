@@ -520,7 +520,7 @@ src/
   ollama.js                Ollama /api/chat NDJSON streaming
   sessions.js              JSONL read/write + project management
   tools.js                 Tool dispatcher + execution loop
-  tools-defs.js            55+ tool definitions for Ollama
+  tools-defs.js            60+ tool definitions for Ollama
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup

@@ -33,7 +33,7 @@ PRE doesn't abstract away the hardware — it leans into it:
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Context allocation** | Fixed `num_ctx=131072` matching across CLI and Web GUI | ~5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
-| **Prompt compression** | Function-signature tool format (~800 tokens for 50+ tools) | More room for conversation, faster prefill |
+| **Prompt compression** | Function-signature tool format (~8K tokens for 60+ tools) | ~8% of 128K context, leaves 92% for conversation |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
 
@@ -124,11 +124,11 @@ my-project #general>
 
 ## What PRE Can Do
 
-PRE is not a chatbot — it's a local agent with deep system access and 50+ tools.
+PRE is not a chatbot — it's a local agent with deep system access and 60+ tools.
 
 **Read and modify your codebase** — Reads files, searches with glob/grep, writes and edits files with checkpointed undo, all through structured tool calls.
 
-**Run commands autonomously** — Bash execution with a streamlined permission model. 42 of 50+ tools auto-execute; only genuinely destructive operations ask for confirmation.
+**Run commands autonomously** — Bash execution with a streamlined permission model. Nearly all 60+ tools auto-execute; only genuinely destructive operations (process kill, memory delete, email send, event/reminder delete) ask for confirmation.
 
 **Remember across sessions** — Persistent memory stores your preferences, project context, workflow patterns, and reference pointers. Memories survive restarts. Auto-extraction learns from conversations without being asked. An **Experience Ledger** captures lessons from past tasks (what worked, what failed, why) and retrieves them via semantic similarity search when relevant future tasks arise.
 
@@ -144,7 +144,7 @@ PRE is not a chatbot — it's a local agent with deep system access and 50+ tool
 
 **Connect to external services** — Google (Gmail, Drive, Docs), GitHub, Telegram, Slack, Jira, Confluence, Smartsheet, Brave Search, and Wolfram Alpha. Configure via `/connections` or the web GUI Settings panel.
 
-**Use from your browser** — Built-in web GUI at `http://localhost:7749` with three themes (Dark, Light, Evangelion), real-time streaming, full tool execution, session management, project organization, memory browser, cron scheduler, and connection management.
+**Use from your browser** — Built-in web GUI at `http://localhost:7749` with two themes (Dark, Light), real-time streaming, full tool execution, session management, project organization, memory browser, cron scheduler, and connection management.
 
 **Delegate to frontier AI** — When a task requires cloud-level intelligence, route it to Claude (Anthropic), Codex (OpenAI), or Gemini (Google) with a single click. PRE detects which CLIs are installed, streams the response back in real-time, and stores the result in the session alongside local messages. Use local inference for 95% of tasks; escalate on demand.
 
@@ -293,7 +293,7 @@ Type `/help` for the full list, or `/help <topic>` for detailed guides.
 
 ### Tools
 
-PRE has 50+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
+PRE has 60+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
 
 - **Auto** — executes immediately (47+ tools)
 - **Confirm always** — asks every time (3 tools: `process_kill`, `memory_delete`, `applescript`)
@@ -631,7 +631,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 ### Features
 
 - **Real-time streaming** — tokens appear as the model generates them, with thinking blocks, streaming cursor, and live tool status cards
-- **Full tool execution** — all 50+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **Full tool execution** — all 60+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
 - **Sub-agent spawning** — the model can delegate research tasks to autonomous sub-agents that run in parallel, each with their own Ollama session
 - **Browser automation** — headless Chrome control with vision-aware screenshot feedback. Navigate, click, type, scroll, and read web pages.
 - **MCP server support** — connect external MCP tool servers; their tools are automatically discovered and available to the model
@@ -647,7 +647,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 - **Connection manager** — configure all external services from the Settings panel (API keys, OAuth)
 - **Context tracking** — live context window usage bar in the topbar
 - **Tool confirmation** — dangerous tools show a confirmation dialog before executing
-- **Four themes** — Dark, Light, Evangelion (NERV-inspired orange-on-purple with hexagonal grid), and Metal Gear (CRT military terminal with phosphor green scanlines)
+- **Two themes** — Dark (`#0a0a0a` background, blue primary) and Light (`#fafafa` background, blue primary)
 - **Calendas Plus typography** — serif display font for headings, system-ui stack for body text
 - **Auto-generated titles** — sessions are automatically named based on the first message
 - **Responsive layout** — three-panel design (sidebar, chat, artifact panel) with mobile hamburger drawer
@@ -990,7 +990,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 ┌──▼──────────────┐  ┌──┴──────────────┐
 │    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
 │ Juggernaut XL   │  │  (Node.js/WS)   │  3 themes, streaming
-│  (MPS/Metal)    │  │  vanilla JS SPA  │  50+ tools, cron runner
+│  (MPS/Metal)    │  │  vanilla JS SPA  │  60+ tools, cron runner
 │ 25-step, 1024px │  │  shared sessions │  file upload, image gen
 └─────────────────┘  └─────────────────┘
 
@@ -1023,7 +1023,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines) handling:
 - Raw `recv()` NDJSON streaming with 64KB ring buffer
 - Fixed `num_ctx=131072` matching across CLI and Web GUI (avoids Ollama reload)
-- 50+ tool implementations with two-tier permissions + hook-based policy enforcement
+- 60+ tool implementations with two-tier permissions + hook-based policy enforcement
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` fallback
 - Local image generation via ComfyUI (checkpoint-adaptive workflow)
 - Multi-part artifacts with incremental append
@@ -1047,7 +1047,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Session JSONL read/write (shared format with CLI)
 - File/image upload (drag-and-drop, clipboard paste, file picker)
 - Document generation (DOCX, XLSX via docx/exceljs, PDF via pdfkit)
-- Four themes with CSS custom properties (Dark, Light, Evangelion, Metal Gear)
+- Two themes with CSS custom properties (Dark, Light)
 - No framework, no bundler — under 3K lines total JS
 
 **Telegram Bot** (`telegram.m`) is a companion binary (~2000 lines):
@@ -1132,7 +1132,7 @@ pre/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client
 │   │   ├── sessions.js      # JSONL read/write (shared with CLI)
 │   │   ├── tools.js         # Tool dispatcher + execution loop
-│   │   ├── tools-defs.js    # 50+ tool definitions for Ollama
+│   │   ├── tools-defs.js    # 60+ tool definitions for Ollama
 │   │   ├── context.js       # System prompt builder
 │   │   ├── memory.js        # Auto-extraction engine
 │   │   ├── connections.js   # Credential management
