@@ -587,11 +587,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       if (toolName === 'image_generate' && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/View at: (\/artifacts\/[^\s]+)/);
         if (urlMatch) {
-          send({
-            type: 'image_generated',
-            prompt: toolArgs.prompt || '',
-            path: urlMatch[1],
-          });
+          const event = { type: 'image_generated', prompt: toolArgs.prompt || '', path: urlMatch[1] };
+          send(event);
+          // Persist so the image card survives page refresh
+          appendMessage(sessionId, { role: 'display', display: 'image', prompt: event.prompt, path: event.path });
         }
       }
 
@@ -600,12 +599,15 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         const urlMatch = output.match(/\/artifacts\/[^\s]+/);
         if (urlMatch) {
           const isDoc = toolName === 'document';
-          send({
+          const event = {
             type: isDoc ? 'document' : 'artifact',
             title: toolArgs.title || (isDoc ? 'Document' : 'Artifact'),
             path: urlMatch[0],
             artifactType: isDoc ? (toolArgs.format || 'txt') : (toolArgs.type || 'html'),
-          });
+          };
+          send(event);
+          // Persist so artifact/document cards survive page refresh
+          appendMessage(sessionId, { role: 'display', display: isDoc ? 'document' : 'artifact', title: event.title, path: event.path, artifactType: event.artifactType });
         }
       }
 
@@ -613,12 +615,14 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       if (toolName === 'pdf_export' && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/Download: (\/artifacts\/[^\s]+)/);
         if (urlMatch) {
-          send({
+          const event = {
             type: 'document',
             title: `${toolArgs.title || 'Export'} (PDF)`,
             path: urlMatch[1],
             artifactType: 'pdf',
-          });
+          };
+          send(event);
+          appendMessage(sessionId, { role: 'display', display: 'document', title: event.title, path: event.path, artifactType: 'pdf' });
         }
       }
 

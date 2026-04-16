@@ -477,6 +477,19 @@ const Chat = (() => {
 
     for (const msg of messages) {
       if (msg.role === 'system') continue;
+
+      // Render persisted display records (artifacts, documents, images)
+      if (msg.role === 'display') {
+        if (msg.display === 'image') {
+          addImageCard(msg.prompt || '', msg.path);
+        } else if (msg.display === 'artifact') {
+          addArtifactCard(msg.title || 'Artifact', msg.path, msg.artifactType || 'html');
+        } else if (msg.display === 'document') {
+          addDocumentCard(msg.title || 'Document', msg.path, msg.artifactType || 'txt');
+        }
+        continue;
+      }
+
       if (msg.role === 'tool') {
         // Parse <tool_response> tags for rich rendering of images/artifacts/documents
         const responses = msg.content.match(/<tool_response\s+name="([^"]+)">([\s\S]*?)<\/tool_response>/g) || [];
@@ -547,6 +560,7 @@ const Chat = (() => {
     // ~1 token per 4 chars is a rough approximation
     // Include tool_calls arguments size (can be large for artifacts)
     const totalChars = messages.reduce((sum, m) => {
+      if (m.role === 'display') return sum; // Display records aren't sent to the model
       let chars = (m.content || '').length;
       if (m.tool_calls) {
         try { chars += JSON.stringify(m.tool_calls).length; } catch {}

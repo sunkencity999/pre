@@ -4,6 +4,7 @@
 
 const { streamChat } = require('./ollama');
 const { appendMessage, renameSession } = require('./sessions');
+// Note: appendMessage is also used for persisting display-only records (artifacts, docs)
 const { spawnAgent } = require('./tools/agents');
 const { createArtifact } = require('./tools/artifact');
 const delegate = require('./tools/delegate');
@@ -109,6 +110,7 @@ async function runDeepResearch({ sessionId, query, cwd, send, signal, useFrontie
   const pathMatch = artifactResult.match(/\/artifacts\/[^\s]+\.html/);
   if (pathMatch) {
     send({ type: 'artifact', title: reportTitle, path: pathMatch[0], artifactType: 'html' });
+    appendMessage(sessionId, { role: 'display', display: 'artifact', title: reportTitle, path: pathMatch[0], artifactType: 'html' });
   }
 
   // ── PDF Export ──
@@ -119,6 +121,7 @@ async function runDeepResearch({ sessionId, query, cwd, send, signal, useFrontie
       const pdfResult = await exportPdf(pathMatch[0], reportTitle);
       pdfPath = pdfResult.webPath;
       send({ type: 'document', title: `${reportTitle} (PDF)`, path: pdfPath, artifactType: 'pdf' });
+      appendMessage(sessionId, { role: 'display', display: 'document', title: `${reportTitle} (PDF)`, path: pdfPath, artifactType: 'pdf' });
     } catch (err) {
       console.log(`[research] PDF generation failed: ${err.message}`);
       // Not fatal — the HTML artifact is still available

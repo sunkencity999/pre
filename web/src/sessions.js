@@ -244,10 +244,12 @@ function rewindSession(sessionId, turns = 1) {
 }
 
 /**
- * Get session messages formatted for Ollama API
+ * Get session messages formatted for Ollama API.
+ * Filters out display-only records (artifacts, documents, images) that are
+ * persisted for UI rendering but should not be sent to the model.
  */
 function getSessionMessages(sessionId) {
-  return getSession(sessionId);
+  return getSession(sessionId).filter(m => m.role !== 'display');
 }
 
 module.exports = {
