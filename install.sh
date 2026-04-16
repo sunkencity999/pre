@@ -4,7 +4,7 @@
 # This script handles everything from Ollama to ready-to-run:
 #   1. Checks system requirements (Apple Silicon, macOS, RAM, disk)
 #   2. Installs/verifies Ollama
-#   3. Pulls the base model (gemma4:26b-a4b-it-q4_K_M, ~17GB)
+#   3. Pulls the base model (gemma4:26b-a4b-it-q8_0, ~28GB)
 #   4. Creates optimized custom model (pre-gemma4) from Modelfile
 #   5. Installs Xcode CLI tools if needed
 #   6. Compiles PRE CLI binary
@@ -12,7 +12,7 @@
 #   8. Sets up ~/.pre/ directories
 #
 # Run time: 5-20 minutes depending on internet speed.
-# Disk space required: ~17GB for model + negligible for binaries.
+# Disk space required: ~28GB for model + negligible for binaries.
 
 set -e
 
@@ -26,7 +26,7 @@ RESET='\033[0m'
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$REPO_DIR/engine"
-BASE_MODEL="gemma4:26b-a4b-it-q4_K_M"
+BASE_MODEL="gemma4:26b-a4b-it-q8_0"
 CUSTOM_MODEL="pre-gemma4"
 
 step() { echo -e "\n${BOLD}${CYAN}=== $1 ===${RESET}\n"; }
@@ -58,23 +58,23 @@ if [ "$MACOS_MAJOR" -lt 14 ]; then
 fi
 ok "  macOS: $MACOS_VER"
 
-# RAM
+# RAM — q8_0 model loads at ~32GB, need headroom for KV cache + OS
 RAM_BYTES=$(sysctl -n hw.memsize)
 RAM_GB=$((RAM_BYTES / 1073741824))
-if [ "$RAM_GB" -lt 16 ]; then
-    fail "PRE requires at least 16GB unified memory. Detected: ${RAM_GB}GB"
-fi
 if [ "$RAM_GB" -lt 32 ]; then
-    warn "  RAM: ${RAM_GB}GB — functional, but 32GB+ recommended for full 128K context."
+    fail "PRE requires at least 32GB unified memory (q8_0 model loads at ~32GB). Detected: ${RAM_GB}GB"
+fi
+if [ "$RAM_GB" -lt 64 ]; then
+    warn "  RAM: ${RAM_GB}GB — functional, but 64GB+ recommended for full 128K context with headroom."
 else
     ok "  RAM: ${RAM_GB}GB unified memory"
 fi
 
-# Disk space (~17GB for model, ~1GB headroom)
+# Disk space (~28GB for q8_0 model, ~2GB headroom)
 AVAIL_KB=$(df -k "$REPO_DIR" | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1048576))
-if [ "$AVAIL_GB" -lt 20 ]; then
-    warn "  Disk: ${AVAIL_GB}GB available — need ~17GB for model download."
+if [ "$AVAIL_GB" -lt 35 ]; then
+    warn "  Disk: ${AVAIL_GB}GB available — need ~28GB for q8_0 model download."
     echo -n "  Continue anyway? [y/N] "
     read -r ans
     if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then exit 1; fi
@@ -141,14 +141,88 @@ fi
 ok "  Ollama running on port $PORT."
 
 # ============================================================================
+# Step 1b: Ollama environment optimizations for Gemma 4 MoE
+# ============================================================================
+step "Configuring Ollama environment"
+
+# These settings are tuned for Gemma 4 26B MoE on Apple Silicon:
+#   FA=0:            Gemma 4's hybrid attention (sliding-window + global) is slower/unstable with Flash Attention
+#   KEEP_ALIVE=24h:  Keep model loaded in GPU memory between requests
+#   NUM_PARALLEL=1:  Single-user — don't split KV cache across parallel slots
+#   MAX_LOADED=1:    Only one model at a time to avoid memory waste
+
+OLLAMA_ENVS=(
+    "OLLAMA_FLASH_ATTENTION:0"
+    "OLLAMA_KEEP_ALIVE:24h"
+    "OLLAMA_NUM_PARALLEL:1"
+    "OLLAMA_MAX_LOADED_MODELS:1"
+)
+
+# Set via launchctl for the macOS Ollama.app
+NEEDS_RESTART=false
+for entry in "${OLLAMA_ENVS[@]}"; do
+    KEY="${entry%%:*}"
+    VAL="${entry#*:}"
+    CURRENT=$(launchctl getenv "$KEY" 2>/dev/null || echo "")
+    if [ "$CURRENT" != "$VAL" ]; then
+        launchctl setenv "$KEY" "$VAL"
+        NEEDS_RESTART=true
+    fi
+done
+ok "  launchctl environment set (FA=0, KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
+
+# Persist in shell profile so new terminals inherit the values
+SHELL_RC=""
+if [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+elif [ -f "$HOME/.bash_profile" ]; then
+    SHELL_RC="$HOME/.bash_profile"
+elif [ -f "$HOME/.bashrc" ]; then
+    SHELL_RC="$HOME/.bashrc"
+fi
+
+if [ -n "$SHELL_RC" ]; then
+    CHANGED=false
+    for entry in "${OLLAMA_ENVS[@]}"; do
+        KEY="${entry%%:*}"
+        VAL="${entry#*:}"
+        if ! grep -q "^export ${KEY}=" "$SHELL_RC" 2>/dev/null; then
+            echo "export ${KEY}=${VAL}" >> "$SHELL_RC"
+            CHANGED=true
+        fi
+    done
+    if [ "$CHANGED" = true ]; then
+        ok "  Ollama env vars added to $SHELL_RC"
+    else
+        ok "  Ollama env vars already in $SHELL_RC"
+    fi
+fi
+
+# Restart Ollama if env vars changed and it's running
+if [ "$NEEDS_RESTART" = true ]; then
+    if pgrep -f "Ollama.app" >/dev/null 2>&1; then
+        echo "  Restarting Ollama to pick up new environment..."
+        pkill -f "Ollama.app" 2>/dev/null
+        sleep 3
+        open -a Ollama 2>/dev/null || ollama serve >/dev/null 2>&1 &
+        # Wait for API
+        for i in $(seq 1 30); do
+            if curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then break; fi
+            sleep 1
+        done
+        ok "  Ollama restarted with optimized settings"
+    fi
+fi
+
+# ============================================================================
 # Step 2: Pull base model
 # ============================================================================
 step "Pulling base model ($BASE_MODEL)"
 
-if ollama list 2>/dev/null | grep -q "gemma4.*26b-a4b-it-q4_K_M"; then
+if ollama list 2>/dev/null | grep -q "gemma4.*26b-a4b-it-q8_0"; then
     ok "  Base model already available."
 else
-    echo "  Downloading ~17GB model. This may take a while..."
+    echo "  Downloading ~28GB model. This may take a while..."
     echo "  (Download is resumable — safe to interrupt and re-run)"
     ollama pull "$BASE_MODEL" || fail "Failed to pull $BASE_MODEL"
     ok "  Base model downloaded."
@@ -360,9 +434,9 @@ if [ -f "$COMFYUI_CONFIG" ]; then
 else
     # Check available RAM
     RAM_GB=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
-    if [ "$RAM_GB" -lt 48 ] 2>/dev/null; then
-        warn "  Note: Your system has ${RAM_GB}GB RAM. Image generation (SDXL + Gemma 4) works"
-        warn "  best with 48GB+. You can skip this and add it later with /connections."
+    if [ "$RAM_GB" -lt 64 ] 2>/dev/null; then
+        warn "  Note: Your system has ${RAM_GB}GB RAM. Image generation (SDXL + Gemma 4 q8_0) works"
+        warn "  best with 64GB+. You can skip this and add it later with /connections."
     fi
 
     echo ""
@@ -523,12 +597,17 @@ fi
 # ============================================================================
 step "Pre-warming model into GPU memory"
 
-echo "  Loading $CUSTOM_MODEL into GPU (this takes 10-30 seconds)..."
-curl -sf "http://localhost:${PORT}/api/chat" -d "{\"model\":\"$CUSTOM_MODEL\",\"messages\":[],\"keep_alive\":\"24h\"}" >/dev/null 2>&1 || true
+echo "  Loading $CUSTOM_MODEL into GPU with full 128K context (this takes 30-60 seconds)..."
+# Send a real message with full num_ctx to force Ollama to allocate the complete KV cache.
+# An empty messages array defers KV allocation to the first real request.
+curl -sf --max-time 300 "http://localhost:${PORT}/api/chat" \
+    -d "{\"model\":\"$CUSTOM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"keep_alive\":\"24h\",\"options\":{\"num_predict\":1,\"num_ctx\":131072}}" \
+    >/dev/null 2>&1 || true
 
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     if ollama ps 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
-        ok "  Model loaded into GPU memory."
+        MEM=$(ollama ps 2>/dev/null | grep "$CUSTOM_MODEL" | awk '{print $4}')
+        ok "  Model loaded into GPU memory (${MEM})."
         break
     fi
     sleep 1

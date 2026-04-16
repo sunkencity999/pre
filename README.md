@@ -2,7 +2,7 @@
 
 > A fully local agentic assistant that actually works. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~70 tokens/second**, sub-second time to first token, 128K context window, 60+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 60+ integrated tools, persistent memory, local image generation, autonomous scheduling, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -16,7 +16,7 @@ Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, con
 
 **Gemma 4 26B-A4B** is a Mixture-of-Experts (MoE) architecture: 26 billion total parameters, but only **3.8 billion active per token** (128 experts, 8 active per forward pass). This is the key to the entire system:
 
-- **Speed without sacrifice.** 26B-parameter quality at ~4B computational cost. On Apple Silicon with q4_K_M quantization (~17 GB), this means **~70 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
+- **Speed without sacrifice.** 26B-parameter quality at ~4B computational cost. On Apple Silicon with q8_0 quantization (~28 GB, near-lossless), this means **~73 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
 
 - **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **128K token window** — large enough for deep multi-step workflows (read 20 files, chain tool calls, iterate across 60+ tools) while cold-loading in under 5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
 
@@ -72,6 +72,7 @@ This means PRE can:
   - [Scheduling (Cron)](#scheduling-cron)
   - [Context Management](#context-management)
 - [Best Practices](#best-practices)
+- [Performance & Optimization](#performance--optimization)
 - [Web GUI](#web-gui)
 - [Frontier AI Delegation](#frontier-ai-delegation)
 - [Experience Ledger](#experience-ledger)
@@ -101,7 +102,7 @@ cd pre
 pre-launch
 ```
 
-The installer checks system requirements, installs Ollama if needed, pulls the base model (~17 GB), creates the optimized `pre-gemma4` model, builds the PRE binary, sets up the web GUI, installs `terminal-notifier` for clickable notifications, creates data directories, and pre-warms the model into GPU memory.
+The installer checks system requirements, installs Ollama if needed, pulls the base model (~28 GB), creates the optimized `pre-gemma4` model, builds the PRE binary, sets up the web GUI, installs `terminal-notifier` for clickable notifications, creates data directories, configures Ollama performance optimizations, and pre-warms the model into GPU memory.
 
 PRE detects your project, loads memories, and drops you into an interactive prompt:
 
@@ -174,8 +175,8 @@ PRE is not a chatbot — it's a local agent with deep system access and 60+ tool
 |-----------|----------|
 | **macOS** | 14.0+ (Sonoma or later) |
 | **Chip** | Apple Silicon (M1 or later) |
-| **RAM** | 16 GB minimum, 32+ GB recommended |
-| **Disk** | ~17 GB for model, +8 GB for image generation (optional) |
+| **RAM** | 32 GB minimum, 64+ GB recommended |
+| **Disk** | ~28 GB for model, +8 GB for image generation (optional) |
 | **Ollama** | [ollama.ai](https://ollama.ai) or `brew install ollama` |
 | **Xcode CLI** | `xcode-select --install` |
 | **Node.js 18+** | For web GUI (`brew install node`) |
@@ -194,8 +195,8 @@ The installer handles everything: system validation, Ollama, model pull, binary 
 Or install manually:
 
 ```bash
-# Pull the base model (~17 GB)
-ollama pull gemma4:26b-a4b-it-q4_K_M
+# Pull the base model (~28 GB)
+ollama pull gemma4:26b-a4b-it-q8_0
 
 # Create the optimized model
 cd pre/engine
@@ -339,6 +340,7 @@ PRE has 60+ tools that the model calls autonomously. Nearly all auto-execute wit
 
 | Tool | Args | Description |
 |------|------|-------------|
+| `computer` | `action`, `coordinate`?, `text`?, `key`? | Desktop automation via screenshot → vision → click/type/scroll loop (requires `cliclick`) |
 | `screenshot` | `region`? | Capture screen (full/window/region/x,y,w,h) |
 | `window_list` | *(none)* | List open windows with positions |
 | `window_focus` | `app` | Bring an app to front |
@@ -347,6 +349,17 @@ PRE has 60+ tools that the model calls autonomously. Nearly all auto-execute wit
 | `open_app` | `target` | Open files/apps/URLs via macOS `open` |
 | `notify` | `title`, `message` | Show a macOS notification |
 | `applescript` | `script` | Run arbitrary AppleScript *(confirm always)* |
+
+#### Native macOS Apps
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `apple_mail` | `action`, `to`?, `subject`?, `body`? | Mail.app — search, read, send, reply via AppleScript |
+| `apple_calendar` | `action`, `title`?, `start`?, `end`? | Calendar.app — list, create, update, delete events via EventKit/Swift |
+| `apple_contacts` | `action`, `query`? | Contacts.app — search, read contacts via AppleScript |
+| `apple_reminders` | `action`, `title`?, `list`? | Reminders.app — list, create, complete, delete via EventKit/Swift |
+| `apple_notes` | `action`, `title`?, `body`? | Notes.app — search, read, create notes via AppleScript |
+| `spotlight` | `query`, `kind`?, `scope`? | Full-text file search via mdfind (no AppleScript) |
 
 #### Web
 
@@ -411,7 +424,7 @@ These require API keys or OAuth setup via `/connections` or the web GUI Settings
 
 | Tool | Connection | Description |
 |------|------------|-------------|
-| `web_search` | Brave Search | Web search via Brave Search API |
+| `web_search` | Brave Search (or DuckDuckGo fallback) | Web search — uses Brave API if configured, DuckDuckGo otherwise |
 | `github` | GitHub | Search repos, issues, PRs, user info |
 | `gmail` | Google | Search, read, send, draft, trash, labels |
 | `gdrive` | Google | List, search, download, upload, share |
@@ -421,6 +434,11 @@ These require API keys or OAuth setup via `/connections` or the web GUI Settings
 | `confluence` | Confluence | Search pages, read, create, update |
 | `smartsheet` | Smartsheet | List sheets, search rows, add/update rows |
 | `slack` | Slack | Send messages, list channels, reply, react |
+| `linear` | Linear | Search/create/update issues, manage cycles and projects |
+| `zoom` | Zoom | Create/list meetings, manage recordings |
+| `figma` | Figma | Inspect files, export images, post comments |
+| `asana` | Asana | List/create/search tasks, manage projects |
+| `sharepoint` | Microsoft 365 | List sites, search/upload/download files |
 | `wolfram` | Wolfram Alpha | Computation, math, science, data queries |
 
 ---
@@ -513,11 +531,16 @@ PRE integrates with external services via API keys and OAuth. Configure via `/co
 | **Google** | Built-in OAuth 2.0 | `gmail`, `gdrive`, `gdocs` |
 | **Telegram** | Bot token (@BotFather) | Phone access + cron delivery |
 | **Slack** | Bot OAuth token (xoxb-) | `slack` |
-| **Brave Search** | API key | `web_search` |
+| **Brave Search** | API key | `web_search` (enhanced — DuckDuckGo fallback works without config) |
 | **GitHub** | Personal access token | `github` |
 | **Jira** | URL + API token | `jira` |
 | **Confluence** | URL + API token | `confluence` |
 | **Smartsheet** | API token | `smartsheet` |
+| **Linear** | API key | `linear` |
+| **Zoom** | Server-to-Server OAuth (Account ID + Client ID + Secret) | `zoom` |
+| **Figma** | Personal access token | `figma` |
+| **Asana** | Personal access token | `asana` |
+| **Microsoft 365** | Client ID + refresh token | `sharepoint` |
 | **Wolfram Alpha** | API key | `wolfram` |
 
 **Google** uses built-in OAuth — just sign in via your browser. No Google Cloud Console setup required. Multi-account supported: `/connections add google work`.
@@ -617,6 +640,67 @@ PRE manages Gemma 4's context window with a **fixed 128K token allocation** (131
 2. **Be specific in prompts.** Good: "Check disk usage on / and /Users, alert if >80%". Bad: "check things".
 3. **Use the Result button.** Each cron job run is a full chat session you can review and continue.
 4. **Configure delivery channels.** Add Telegram and/or Slack tokens for push notifications even when away from the computer.
+
+---
+
+## Performance & Optimization
+
+PRE is tuned for maximum quality and speed on Apple Silicon. Every configuration choice has been individually benchmarked on an M4 Max (128 GB).
+
+### Model Quantization
+
+| Quantization | Size | Decode Speed | Quality Loss vs FP16 | Status |
+|-------------|------|-------------|----------------------|--------|
+| **q8_0** | ~28 GB | ~73 tok/s | <1% (near-lossless) | **Active** |
+| q4_K_M | ~17 GB | ~88 tok/s | ~3.3% | Replaced |
+
+PRE uses **q8_0** — the highest practical quantization for 128 GB unified memory. The ~17% speed reduction versus q4_K_M is a worthwhile trade for near-lossless output quality, especially for complex agentic tasks where reasoning accuracy directly affects tool-call success rates.
+
+### Ollama Environment Tuning
+
+Each optimization was benchmarked individually. Four changes were kept; two were tested and rejected:
+
+| Setting | Value | Effect | Benchmark Result |
+|---------|-------|--------|-----------------|
+| `OLLAMA_FLASH_ATTENTION` | `0` (disabled) | Gemma 4 uses hybrid attention (50 sliding-window + 10 global layers). Flash Attention is slower and unstable with this architecture on Apple Silicon. | Measurably faster with FA off |
+| `OLLAMA_KEEP_ALIVE` | `24h` | Model stays loaded in GPU memory. Avoids 5+ second cold-load between requests. | Sub-second TTFT on warm cache |
+| `OLLAMA_NUM_PARALLEL` | `1` | Single-user mode. Prevents KV cache splitting across parallel request slots. | Full cache available to one request |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Prevents multiple model instances from loading simultaneously (e.g., after a model rebuild). | Avoids 50+ GB dual-load |
+
+**Tested and rejected:**
+
+| Setting | Why Rejected |
+|---------|-------------|
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | Saved ~2 GB but cost 7% decode speed (81.6 vs 88 tok/s). Not worth it with 128 GB RAM. |
+| Explicit `<\|think\|>` token | Gemma 4 already has thinking enabled by default in Ollama's chat template renderer. Adding it manually is redundant. |
+
+### Sampling Parameters
+
+Configured in `engine/Modelfile` and applied to every request:
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `temperature` | `1.0` | Google's recommended default for Gemma 4 |
+| `top_k` | `64` | Google's recommended default |
+| `top_p` | `0.95` | Google's recommended default |
+| `min_p` | `0.05` | Emerging best practice — cuts the absolute bottom of the probability distribution, improving diversity without sacrificing coherence |
+
+### Speed Profile (M4 Max, 128 GB)
+
+| Metric | Value |
+|--------|-------|
+| **Decode speed** | ~73 tok/s |
+| **Prompt eval speed** | ~800 tok/s |
+| **Time to first token** | <1s (warm cache) |
+| **Cold load time** | ~5s |
+| **Context window** | 128K tokens (131,072) |
+| **KV cache allocation** | ~5s for full 128K on first request |
+
+### Why Not Smaller / Why Not Bigger?
+
+- **Why not q4_K_M (~17 GB, ~88 tok/s)?** — The 3.3% quality loss measurably degrades multi-step reasoning and tool-call accuracy. For an agentic system where the model chains 10-25 tool calls per task, compounding small errors matters more than raw speed.
+- **Why not FP16 (~52 GB)?** — Would leave insufficient headroom for KV cache at 128K context. The q8_0 quantization is <1% quality loss — effectively indistinguishable from FP16 in practice.
+- **Why 128K context, not 262K?** — Gemma 4 supports 262K natively, but the KV cache for 262K would consume ~40 GB+ at q8_0. The 128K allocation balances deep multi-step workflows with memory headroom for the model weights and OS.
 
 ---
 
@@ -975,9 +1059,9 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 │  (pre.m)    │   raw recv() NDJSON │  localhost:11434  │
 │ ~10000 lines│                     │                   │
 │  Obj-C / C  │                     │  Gemma 4 26B-A4B  │
-└──┬──────┬───┘                     │  MoE, q4_K_M      │
+└──┬──────┬───┘                     │  MoE, q8_0         │
    │      │                         │  num_ctx=131072    │
-   │      │ fork/exec               │  ~70 tok/s         │
+   │      │ fork/exec               │  ~73 tok/s         │
    │      │                         └──────────▲────────┘
    │  ┌───▼──────────┐  /api/chat (non-stream) │
    │  │ pre-telegram  │ ───────────────────────┘
@@ -989,7 +1073,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
    │                    ┌───────────────────────┘
 ┌──▼──────────────┐  ┌──┴──────────────┐
 │    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
-│ Juggernaut XL   │  │  (Node.js/WS)   │  3 themes, streaming
+│ Juggernaut XL   │  │  (Node.js/WS)   │  2 themes, streaming
 │  (MPS/Metal)    │  │  vanilla JS SPA  │  60+ tools, cron runner
 │ 25-step, 1024px │  │  shared sessions │  file upload, image gen
 └─────────────────┘  └─────────────────┘
@@ -1067,6 +1151,10 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 | `PRE_PORT` | `11434` | Ollama server port |
 | `PRE_WEB_PORT` | `7749` | Web GUI server port |
 | `EDITOR` | `vi` | Editor for `/edit` command |
+| `OLLAMA_FLASH_ATTENTION` | `0` | Disabled — Gemma 4 hybrid attention is slower/unstable with FA |
+| `OLLAMA_KEEP_ALIVE` | `24h` | Keep model loaded in GPU memory between requests |
+| `OLLAMA_NUM_PARALLEL` | `1` | Single-user — don't split KV cache across parallel slots |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Only one model at a time — prevents dual loading after model rebuild |
 
 ### CLI Options
 
@@ -1152,6 +1240,14 @@ pre/
 │   │       ├── document.js  # DOCX/XLSX/PDF/TXT/CSV generation
 │   │       ├── image.js     # ComfyUI image generation
 │   │       ├── cron.js      # Cron job management
+│   │       ├── computer.js  # Desktop automation (cliclick + vision loop)
+│   │       ├── browser.js   # Headless Chrome automation (Puppeteer)
+│   │       ├── mail.js      # Mail.app via AppleScript
+│   │       ├── calendar.js  # Calendar.app via EventKit/Swift
+│   │       ├── contacts.js  # Contacts.app via AppleScript
+│   │       ├── reminders.js # Reminders.app via EventKit/Swift
+│   │       ├── notes.js     # Notes.app via AppleScript
+│   │       ├── spotlight.js # mdfind full-text search
 │   │       ├── github.js    # GitHub API
 │   │       ├── google.js    # Gmail, Drive, Docs
 │   │       ├── telegram.js  # Telegram Bot API
@@ -1159,9 +1255,13 @@ pre/
 │   │       ├── confluence.js # Confluence API
 │   │       ├── smartsheet.js # Smartsheet API
 │   │       ├── slack.js     # Slack API
-│   │       ├── agents.js   # Sub-agent spawning + parallel execution
-│   │       ├── browser.js  # Headless Chrome automation (Puppeteer)
-│   │       └── delegate.js # Frontier AI delegation (Claude/Codex/Gemini)
+│   │       ├── linear.js    # Linear API
+│   │       ├── zoom.js      # Zoom API (S2S OAuth)
+│   │       ├── figma.js     # Figma API
+│   │       ├── asana.js     # Asana API
+│   │       ├── sharepoint.js # Microsoft 365 / SharePoint
+│   │       ├── agents.js    # Sub-agent spawning + parallel execution
+│   │       └── delegate.js  # Frontier AI delegation (Claude/Codex/Gemini)
 │   └── public/
 │       ├── index.html       # SPA shell
 │       ├── favicon.svg
