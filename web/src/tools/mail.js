@@ -179,10 +179,21 @@ tell application "Mail"
     repeat with mbox in mailboxes of acct
       try
         set m to first message of mbox whose id is ${msgId}
+        set sndr to sender of m
+        set s to subject of m
+        set readStat to read status of m as text
         set msgDate to date received of m
         set msgDateStr to (year of msgDate as text) & "-" & text -2 thru -1 of ("0" & ((month of msgDate) as integer) as text) & "-" & text -2 thru -1 of ("0" & (day of msgDate) as text)
-        set msgInfo to "From: " & (sender of m) & "\\nTo: " & (address of to recipients of m as text) & "\\nDate: " & msgDateStr & "\\nSubject: " & (subject of m) & "\\nRead: " & (read status of m) & "\\n\\n" & (content of m)
-        return text 1 thru (min of {(length of msgInfo), 8000}) of msgInfo
+        try
+          set toAddr to address of to recipients of m as text
+        on error
+          set toAddr to "(unknown)"
+        end try
+        set c to content of m
+        if (length of c) > 7000 then
+          set c to text 1 thru 7000 of c
+        end if
+        return "From: " & sndr & return & "To: " & toAddr & return & "Date: " & msgDateStr & return & "Subject: " & s & return & "Read: " & readStat & return & return & c
       end try
     end repeat
   end repeat
