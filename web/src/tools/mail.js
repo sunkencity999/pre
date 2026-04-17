@@ -117,19 +117,30 @@ function searchMail(args) {
   if (!query) return 'Error: "query" is required for search';
 
   const escQuery = query.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-  const mailboxRef = mailbox.toLowerCase() === 'inbox' ? 'inbox' : `mailbox "${mailbox}"`;
+  // Always use mailbox "..." syntax — the bare `inbox` keyword fails on Exchange/IMAP accounts
+  const mboxName = mailbox.toLowerCase() === 'inbox' ? 'INBOX' : mailbox;
+
+  // Build account filter
+  const accountArg = args.account || '';
+  let accountFilter = '';
+  if (accountArg) {
+    accountFilter = `set acctList to {account "${accountArg.replace(/"/g, '\\"')}"}`;
+  } else {
+    accountFilter = 'set acctList to accounts';
+  }
 
   // Search by subject and sender — AppleScript's "whose" clause
   const script = `
 tell application "Mail"
+  ${accountFilter}
   set resultList to {}
   set matchCount to 0
   set maxResults to ${count}
 
-  -- Search across all accounts
-  repeat with acct in accounts
+  -- Search across accounts
+  repeat with acct in acctList
     try
-      set msgs to messages of ${mailboxRef} of acct whose subject contains "${escQuery}" or sender contains "${escQuery}"
+      set msgs to messages of mailbox "${mboxName}" of acct whose subject contains "${escQuery}" or sender contains "${escQuery}"
       repeat with m in msgs
         if matchCount ≥ maxResults then exit repeat
         set msgDate to date received of m
@@ -191,7 +202,8 @@ function listRecent(args) {
   const mailbox = args.mailbox || 'inbox';
   const account = args.account || '';
 
-  const mailboxRef = mailbox.toLowerCase() === 'inbox' ? 'inbox' : `mailbox "${mailbox}"`;
+  // Always use mailbox "..." syntax — the bare `inbox` keyword fails on Exchange/IMAP accounts
+  const mboxName = mailbox.toLowerCase() === 'inbox' ? 'INBOX' : mailbox;
 
   let accountFilter = '';
   if (account) {
@@ -208,7 +220,7 @@ tell application "Mail"
 
   repeat with acct in acctList
     try
-      set msgs to messages 1 thru ${count} of ${mailboxRef} of acct
+      set msgs to messages 1 thru ${count} of mailbox "${mboxName}" of acct
       repeat with m in msgs
         if msgCount ≥ ${count} then exit repeat
         set msgDate to date received of m
@@ -224,7 +236,7 @@ tell application "Mail"
   end repeat
 
   if (count of resultList) = 0 then
-    return "No messages found in ${mailbox}"
+    return "No messages found in ${mboxName}"
   end if
 
   set AppleScript's text item delimiters to "\\n"
