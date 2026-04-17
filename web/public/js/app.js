@@ -63,6 +63,7 @@
 
       case 'done':
         Chat.endStream(msg.stats, msg.context);
+        hideStopButton();
         break;
 
       case 'agent_status':
@@ -122,12 +123,14 @@
 
       case 'delegate_done':
         Chat.endDelegateStream(msg.target, msg.duration);
+        hideStopButton();
         break;
 
       case 'delegate_error': {
         Chat.endDelegateStream(msg.target);
         const name = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' }[msg.target] || msg.target;
         Chat.addError(`${name}: ${msg.message}`);
+        hideStopButton();
         break;
       }
 
@@ -139,6 +142,7 @@
       case 'error':
         Chat.endStream();
         Chat.addError(msg.message);
+        hideStopButton();
         break;
 
       case 'session_history':
@@ -366,6 +370,25 @@
     }
   };
 
+  // ── Stop button ──
+  const sendBtn = document.getElementById('send-btn');
+  const stopBtn = document.getElementById('stop-btn');
+
+  function showStopButton() {
+    sendBtn.classList.add('hidden');
+    stopBtn.classList.remove('hidden');
+  }
+
+  function hideStopButton() {
+    stopBtn.classList.add('hidden');
+    sendBtn.classList.remove('hidden');
+  }
+
+  stopBtn.addEventListener('click', () => {
+    WS.send({ type: 'cancel' });
+    hideStopButton();
+  });
+
   function sendMessage() {
     const content = input.value.trim();
     if ((!content && pendingAttachments.length === 0) || Chat.isStreaming) return;
@@ -411,6 +434,9 @@
     } else {
       WS.send(wsMsg);
     }
+
+    // Show stop button while generating
+    showStopButton();
 
     // Clear input and attachments
     input.value = '';

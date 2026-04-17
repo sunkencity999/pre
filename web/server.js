@@ -635,7 +635,10 @@ wss.on('connection', (ws) => {
       const userMsgCount = history.filter(m => m.role === 'user').length;
       const sessions = listSessions();
       const sessionMeta = sessions.find(s => s.id === sessionId);
-      const needsTitle = userMsgCount === 0 && !sessionMeta?.displayName;
+      // Generate a title if the session has no display name yet — not just on the first message.
+      // Previous logic (userMsgCount === 0) meant sessions that hit max tool turns or got
+      // aborted on the first message would never get titled.
+      const needsTitle = !sessionMeta?.displayName;
       console.log(`[ws] needsTitle=${needsTitle} userMsgCount=${userMsgCount} displayName=${sessionMeta?.displayName}`);
 
       // Save user message to session

@@ -67,6 +67,14 @@
 .btn-send:active {
   animation: sendPulse 0.3s ease;
 }
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+.btn-danger:hover {
+  opacity: 0.85;
+}
 
 /* Panel header */
 .panel-header {

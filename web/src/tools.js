@@ -19,40 +19,69 @@ const chronos = require('./chronos');
  * Runs in the background — does not block the main response.
  */
 function generateSessionTitle(sessionId, userMessage, send) {
+  // Truncate very long messages — we only need enough to understand the topic
+  const truncated = userMessage.length > 300 ? userMessage.slice(0, 300) : userMessage;
   streamChat({
     messages: [
       {
         role: 'system',
-        content: 'You are a title generator. Given a user message, output a concise 3-6 word conversation title. Output ONLY the title text, nothing else. No quotes. No punctuation. No explanation. Examples: "Weather in Boulder Creek", "Python Prime Number Function", "Snake Game for Browser"',
+        content: 'You are a title generator. Your ENTIRE response must be exactly one short title (3-6 words). Output NOTHING else — no preamble, no options, no list, no explanation. Just the title.\n\nExamples of correct output:\nWeather in Boulder Creek\nPython Prime Number Function\nDocusign Certificate Email Search',
       },
-      { role: 'user', content: userMessage },
+      { role: 'user', content: truncated },
     ],
-    maxTokens: 512, // Model needs room for thinking before producing the title
+    maxTokens: 64,
   }).then((result) => {
     console.log(`[title-gen] response: "${result.response}" thinking: "${(result.thinking || '').slice(0, 200)}"`);
-    // Model often puts everything in thinking. Extract a title-like line.
     let title = '';
+
+    // Preamble/meta phrases that are not actual titles
+    const junkPattern = /^(possible titles?|here are|some options|options?:|sure|okay|certainly|of course|title:|titles:)/i;
+
+    // Prefer the actual response text — skip preamble lines
     if (result.response && result.response.trim()) {
-      title = result.response.trim().split('\n')[0];
-    } else if (result.thinking) {
-      // Find the last short line that looks like a title (not a bullet, not the input)
+      const lines = result.response.trim().split('\n')
+        .map(l => l.replace(/^[\d.)\-*]+\s*/, '').trim())  // strip list markers
+        .filter(l => l.length >= 3 && l.length < 60 && !junkPattern.test(l));
+      if (lines.length > 0) title = lines[0];
+    }
+
+    // Fallback: extract from thinking if response is empty (Gemma 4 thinking mode)
+    if (!title && result.thinking) {
+      // Look for the last short, clean line — skip reasoning/meta lines
       const lines = result.thinking.split('\n')
         .map(l => l.trim())
-        .filter(l => l.length > 0 && l.length < 60
+        .filter(l =>
+          l.length >= 3 && l.length < 60
           && !l.startsWith('*') && !l.startsWith('-') && !l.startsWith('#')
-          && !l.toLowerCase().includes('input') && !l.toLowerCase().includes('message')
-          && !l.toLowerCase().includes('generate') && !l.toLowerCase().includes('title'));
+          && !l.startsWith('>')
+          && !junkPattern.test(l)
+          && !l.toLowerCase().includes('user message') && !l.toLowerCase().includes('the user')
+          && !l.toLowerCase().includes('generate') && !l.toLowerCase().includes('should be')
+          && !l.toLowerCase().includes('let me') && !l.toLowerCase().includes("let's")
+          && !l.toLowerCase().includes('i need') && !l.toLowerCase().includes('i think')
+          && !l.toLowerCase().includes('how about') && !l.toLowerCase().includes('go with')
+          && !l.toLowerCase().includes('title:') && !l.toLowerCase().includes('→')
+          && !l.toLowerCase().includes('possible') && !l.toLowerCase().includes('option')
+          && !/^(ok|so|now|here|this|that)\b/i.test(l)
+        );
       if (lines.length > 0) {
-        title = lines[lines.length - 1]; // last qualifying line is usually the answer
+        title = lines[lines.length - 1];
       }
     }
-    title = title.replace(/^["'`]|["'`]$/g, '').replace(/[.!:]+$/, '').trim();
-    if (title && title.length > 0 && title.length < 80) {
+
+    // Clean up: strip quotes, trailing punctuation, "Title:" prefix
+    title = title
+      .replace(/^(title\s*[:=]\s*)/i, '')
+      .replace(/^["'`"""'']+|["'`"""'']+$/g, '')
+      .replace(/[.!:;,]+$/, '')
+      .trim();
+
+    if (title && title.length >= 3 && title.length < 80) {
       console.log(`[title-gen] Saving title: "${title}" for session ${sessionId}`);
       renameSession(sessionId, title);
       send({ type: 'session_renamed', sessionId, name: title });
     } else {
-      console.log(`[title-gen] Title rejected: "${title}"`);
+      console.log(`[title-gen] Title rejected (len=${title.length}): "${title}"`);
     }
   }).catch((err) => {
     console.log(`[title-gen] Error: ${err.message}`);
@@ -449,6 +478,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     tokensIn += result.stats.prompt_eval_count || 0;
     tokensOut += result.stats.eval_count || 0;
 
+    // Generate session title on the first turn, regardless of tool calls.
+    // Fire-and-forget — doesn't block the response or depend on tool loop completion.
+    if (turn === 0 && needsTitle && userMessage) {
+      generateSessionTitle(sessionId, userMessage, send);
+    }
+
     // Fallback: parse <tool_call> tags from text if no native tool calls
     const hasNative = result.toolCalls && result.toolCalls.length > 0;
     const hasTag = result.response && result.response.includes('<tool_call>');
@@ -504,10 +539,6 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
           computerTool.restoreFocus();
         } catch {}
       }
-      // Generate session title in background after first response
-      if (needsTitle && userMessage) {
-        generateSessionTitle(sessionId, userMessage, send);
-      }
       // Auto-extract memories in background (don't block response)
       const historyForExtract = getSessionMessages(sessionId);
       autoExtract(historyForExtract).then(saved => {
@@ -535,6 +566,8 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
 
     const toolResults = [];
     for (const tc of result.toolCalls) {
+      if (signal?.aborted) break;
+
       const toolName = ALIASES[tc.function?.name] || tc.function?.name || 'unknown';
       const toolArgs = tc.function?.arguments || {};
       const toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -582,6 +615,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
 
       // Run post_tool hooks (non-blocking, for logging/auditing)
       hooks.runHooks('post_tool', { tool: toolName, args: toolArgs, output: output?.slice(0, 4000), sessionId, cwd });
+
+      // Check abort after tool execution
+      if (signal?.aborted) {
+        send({ type: 'tool_result', id: toolId, name: toolName, output: 'Cancelled by user', status: 'cancelled' });
+        break;
+      }
 
       // Notify client about generated images so they can display inline
       if (toolName === 'image_generate' && output && output.includes('/artifacts/')) {
@@ -662,6 +701,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       });
 
       toolResults.push({ name: toolName, output, image: browserScreenshot });
+
+      // Vision tools: break out of multi-tool batch so the model sees the screenshot
+      // before executing the next action. Without this, clicks pile up blind.
+      if (browserScreenshot && result.toolCalls.length > 1) {
+        break;
+      }
     }
 
     // Save tool results to session (combined format matching CLI)
