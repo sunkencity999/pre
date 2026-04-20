@@ -2,14 +2,21 @@
 # install.sh — Full setup for PRE (Personal Reasoning Engine)
 #
 # This script handles everything from Ollama to ready-to-run:
-#   1. Checks system requirements (Apple Silicon, macOS, RAM, disk)
-#   2. Installs/verifies Ollama
-#   3. Pulls the base model (gemma4:26b-a4b-it-q8_0, ~28GB)
-#   4. Creates optimized custom model (pre-gemma4) from Modelfile
-#   5. Installs Xcode CLI tools if needed
-#   6. Compiles PRE CLI binary
+#   0. Checks system requirements (Apple Silicon, macOS, RAM, disk)
+#   1. Installs/verifies Ollama
+#   1b. Configures Ollama environment (FA, keep-alive, parallelism)
+#   2. Pulls the base model (gemma4:26b-a4b-it-q8_0, ~28GB)
+#   2b. Pulls embedding model (nomic-embed-text for experience ledger + RAG)
+#   3. Creates optimized custom model (pre-gemma4) from Modelfile
+#   4. Installs Xcode CLI tools if needed
+#   5. Compiles PRE CLI binary
+#   6. Sets up Web GUI (npm install, terminal-notifier)
+#   6b. Configures MCP integration (Claude, Codex, Antigravity)
 #   7. Installs pre-launch command to ~/.local/bin
-#   8. Sets up ~/.pre/ directories
+#   8. Sets up ~/.pre/ directories (sessions, memory, rag, workflows, triggers)
+#   8b. Optional: ComfyUI image generation setup
+#   9. Pre-warms model into GPU memory
+#   10. Optional: auto-start at login (LaunchAgent)
 #
 # Run time: 5-20 minutes depending on internet speed.
 # Disk space required: ~28GB for model + negligible for binaries.
@@ -276,13 +283,13 @@ fi
 # ============================================================================
 # Step 2b: Pull embedding model (for experience ledger semantic search)
 # ============================================================================
-step "Pulling embedding model (nomic-embed-text)"
+step "Pulling embedding model (nomic-embed-text — experience ledger + RAG)"
 
 if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
     ok "  Embedding model already available."
 else
     echo "  Downloading nomic-embed-text (~274MB)..."
-    ollama pull nomic-embed-text || warn "  Failed to pull nomic-embed-text — experience ledger will use keyword search fallback."
+    ollama pull nomic-embed-text || warn "  Failed to pull nomic-embed-text — experience ledger and RAG will use keyword search fallback."
     if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
         ok "  Embedding model downloaded."
     fi
@@ -424,7 +431,7 @@ It is available as an MCP tool to offload execution-heavy tasks at zero API toke
 - Any task where frontier reasoning quality is critical
 
 ### MCP tools:
-- \`pre_agent\` — Full agentic task with 60+ tools (file I/O, shell, web, macOS apps, etc.)
+- \`pre_agent\` — Full agentic task with 63+ tools (file I/O, shell, web, macOS apps, RAG, etc.)
 - \`pre_chat\` — Quick Q&A without tools (fastest)
 - \`pre_memory_search\` — Search PRE's persistent memory store
 - \`pre_sessions\` — List recent PRE sessions"
@@ -630,11 +637,15 @@ mkdir -p "$HOME/.pre/memory"
 mkdir -p "$HOME/.pre/memory/experience"
 mkdir -p "$HOME/.pre/checkpoints"
 mkdir -p "$HOME/.pre/artifacts"
+mkdir -p "$HOME/.pre/rag"
+mkdir -p "$HOME/.pre/workflows"
 ok "  Created ~/.pre/sessions/"
 ok "  Created ~/.pre/memory/"
 ok "  Created ~/.pre/memory/experience/"
 ok "  Created ~/.pre/checkpoints/"
 ok "  Created ~/.pre/artifacts/"
+ok "  Created ~/.pre/rag/"
+ok "  Created ~/.pre/workflows/"
 
 # Write context window config (read at runtime by constants.js and pre-launch)
 echo "$OPTIMAL_CTX" > "$HOME/.pre/context"
@@ -648,6 +659,14 @@ fi
 if [ ! -f "$HOME/.pre/mcp.json" ]; then
     echo '{"servers":{}}' > "$HOME/.pre/mcp.json"
     ok "  Created ~/.pre/mcp.json"
+fi
+if [ ! -f "$HOME/.pre/cron.json" ]; then
+    echo '{"jobs":[]}' > "$HOME/.pre/cron.json"
+    ok "  Created ~/.pre/cron.json"
+fi
+if [ ! -f "$HOME/.pre/triggers.json" ]; then
+    echo '{"triggers":[]}' > "$HOME/.pre/triggers.json"
+    ok "  Created ~/.pre/triggers.json"
 fi
 
 # Migrate from old Flash-MoE layout if present
@@ -1008,8 +1027,9 @@ echo -e "    • ${DIM}ComfyUI        — image generation (re-run install.sh to
 fi
 echo ""
 echo -e "  ${BOLD}Features:${RESET}"
-echo -e "    60+ tools including computer use (desktop automation), sub-agents,"
-echo -e "    browser automation, document/artifact export, hooks, experience"
+echo -e "    63+ tools including computer use (desktop automation), local RAG,"
+echo -e "    event-driven triggers, voice interface, workflow capture and replay,"
+echo -e "    sub-agents, browser automation, document export, hooks, experience"
 echo -e "    ledger, and temporal memory awareness."
 echo ""
 echo -e "  ${BOLD}MCP Integration:${RESET}"
@@ -1027,7 +1047,14 @@ echo -e "    ${DIM}~/.pre/artifacts/${RESET}         Generated documents, images
 echo -e "    ${DIM}~/.pre/cron.json${RESET}          Scheduled recurring tasks"
 echo -e "    ${DIM}~/.pre/hooks.json${RESET}         Pre/post tool execution hooks"
 echo -e "    ${DIM}~/.pre/mcp.json${RESET}           MCP server configuration"
+echo -e "    ${DIM}~/.pre/triggers.json${RESET}      Event-driven triggers"
+echo -e "    ${DIM}~/.pre/rag/${RESET}               RAG indexes (semantic search)"
+echo -e "    ${DIM}~/.pre/workflows/${RESET}          Recorded workflow sequences"
 echo -e "    ${DIM}~/.pre/telegram.log${RESET}       Telegram bot log"
+echo -e "  ${BOLD}Optional Enhancements:${RESET}"
+echo -e "    ${DIM}brew install cliclick${RESET}         Computer Use (desktop automation)"
+echo -e "    ${DIM}pip install openai-whisper${RESET}     Voice input (speech-to-text)"
+echo -e "    ${DIM}brew install ffmpeg${RESET}            Audio format conversion"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""
