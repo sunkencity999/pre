@@ -512,9 +512,9 @@ The memory icon in the sidebar footer opens a right panel with:
 
 The web GUI reads and writes the same `~/.pre/memory/` directory as the CLI. Memories created in one are immediately available in the other. Both maintain the `MEMORY.md` index (and the legacy `index.md` for backwards compatibility).
 
-## MCP Server — Use PRE from Claude, Codex, or Any MCP Client
+## MCP Server — Use PRE from Claude, Codex, Antigravity, or Any MCP Client
 
-PRE doubles as an MCP (Model Context Protocol) server. This lets frontier models like Claude or GPT delegate execution-heavy tasks to PRE's local Gemma 4 agent instead of burning API tokens on tool loops. The local model handles the grunt work — file searches, multi-step tool chains, email lookups, data gathering — while the frontier model stays focused on complex reasoning and planning.
+PRE doubles as an MCP (Model Context Protocol) server. This lets frontier models like Claude, GPT, or Gemini delegate execution-heavy tasks to PRE's local Gemma 4 agent instead of burning API tokens on tool loops. The local model handles the grunt work — file searches, multi-step tool chains, email lookups, data gathering — while the frontier model stays focused on complex reasoning and planning.
 
 **Why this matters:** A single Claude conversation that searches files, reads 15 documents, calls 8 tools, and synthesizes results can consume 100K+ tokens at API pricing. Delegating the search/tool phase to PRE costs zero tokens — Gemma 4 runs locally on your Apple Silicon GPU.
 
@@ -613,9 +613,45 @@ and summarize what she said" will work. "Email stuff" will not.
 
 This snippet goes in any `CLAUDE.md` file — project-level or global. Claude reads it at the start of every conversation and will proactively delegate appropriate tasks.
 
-#### For Codex / GPT
+#### Codex (OpenAI)
 
-The same pattern applies: add similar delegation instructions to the system prompt or project instructions. The MCP tools work identically regardless of which frontier model is calling them.
+Add PRE to your Codex config at `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.pre]
+command = "node"
+args = ["/path/to/pre/web/mcp-stdio.js"]
+```
+
+Add delegation guidance to `~/.codex/instructions.md` (global) or `AGENTS.md` (project-level). Codex reads `AGENTS.md` files from the directory hierarchy, the same way Claude reads `CLAUDE.md`.
+
+#### Antigravity (Google)
+
+Add PRE to your Antigravity settings at `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "pre": {
+      "command": "node",
+      "args": ["/path/to/pre/web/mcp-stdio.js"]
+    }
+  }
+}
+```
+
+Add delegation guidance to `~/.gemini/GEMINI.md` (global). Antigravity also reads `AGENTS.md` for cross-tool instructions.
+
+#### Automatic Setup
+
+The install script (`install.sh`) auto-detects Claude Desktop, Claude Code, Codex, and Antigravity. It offers to configure MCP and writes delegation instructions to the appropriate file for each tool:
+
+| Tool | MCP Config | Instructions File |
+|------|-----------|-------------------|
+| Claude Desktop | `claude_desktop_config.json` | `~/CLAUDE.md` |
+| Claude Code | `.mcp.json` (manual) | `~/CLAUDE.md` |
+| Codex | `~/.codex/config.toml` | `~/.codex/instructions.md` |
+| Antigravity | `~/.gemini/settings.json` | `~/.gemini/GEMINI.md` |
 
 ### Architecture
 

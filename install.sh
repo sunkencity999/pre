@@ -351,16 +351,66 @@ else
 fi
 
 # ============================================================================
-# Step 6b: MCP integration (Claude Code / Claude Desktop)
+# Step 6b: MCP integration (Claude Code / Claude Desktop / Codex / Antigravity)
 # ============================================================================
-step "MCP Integration (use PRE from Claude, Codex, or other AI tools)"
+step "MCP Integration (use PRE from Claude, Codex, Antigravity, or other AI tools)"
 
 MCP_STDIO_PATH="$WEB_DIR/mcp-stdio.js"
 MCP_SNIPPET="{\"mcpServers\":{\"pre\":{\"command\":\"node\",\"args\":[\"$MCP_STDIO_PATH\"]}}}"
+MCP_TOOLS_CONFIGURED=0
 
-# Detect Claude Desktop
+# Shared delegation instructions — written to each tool's instructions file
+PRE_DELEGATION_BLOCK="## PRE — Local AI Agent (MCP)
+
+PRE is a local AI agent running on this machine (Ollama + Gemma 4, 128K context).
+It is available as an MCP tool to offload execution-heavy tasks at zero API token cost.
+
+### When to delegate to PRE (\`pre_agent\` or \`pre_chat\`):
+- System info, disk, network, process checks
+- File search, reading, and directory listing
+- Git operations and status checks
+- Shell command execution
+- Summarization, translation, data formatting
+- Simple factual questions
+- Memory search (\`pre_memory_search\`)
+
+### When to handle directly (do NOT delegate):
+- Complex code generation and software architecture
+- Security reviews and vulnerability analysis
+- Nuanced multi-factor analysis and bug reasoning
+- Any task where frontier reasoning quality is critical
+
+### MCP tools:
+- \`pre_agent\` — Full agentic task with 60+ tools (file I/O, shell, web, macOS apps, etc.)
+- \`pre_chat\` — Quick Q&A without tools (fastest)
+- \`pre_memory_search\` — Search PRE's persistent memory store
+- \`pre_sessions\` — List recent PRE sessions"
+
+# Helper: append PRE delegation instructions to a file if not already present
+write_delegation_instructions() {
+    local target_file="$1"
+    local tool_name="$2"
+    if [ -f "$target_file" ] && grep -q "## PRE — Local AI Agent" "$target_file" 2>/dev/null; then
+        ok "  PRE delegation instructions already in $tool_name instructions."
+    else
+        # Append with a blank line separator
+        if [ -f "$target_file" ] && [ -s "$target_file" ]; then
+            printf '\n\n%s\n' "$PRE_DELEGATION_BLOCK" >> "$target_file"
+        else
+            printf '%s\n' "$PRE_DELEGATION_BLOCK" > "$target_file"
+        fi
+        ok "  Wrote PRE delegation guidelines to $tool_name instructions."
+    fi
+}
+
+# ── Claude ──────────────────────────────────────────────────────────────────
+
 CLAUDE_DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+CLAUDE_DETECTED=0
+
+# Claude Desktop
 if [ -d "$HOME/Library/Application Support/Claude" ]; then
+    CLAUDE_DETECTED=1
     echo "  Claude Desktop detected."
     echo ""
     echo -e "  PRE can serve as an MCP tool for Claude, letting Claude delegate"
@@ -371,13 +421,10 @@ if [ -d "$HOME/Library/Application Support/Claude" ]; then
 
     if [[ ! $REPLY =~ ^[Nn]$ ]]; then
         if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
-            # Config exists — check if PRE is already there
             if grep -q '"pre"' "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null; then
                 ok "  PRE already configured in Claude Desktop."
             else
-                # Merge PRE into existing mcpServers (or create the key)
-                if command -v node &>/dev/null; then
-                    node -e "
+                node -e "
 const fs = require('fs');
 const p = '$CLAUDE_DESKTOP_CONFIG';
 let cfg = {};
@@ -386,45 +433,127 @@ if (!cfg.mcpServers) cfg.mcpServers = {};
 cfg.mcpServers.pre = { command: 'node', args: ['$MCP_STDIO_PATH'] };
 fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
 "
-                    ok "  PRE added to Claude Desktop config."
-                    warn "  Restart Claude Desktop to activate."
-                else
-                    warn "  Node.js needed to update config — add manually:"
-                    echo ""
-                fi
+                ok "  PRE added to Claude Desktop config."
+                warn "  Restart Claude Desktop to activate."
             fi
         else
-            # No config file yet — create it
             mkdir -p "$(dirname "$CLAUDE_DESKTOP_CONFIG")"
             echo "$MCP_SNIPPET" | node -e "process.stdout.write(JSON.stringify(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')),null,2)+'\n')" > "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null \
                 || echo "$MCP_SNIPPET" > "$CLAUDE_DESKTOP_CONFIG"
             ok "  Created Claude Desktop config with PRE."
             warn "  Restart Claude Desktop to activate."
         fi
+        MCP_TOOLS_CONFIGURED=$((MCP_TOOLS_CONFIGURED + 1))
     else
-        echo "  Skipped. You can add it later — see the README for instructions."
+        echo "  Skipped. You can add it later — see the README."
     fi
 fi
 
-# Detect Claude Code
+# Claude Code
 if [ -d "$HOME/.claude" ]; then
+    CLAUDE_DETECTED=1
     ok "  Claude Code detected."
+    echo ""
+    echo -e "  ${BOLD}To use PRE from Claude Code:${RESET}"
+    echo -e "  Add to your project ${CYAN}.mcp.json${RESET} or global settings:"
+    echo ""
+    echo -e "    ${DIM}{${RESET}"
+    echo -e "    ${DIM}  \"mcpServers\": {${RESET}"
+    echo -e "    ${DIM}    \"pre\": {${RESET}"
+    echo -e "    ${DIM}      \"command\": \"node\",${RESET}"
+    echo -e "    ${DIM}      \"args\": [\"${MCP_STDIO_PATH}\"]${RESET}"
+    echo -e "    ${DIM}    }${RESET}"
+    echo -e "    ${DIM}  }${RESET}"
+    echo -e "    ${DIM}}${RESET}"
+    echo ""
 fi
 
-# Always show the config snippet for Claude Code / other MCP clients
+# Write delegation instructions for Claude (CLAUDE.md in home dir)
+if [ "$CLAUDE_DETECTED" -eq 1 ]; then
+    CLAUDE_MD="$HOME/CLAUDE.md"
+    write_delegation_instructions "$CLAUDE_MD" "CLAUDE.md"
+fi
+
+# ── Codex (OpenAI) ──────────────────────────────────────────────────────────
+
+CODEX_CONFIG="$HOME/.codex/config.toml"
+if [ -d "$HOME/.codex" ] || command -v codex &>/dev/null; then
+    echo ""
+    echo "  Codex detected."
+    echo ""
+    read -p "  Add PRE as an MCP server for Codex? [Y/n] " -n 1 -r
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        # Add MCP server to config.toml
+        if [ -f "$CODEX_CONFIG" ] && grep -q '\[mcp_servers\.pre\]' "$CODEX_CONFIG" 2>/dev/null; then
+            ok "  PRE already configured in Codex."
+        else
+            # Append TOML block to config
+            {
+                echo ""
+                echo "[mcp_servers.pre]"
+                echo "command = \"node\""
+                echo "args = [\"$MCP_STDIO_PATH\"]"
+            } >> "$CODEX_CONFIG"
+            ok "  PRE added to Codex config ($CODEX_CONFIG)."
+            MCP_TOOLS_CONFIGURED=$((MCP_TOOLS_CONFIGURED + 1))
+        fi
+
+        # Write delegation instructions to Codex instructions file
+        CODEX_INSTRUCTIONS="$HOME/.codex/instructions.md"
+        write_delegation_instructions "$CODEX_INSTRUCTIONS" "Codex (instructions.md)"
+    else
+        echo "  Skipped. Add manually to ~/.codex/config.toml — see the README."
+    fi
+fi
+
+# ── Antigravity (Google) ────────────────────────────────────────────────────
+
+ANTIGRAVITY_SETTINGS="$HOME/.gemini/settings.json"
+if [ -d "$HOME/.gemini" ] || [ -d "$HOME/.antigravity" ] || command -v agy &>/dev/null; then
+    echo ""
+    echo "  Antigravity detected."
+    echo ""
+    read -p "  Add PRE as an MCP server for Antigravity? [Y/n] " -n 1 -r
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        # Merge PRE into settings.json mcpServers
+        if [ -f "$ANTIGRAVITY_SETTINGS" ] && grep -q '"pre"' "$ANTIGRAVITY_SETTINGS" 2>/dev/null; then
+            ok "  PRE already configured in Antigravity."
+        else
+            if command -v node &>/dev/null; then
+                node -e "
+const fs = require('fs');
+const p = '$ANTIGRAVITY_SETTINGS';
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch {}
+if (!cfg.mcpServers) cfg.mcpServers = {};
+cfg.mcpServers.pre = { command: 'node', args: ['$MCP_STDIO_PATH'] };
+fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+"
+                ok "  PRE added to Antigravity settings ($ANTIGRAVITY_SETTINGS)."
+                MCP_TOOLS_CONFIGURED=$((MCP_TOOLS_CONFIGURED + 1))
+            else
+                warn "  Node.js needed to update Antigravity config — add manually."
+            fi
+        fi
+
+        # Write delegation instructions to GEMINI.md
+        GEMINI_MD="$HOME/.gemini/GEMINI.md"
+        write_delegation_instructions "$GEMINI_MD" "Antigravity (GEMINI.md)"
+    else
+        echo "  Skipped. Add manually to ~/.gemini/settings.json — see the README."
+    fi
+fi
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+
 echo ""
-echo -e "  ${BOLD}To use PRE from Claude Code:${RESET}"
-echo -e "  Add to your project ${CYAN}.mcp.json${RESET} or global settings:"
-echo ""
-echo -e "    ${DIM}{${RESET}"
-echo -e "    ${DIM}  \"mcpServers\": {${RESET}"
-echo -e "    ${DIM}    \"pre\": {${RESET}"
-echo -e "    ${DIM}      \"command\": \"node\",${RESET}"
-echo -e "    ${DIM}      \"args\": [\"${MCP_STDIO_PATH}\"]${RESET}"
-echo -e "    ${DIM}    }${RESET}"
-echo -e "    ${DIM}  }${RESET}"
-echo -e "    ${DIM}}${RESET}"
-echo ""
+if [ "$MCP_TOOLS_CONFIGURED" -gt 0 ]; then
+    ok "  Configured PRE as MCP tool for $MCP_TOOLS_CONFIGURED AI tool(s)."
+fi
 echo -e "  The MCP server auto-starts Ollama and PRE — no manual launch needed."
 echo -e "  See ${CYAN}web/README.md${RESET} for delegation guidelines and cost savings data."
 
@@ -745,8 +874,9 @@ echo -e "    browser automation, document/artifact export, hooks, experience"
 echo -e "    ledger, and temporal memory awareness."
 echo ""
 echo -e "  ${BOLD}MCP Integration:${RESET}"
-echo -e "    PRE serves as an MCP tool for Claude, Codex, and other AI tools."
+echo -e "    PRE serves as an MCP tool for Claude, Codex, Antigravity, and other AI tools."
 echo -e "    Delegate execution-heavy tasks to your local model at ${GREEN}zero token cost${RESET}."
+echo -e "    Delegation instructions auto-written to CLAUDE.md, instructions.md, GEMINI.md."
 echo -e "    See ${CYAN}web/README.md${RESET} for setup and cost savings data."
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
