@@ -864,6 +864,93 @@ if ! ollama ps 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
 fi
 
 # ============================================================================
+# Step 10: Auto-start at login (optional LaunchAgent)
+# ============================================================================
+step "Auto-start at login (optional)"
+
+PLIST_LABEL="com.pre.server"
+PLIST_PATH="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
+PRE_SERVER_SH="$WEB_DIR/pre-server.sh"
+NODE_BIN=$(command -v node 2>/dev/null || echo "/opt/homebrew/bin/node")
+
+echo -e "  PRE can start automatically when you log in, so the server and"
+echo -e "  model are always ready. The web GUI, MCP server, and cron jobs"
+echo -e "  will all be available immediately — no manual launch needed."
+echo ""
+
+if [ -f "$PLIST_PATH" ]; then
+    ok "  LaunchAgent already installed ($PLIST_LABEL)."
+    if ask_yn "  Reinstall with current paths? [y/N] " "N"; then
+        launchctl unload "$PLIST_PATH" 2>/dev/null || true
+    else
+        echo "  Keeping existing LaunchAgent."
+        # Skip to Done
+        SKIP_LAUNCHAGENT=true
+    fi
+fi
+
+if [ "${SKIP_LAUNCHAGENT:-}" != "true" ]; then
+    if ask_yn "  Start PRE automatically at login? [Y/n] " "Y"; then
+        chmod +x "$PRE_SERVER_SH"
+        mkdir -p "$HOME/Library/LaunchAgents"
+
+        cat > "$PLIST_PATH" << PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${PRE_SERVER_SH}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>${WEB_DIR}</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/pre-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pre-server.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>${HOME}</string>
+        <key>OLLAMA_FLASH_ATTENTION</key>
+        <string>0</string>
+        <key>OLLAMA_KEEP_ALIVE</key>
+        <string>24h</string>
+        <key>OLLAMA_NUM_PARALLEL</key>
+        <string>1</string>
+        <key>OLLAMA_MAX_LOADED_MODELS</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>
+PLISTEOF
+
+        # Load the LaunchAgent (starts immediately)
+        launchctl load "$PLIST_PATH" 2>/dev/null || true
+
+        ok "  LaunchAgent installed — PRE will start automatically at login."
+        echo -e "  ${DIM}Server log: /tmp/pre-server.log${RESET}"
+        echo -e "  ${DIM}To stop:    pre-server.sh --stop${RESET}"
+        echo -e "  ${DIM}To disable: launchctl unload ~/Library/LaunchAgents/${PLIST_LABEL}.plist${RESET}"
+    else
+        echo "  Skipped. Launch PRE manually with: pre-launch"
+    fi
+fi
+
+# ============================================================================
 # Done!
 # ============================================================================
 echo ""
@@ -871,10 +958,19 @@ echo -e "${BOLD}${GREEN}╔═════════════════�
 echo -e "${BOLD}${GREEN}║${RESET}${BOLD}  PRE installation complete!                              ${GREEN}║${RESET}"
 echo -e "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${RESET}"
 echo ""
+if [ -f "$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist" ]; then
+echo -e "  ${BOLD}Launch:${RESET}  ${GREEN}PRE starts automatically at login${RESET}"
+echo -e "    Web GUI is at ${CYAN}http://localhost:7749${RESET}"
+echo -e "    ${CYAN}pre-launch${RESET}                  Open CLI (server already running)"
+echo -e "    ${CYAN}pre-launch --show-think${RESET}     CLI with visible reasoning"
+echo -e "    ${CYAN}pre-server.sh --status${RESET}      Check server status"
+echo -e "    ${CYAN}pre-server.sh --stop${RESET}        Stop the server"
+else
 echo -e "  ${BOLD}Launch:${RESET}"
 echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE (CLI + Web GUI)"
 echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
 echo -e "    Web GUI auto-starts at ${CYAN}http://localhost:7749${RESET}"
+fi
 echo ""
 echo -e "  ${BOLD}Hardware Profile:${RESET}"
 echo -e "    ${RAM_GB}GB unified memory → ${GREEN}${CTX_HUMAN} context window${RESET} (${OPTIMAL_CTX} tokens)"
