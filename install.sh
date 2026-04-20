@@ -15,6 +15,8 @@
 #   7. Installs pre-launch command to ~/.local/bin
 #   8. Sets up ~/.pre/ directories (sessions, memory, rag, workflows, triggers)
 #   8b. Optional: ComfyUI image generation setup
+#   8c. Optional: cliclick for Computer Use (desktop automation)
+#   8d. Optional: Whisper + FFmpeg for voice interface
 #   9. Pre-warms model into GPU memory
 #   10. Optional: auto-start at login (LaunchAgent)
 #
@@ -858,6 +860,102 @@ CFGEOF
 fi
 
 # ============================================================================
+# Step 8c: Computer Use setup (optional — desktop automation)
+# ============================================================================
+step "Desktop Automation Setup (optional)"
+
+echo -e "  ${BOLD}Computer Use${RESET} lets PRE see your screen and control any application"
+echo -e "  — click, type, scroll, drag, press key combos. It uses ${CYAN}cliclick${RESET}"
+echo -e "  for mouse/keyboard control and ${CYAN}screencapture${RESET} (built-in) for screenshots."
+echo ""
+
+if command -v cliclick &>/dev/null; then
+    ok "  cliclick already installed: $(cliclick -V 2>&1 | head -1)"
+    echo -e "  ${DIM}macOS will prompt for Accessibility permissions on first use.${RESET}"
+else
+    if command -v brew &>/dev/null; then
+        if ask_yn "  Install cliclick for desktop automation? [Y/n] " "Y"; then
+            echo "  Installing cliclick..."
+            brew install cliclick --quiet 2>&1 | tail -1
+            if command -v cliclick &>/dev/null; then
+                ok "  cliclick installed."
+                echo -e "  ${DIM}macOS will prompt for Accessibility permissions on first use.${RESET}"
+            else
+                warn "  cliclick install failed — Computer Use will be unavailable."
+                echo -e "  ${DIM}Install later with: brew install cliclick${RESET}"
+            fi
+        else
+            echo "  Skipped. Install later with: brew install cliclick"
+        fi
+    else
+        warn "  Homebrew not found — install cliclick manually for Computer Use."
+        echo -e "  ${DIM}brew install cliclick${RESET}"
+    fi
+fi
+
+# ============================================================================
+# Step 8d: Voice interface setup (optional — speech-to-text)
+# ============================================================================
+step "Voice Interface Setup (optional)"
+
+echo -e "  ${BOLD}Voice input${RESET} lets you talk to PRE — hold the microphone button in the"
+echo -e "  web GUI to record, release to transcribe. Uses ${CYAN}OpenAI Whisper${RESET} (local,"
+echo -e "  no cloud API) for speech-to-text and macOS ${CYAN}say${RESET} for text-to-speech."
+echo ""
+
+VOICE_CHANGED=false
+
+if command -v whisper &>/dev/null; then
+    ok "  Whisper already installed: $(whisper --version 2>&1 || echo 'available')"
+else
+    if command -v brew &>/dev/null; then
+        if ask_yn "  Install Whisper for voice input? [Y/n] " "Y"; then
+            echo "  Installing OpenAI Whisper via Homebrew (~46MB + dependencies)..."
+            echo -e "  ${DIM}This may take a minute — Homebrew manages the Python environment.${RESET}"
+            brew install openai-whisper --quiet 2>&1 | tail -3
+            if command -v whisper &>/dev/null; then
+                ok "  Whisper installed."
+                VOICE_CHANGED=true
+            else
+                warn "  Whisper install failed."
+                echo -e "  ${DIM}Install later with: brew install openai-whisper${RESET}"
+            fi
+        else
+            echo "  Skipped. Install later with: brew install openai-whisper"
+        fi
+    else
+        warn "  Homebrew not found — install Whisper manually for voice input."
+        echo -e "  ${DIM}brew install openai-whisper${RESET}"
+    fi
+fi
+
+# FFmpeg improves audio format handling (WebM → WAV conversion)
+if command -v ffmpeg &>/dev/null; then
+    ok "  FFmpeg available (audio format conversion)"
+else
+    if command -v brew &>/dev/null; then
+        if ask_yn "  Install FFmpeg for audio format conversion? [Y/n] " "Y"; then
+            echo "  Installing FFmpeg..."
+            brew install ffmpeg --quiet 2>&1 | tail -1
+            if command -v ffmpeg &>/dev/null; then
+                ok "  FFmpeg installed."
+                VOICE_CHANGED=true
+            else
+                warn "  FFmpeg install failed — voice input will still work, but some audio formats may not convert."
+            fi
+        else
+            echo "  Skipped. Voice input works without FFmpeg, but some audio formats may not convert."
+        fi
+    fi
+fi
+
+if [ "$VOICE_CHANGED" = true ]; then
+    echo ""
+    ok "  Voice interface ready! Look for the microphone icon in the web GUI."
+    echo -e "  ${DIM}Whisper downloads its model (~140MB) on first transcription.${RESET}"
+fi
+
+# ============================================================================
 # Step 9: Pre-warm the model
 # ============================================================================
 step "Pre-warming model into GPU memory"
@@ -1051,10 +1149,19 @@ echo -e "    ${DIM}~/.pre/triggers.json${RESET}      Event-driven triggers"
 echo -e "    ${DIM}~/.pre/rag/${RESET}               RAG indexes (semantic search)"
 echo -e "    ${DIM}~/.pre/workflows/${RESET}          Recorded workflow sequences"
 echo -e "    ${DIM}~/.pre/telegram.log${RESET}       Telegram bot log"
-echo -e "  ${BOLD}Optional Enhancements:${RESET}"
-echo -e "    ${DIM}brew install cliclick${RESET}         Computer Use (desktop automation)"
-echo -e "    ${DIM}pip install openai-whisper${RESET}     Voice input (speech-to-text)"
-echo -e "    ${DIM}brew install ffmpeg${RESET}            Audio format conversion"
+if ! command -v cliclick &>/dev/null || ! command -v whisper &>/dev/null; then
+echo -e "  ${BOLD}Skipped Optional Features:${RESET}"
+if ! command -v cliclick &>/dev/null; then
+echo -e "    ${DIM}brew install cliclick${RESET}           Desktop automation (Computer Use)"
+fi
+if ! command -v whisper &>/dev/null; then
+echo -e "    ${DIM}brew install openai-whisper${RESET}     Voice input (speech-to-text)"
+fi
+if ! command -v ffmpeg &>/dev/null; then
+echo -e "    ${DIM}brew install ffmpeg${RESET}             Audio format conversion"
+fi
+echo -e "    ${DIM}Re-run install.sh to add these interactively.${RESET}"
+fi
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""
