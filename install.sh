@@ -351,6 +351,84 @@ else
 fi
 
 # ============================================================================
+# Step 6b: MCP integration (Claude Code / Claude Desktop)
+# ============================================================================
+step "MCP Integration (use PRE from Claude, Codex, or other AI tools)"
+
+MCP_STDIO_PATH="$WEB_DIR/mcp-stdio.js"
+MCP_SNIPPET="{\"mcpServers\":{\"pre\":{\"command\":\"node\",\"args\":[\"$MCP_STDIO_PATH\"]}}}"
+
+# Detect Claude Desktop
+CLAUDE_DESKTOP_CONFIG="$HOME/Library/Application Support/Claude/claude_desktop_config.json"
+if [ -d "$HOME/Library/Application Support/Claude" ]; then
+    echo "  Claude Desktop detected."
+    echo ""
+    echo -e "  PRE can serve as an MCP tool for Claude, letting Claude delegate"
+    echo -e "  execution-heavy tasks to your local model ${BOLD}at zero token cost${RESET}."
+    echo ""
+    read -p "  Add PRE to Claude Desktop? [Y/n] " -n 1 -r
+    echo ""
+
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
+            # Config exists — check if PRE is already there
+            if grep -q '"pre"' "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null; then
+                ok "  PRE already configured in Claude Desktop."
+            else
+                # Merge PRE into existing mcpServers (or create the key)
+                if command -v node &>/dev/null; then
+                    node -e "
+const fs = require('fs');
+const p = '$CLAUDE_DESKTOP_CONFIG';
+let cfg = {};
+try { cfg = JSON.parse(fs.readFileSync(p, 'utf-8')); } catch {}
+if (!cfg.mcpServers) cfg.mcpServers = {};
+cfg.mcpServers.pre = { command: 'node', args: ['$MCP_STDIO_PATH'] };
+fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + '\n');
+"
+                    ok "  PRE added to Claude Desktop config."
+                    warn "  Restart Claude Desktop to activate."
+                else
+                    warn "  Node.js needed to update config — add manually:"
+                    echo ""
+                fi
+            fi
+        else
+            # No config file yet — create it
+            mkdir -p "$(dirname "$CLAUDE_DESKTOP_CONFIG")"
+            echo "$MCP_SNIPPET" | node -e "process.stdout.write(JSON.stringify(JSON.parse(require('fs').readFileSync('/dev/stdin','utf-8')),null,2)+'\n')" > "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null \
+                || echo "$MCP_SNIPPET" > "$CLAUDE_DESKTOP_CONFIG"
+            ok "  Created Claude Desktop config with PRE."
+            warn "  Restart Claude Desktop to activate."
+        fi
+    else
+        echo "  Skipped. You can add it later — see the README for instructions."
+    fi
+fi
+
+# Detect Claude Code
+if [ -d "$HOME/.claude" ]; then
+    ok "  Claude Code detected."
+fi
+
+# Always show the config snippet for Claude Code / other MCP clients
+echo ""
+echo -e "  ${BOLD}To use PRE from Claude Code:${RESET}"
+echo -e "  Add to your project ${CYAN}.mcp.json${RESET} or global settings:"
+echo ""
+echo -e "    ${DIM}{${RESET}"
+echo -e "    ${DIM}  \"mcpServers\": {${RESET}"
+echo -e "    ${DIM}    \"pre\": {${RESET}"
+echo -e "    ${DIM}      \"command\": \"node\",${RESET}"
+echo -e "    ${DIM}      \"args\": [\"${MCP_STDIO_PATH}\"]${RESET}"
+echo -e "    ${DIM}    }${RESET}"
+echo -e "    ${DIM}  }${RESET}"
+echo -e "    ${DIM}}${RESET}"
+echo ""
+echo -e "  The MCP server auto-starts Ollama and PRE — no manual launch needed."
+echo -e "  See ${CYAN}web/README.md${RESET} for delegation guidelines and cost savings data."
+
+# ============================================================================
 # Step 7: Install pre-launch command
 # ============================================================================
 step "Installing pre-launch command"
@@ -665,6 +743,11 @@ echo -e "  ${BOLD}Features:${RESET}"
 echo -e "    60+ tools including computer use (desktop automation), sub-agents,"
 echo -e "    browser automation, document/artifact export, hooks, experience"
 echo -e "    ledger, and temporal memory awareness."
+echo ""
+echo -e "  ${BOLD}MCP Integration:${RESET}"
+echo -e "    PRE serves as an MCP tool for Claude, Codex, and other AI tools."
+echo -e "    Delegate execution-heavy tasks to your local model at ${GREEN}zero token cost${RESET}."
+echo -e "    See ${CYAN}web/README.md${RESET} for setup and cost savings data."
 echo ""
 echo -e "  ${BOLD}Data:${RESET}"
 echo -e "    ${DIM}~/.pre/identity.json${RESET}      Agent name"
