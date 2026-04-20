@@ -6,6 +6,8 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
+const { execSync } = require('child_process');
 
 const { healthCheck, streamChat } = require('./src/ollama');
 const { runToolLoop } = require('./src/tools');
@@ -548,6 +550,85 @@ app.get('/api/status', async (_req, res) => {
     cwd: CWD,
     model_ctx: MODEL_CTX,
   });
+});
+
+// ── System settings API ──
+
+const PLIST_LABEL = 'com.pre.server';
+const PLIST_PATH = path.join(os.homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
+const PRE_SERVER_SH = path.join(__dirname, 'pre-server.sh');
+
+app.get('/api/system/autostart', (_req, res) => {
+  const installed = fs.existsSync(PLIST_PATH);
+  let running = false;
+  if (installed) {
+    try {
+      const out = execSync(`launchctl list ${PLIST_LABEL} 2>/dev/null`, { encoding: 'utf-8' });
+      running = !out.includes('"Label"') || true; // if launchctl list succeeds, it's loaded
+    } catch { /* not loaded */ }
+  }
+  res.json({ installed, running, plistPath: PLIST_PATH });
+});
+
+app.post('/api/system/autostart', (req, res) => {
+  const { enabled } = req.body || {};
+
+  if (enabled) {
+    // Create and load LaunchAgent
+    const webDir = __dirname;
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${PLIST_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>${PRE_SERVER_SH}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>${webDir}</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/pre-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pre-server.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>${os.homedir()}</string>
+        <key>OLLAMA_FLASH_ATTENTION</key>
+        <string>0</string>
+        <key>OLLAMA_KEEP_ALIVE</key>
+        <string>24h</string>
+        <key>OLLAMA_NUM_PARALLEL</key>
+        <string>1</string>
+        <key>OLLAMA_MAX_LOADED_MODELS</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>`;
+    const dir = path.dirname(PLIST_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(PLIST_PATH, plist);
+    try { execSync(`launchctl load "${PLIST_PATH}" 2>/dev/null`); } catch { /* already loaded */ }
+    res.json({ installed: true, running: true });
+  } else {
+    // Remove LaunchAgent plist — don't launchctl unload since that would
+    // kill this server process (we ARE the LaunchAgent-managed process).
+    // The server keeps running for this session but won't auto-start on next login.
+    if (fs.existsSync(PLIST_PATH)) fs.unlinkSync(PLIST_PATH);
+    res.json({ installed: false, running: false });
+  }
 });
 
 // ── MCP Server API (PRE as an MCP tool provider) ──

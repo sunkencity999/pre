@@ -457,6 +457,73 @@
   flex-shrink: 0;
 }
 
+/* ── Toggle switch ── */
+.setting-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  margin-bottom: 8px;
+  transition: border-color 0.2s ease;
+}
+.setting-toggle.active {
+  border-color: var(--success);
+}
+.setting-toggle-info {
+  flex: 1;
+  min-width: 0;
+}
+.setting-toggle-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.setting-toggle-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.toggle-switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-switch .slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--border);
+  border-radius: 24px;
+  transition: background 0.2s ease;
+}
+.toggle-switch .slider::before {
+  content: '';
+  position: absolute;
+  height: 18px;
+  width: 18px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+.toggle-switch input:checked + .slider {
+  background: var(--success);
+}
+.toggle-switch input:checked + .slider::before {
+  transform: translateX(20px);
+}
+
 /* ── Cron toast notifications ── */
 .cron-toast {
   position: fixed;

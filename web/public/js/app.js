@@ -1834,19 +1834,21 @@
     content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
 
     try {
-      const [connRes, mcpRes] = await Promise.all([
+      const [connRes, mcpRes, sysRes] = await Promise.all([
         fetch('/api/connections'),
         fetch('/api/mcp'),
+        fetch('/api/system/autostart'),
       ]);
       const connections = await connRes.json();
       const mcpStatus = await mcpRes.json();
-      renderConnectionsPanel(content, connections, mcpStatus);
+      const autostart = await sysRes.json();
+      renderConnectionsPanel(content, connections, mcpStatus, autostart);
     } catch {
       content.innerHTML = '<p style="color:var(--danger)">Failed to load settings</p>';
     }
   }
 
-  function renderConnectionsPanel(container, connections, mcpStatus) {
+  function renderConnectionsPanel(container, connections, mcpStatus, autostart) {
     let html = '<div class="settings-section">';
     html += '<div class="settings-section-title">Connections</div>';
 
@@ -1991,11 +1993,45 @@
     html += `</div>`;
     html += '</div>';
 
+    // ── System section ──
+    if (autostart) {
+      html += '<div class="settings-section">';
+      html += '<div class="settings-section-title">System</div>';
+
+      const autostartOn = autostart.installed;
+      html += `<div class="setting-toggle ${autostartOn ? 'active' : ''}">`;
+      html += `<div class="setting-toggle-info">`;
+      html += `<div class="setting-toggle-name">Start at login</div>`;
+      html += `<div class="setting-toggle-desc">`;
+      html += autostartOn
+        ? 'PRE server starts automatically when you log in'
+        : 'Launch PRE manually with <code>pre-launch</code>';
+      html += `</div></div>`;
+      html += `<label class="toggle-switch">`;
+      html += `<input type="checkbox" ${autostartOn ? 'checked' : ''} onchange="Settings.toggleAutostart(this.checked)">`;
+      html += `<span class="slider"></span>`;
+      html += `</label>`;
+      html += `</div>`;
+
+      html += '</div>';
+    }
+
     container.innerHTML = html;
   }
 
   // Global Settings object for onclick handlers
   window.Settings = {
+    async toggleAutostart(enabled) {
+      try {
+        await fetch('/api/system/autostart', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        });
+      } catch { /* ignore */ }
+      this.refresh();
+    },
+
     async addKey(service) {
       const actionsEl = document.getElementById(`conn-actions-${service}`);
       if (!actionsEl) return;
