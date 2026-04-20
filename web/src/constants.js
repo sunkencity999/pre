@@ -6,7 +6,15 @@ const os = require('os');
 
 const PRE_DIR = path.join(os.homedir(), '.pre');
 const MODEL = 'pre-gemma4';
-const MODEL_CTX = 131072;
+
+// Read context window from ~/.pre/context (written by install.sh based on RAM).
+// Falls back to 131072 if the file doesn't exist or is invalid.
+const MODEL_CTX = (() => {
+  try {
+    const v = parseInt(require('fs').readFileSync(path.join(os.homedir(), '.pre', 'context'), 'utf-8').trim(), 10);
+    return v >= 2048 && v <= 262144 ? v : 131072;
+  } catch { return 131072; }
+})();
 const OLLAMA_PORT = parseInt(process.env.PRE_PORT || '11434', 10);
 const MAX_TOOL_TURNS = 35;
 

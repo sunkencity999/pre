@@ -81,7 +81,9 @@
 #define MAX_CONTEXT     262144
 // Actual num_ctx sent per-request — must match across CLI and Web GUI.
 // Sending any different value to Ollama triggers a full model reload (300s+).
-#define MODEL_CTX       131072
+// Read from ~/.pre/context (written by install.sh) at startup; fallback 131072.
+#define MODEL_CTX_DEFAULT 131072
+static int MODEL_CTX = MODEL_CTX_DEFAULT;
 
 typedef struct {
     int port;
@@ -9621,6 +9623,16 @@ int main(int argc, char **argv) {
         // Unload model on Ctrl+C or kill
         signal(SIGINT, handle_exit_signal);
         signal(SIGTERM, handle_exit_signal);
+
+        // Read context window from ~/.pre/context (written by install.sh)
+        {
+            NSString *ctxPath = [NSHomeDirectory() stringByAppendingPathComponent:@".pre/context"];
+            NSString *ctxStr = [NSString stringWithContentsOfFile:ctxPath encoding:NSUTF8StringEncoding error:nil];
+            if (ctxStr) {
+                int v = [[ctxStr stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] intValue];
+                if (v >= 2048 && v <= MAX_CONTEXT) MODEL_CTX = v;
+            }
+        }
 
         // Defaults
         g.port = 11434;

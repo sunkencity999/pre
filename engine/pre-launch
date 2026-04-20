@@ -18,6 +18,17 @@ PRE_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 PRE_BIN="$PRE_DIR/pre"
 PORT="${PRE_PORT:-11434}"
 
+# Read configured context window (written by install.sh based on RAM)
+MODEL_CTX=131072
+CTX_FILE="$HOME/.pre/context"
+if [ -f "$CTX_FILE" ]; then
+    read -r _ctx < "$CTX_FILE" 2>/dev/null
+    _ctx="${_ctx//[!0-9]/}"
+    if [ -n "$_ctx" ] && [ "$_ctx" -ge 2048 ] 2>/dev/null && [ "$_ctx" -le 262144 ] 2>/dev/null; then
+        MODEL_CTX="$_ctx"
+    fi
+fi
+
 # Check if Ollama is running
 if ! curl -sf http://localhost:${PORT}/v1/models >/dev/null 2>&1; then
     echo "  Ollama not running. Starting..."
@@ -48,13 +59,13 @@ fi
 # Pre-warm the model into GPU memory (avoids cold-start TTFT penalty).
 # CRITICAL: Send a real message with explicit num_ctx to force full KV cache
 # allocation. Ollama loads lazily — empty messages defer KV allocation to the
-# first real request. Explicit num_ctx=131072 ensures the KV cache is fully
-# allocated during warmup, not during the user's first prompt.
+# first real request. Explicit num_ctx ensures the KV cache is fully allocated
+# during warmup, not during the user's first prompt.
 if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
-    echo "  Loading model into GPU..."
+    echo "  Loading model into GPU (context: ${MODEL_CTX} tokens)..."
     # Send a trivial real request with matching num_ctx to force full load.
     curl -sf --max-time 300 http://localhost:${PORT}/api/chat \
-        -d '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"keep_alive":"24h","options":{"num_predict":1,"num_ctx":131072}}' \
+        -d "{\"model\":\"pre-gemma4\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"keep_alive\":\"24h\",\"options\":{\"num_predict\":1,\"num_ctx\":${MODEL_CTX}}}" \
         >/dev/null 2>&1 || true
     # Verify it loaded
     if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then

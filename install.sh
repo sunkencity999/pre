@@ -13,6 +13,11 @@
 #
 # Run time: 5-20 minutes depending on internet speed.
 # Disk space required: ~28GB for model + negligible for binaries.
+#
+# Usage:
+#   ./install.sh           Interactive install (prompts for optional steps)
+#   ./install.sh --yes     Non-interactive: accept all defaults, skip optional steps
+#   ./install.sh -y        Same as --yes
 
 set -e
 
@@ -29,10 +34,36 @@ ENGINE_DIR="$REPO_DIR/engine"
 BASE_MODEL="gemma4:26b-a4b-it-q8_0"
 CUSTOM_MODEL="pre-gemma4"
 
+# --- Flag parsing ---
+AUTO_YES=false
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y) AUTO_YES=true ;;
+    esac
+done
+
+# In --yes mode, prompts auto-accept Y/n defaults and skip y/N defaults
+ask_yn() {
+    local prompt="$1" default="$2"
+    if [ "$AUTO_YES" = true ]; then
+        [ "$default" = "Y" ] && return 0 || return 1
+    fi
+    read -p "$prompt" -n 1 -r
+    echo ""
+    if [ "$default" = "Y" ]; then
+        [[ ! $REPLY =~ ^[Nn]$ ]]
+    else
+        [[ $REPLY =~ ^[Yy]$ ]]
+    fi
+}
+
 step() { echo -e "\n${BOLD}${CYAN}=== $1 ===${RESET}\n"; }
 ok()   { echo -e "${GREEN}$1${RESET}"; }
 warn() { echo -e "${YELLOW}$1${RESET}"; }
 fail() { echo -e "${RED}$1${RESET}"; exit 1; }
+
+# Error trap — show which step failed
+trap 'echo -e "\n${RED}Installation failed at line $LINENO.${RESET}\n${DIM}Re-run the script to retry — it will pick up where it left off.${RESET}"' ERR
 
 # ============================================================================
 # Step 0: System requirements
@@ -65,19 +96,35 @@ if [ "$RAM_GB" -lt 32 ]; then
     fail "PRE requires at least 32GB unified memory (q8_0 model loads at ~32GB). Detected: ${RAM_GB}GB"
 fi
 if [ "$RAM_GB" -lt 64 ]; then
-    warn "  RAM: ${RAM_GB}GB — functional, but 64GB+ recommended for full 128K context with headroom."
+    warn "  RAM: ${RAM_GB}GB — functional, but 64GB+ recommended for large context windows."
 else
     ok "  RAM: ${RAM_GB}GB unified memory"
 fi
+
+# Auto-size context window based on available RAM.
+# Gemma 4 26B q8_0 uses ~28GB for weights. KV cache scales linearly with context:
+#   128K ≈ 4GB, 64K ≈ 2GB, 32K ≈ 1GB, 16K ≈ 0.5GB, 8K ≈ 0.25GB
+# We need headroom for macOS, apps, and swap avoidance.
+if [ "$RAM_GB" -ge 96 ]; then
+    OPTIMAL_CTX=131072   # 128K — full Gemma 4 capacity
+elif [ "$RAM_GB" -ge 64 ]; then
+    OPTIMAL_CTX=65536    # 64K
+elif [ "$RAM_GB" -ge 48 ]; then
+    OPTIMAL_CTX=32768    # 32K
+elif [ "$RAM_GB" -ge 36 ]; then
+    OPTIMAL_CTX=16384    # 16K
+else
+    OPTIMAL_CTX=8192     # 8K — tight fit on 32GB
+fi
+CTX_HUMAN="$(( OPTIMAL_CTX / 1024 ))K"
+ok "  Context window: ${CTX_HUMAN} (${OPTIMAL_CTX} tokens, auto-sized for ${RAM_GB}GB RAM)"
 
 # Disk space (~28GB for q8_0 model, ~2GB headroom)
 AVAIL_KB=$(df -k "$REPO_DIR" | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1048576))
 if [ "$AVAIL_GB" -lt 35 ]; then
     warn "  Disk: ${AVAIL_GB}GB available — need ~28GB for q8_0 model download."
-    echo -n "  Continue anyway? [y/N] "
-    read -r ans
-    if [ "$ans" != "y" ] && [ "$ans" != "Y" ]; then exit 1; fi
+    if ! ask_yn "  Continue anyway? [y/N] " "N"; then exit 1; fi
 else
     ok "  Disk: ${AVAIL_GB}GB available"
 fi
@@ -102,9 +149,7 @@ if command -v ollama &>/dev/null; then
 else
     echo "  Ollama is not installed."
     if command -v brew &>/dev/null; then
-        echo -n "  Install Ollama via Homebrew? [Y/n] "
-        read -r ans
-        if [ "$ans" = "n" ] || [ "$ans" = "N" ]; then
+        if ! ask_yn "  Install Ollama via Homebrew? [Y/n] " "Y"; then
             echo ""
             echo "  Install Ollama manually:"
             echo "    brew install ollama"
@@ -250,9 +295,7 @@ step "Creating optimized model ($CUSTOM_MODEL)"
 
 if ollama list 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
     ok "  Custom model already exists."
-    echo -n "  Recreate from Modelfile? [y/N] "
-    read -r ans
-    if [ "$ans" = "y" ] || [ "$ans" = "Y" ]; then
+    if ask_yn "  Recreate from Modelfile? [y/N] " "N"; then
         ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
         ok "  Custom model recreated."
     fi
@@ -362,7 +405,7 @@ MCP_TOOLS_CONFIGURED=0
 # Shared delegation instructions — written to each tool's instructions file
 PRE_DELEGATION_BLOCK="## PRE — Local AI Agent (MCP)
 
-PRE is a local AI agent running on this machine (Ollama + Gemma 4, 128K context).
+PRE is a local AI agent running on this machine (Ollama + Gemma 4, ${CTX_HUMAN} context).
 It is available as an MCP tool to offload execution-heavy tasks at zero API token cost.
 
 ### When to delegate to PRE (\`pre_agent\` or \`pre_chat\`):
@@ -416,10 +459,7 @@ if [ -d "$HOME/Library/Application Support/Claude" ]; then
     echo -e "  PRE can serve as an MCP tool for Claude, letting Claude delegate"
     echo -e "  execution-heavy tasks to your local model ${BOLD}at zero token cost${RESET}."
     echo ""
-    read -p "  Add PRE to Claude Desktop? [Y/n] " -n 1 -r
-    echo ""
-
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    if ask_yn "  Add PRE to Claude Desktop? [Y/n] " "Y"; then
         if [ -f "$CLAUDE_DESKTOP_CONFIG" ]; then
             if grep -q '"pre"' "$CLAUDE_DESKTOP_CONFIG" 2>/dev/null; then
                 ok "  PRE already configured in Claude Desktop."
@@ -481,10 +521,7 @@ if [ -d "$HOME/.codex" ] || command -v codex &>/dev/null; then
     echo ""
     echo "  Codex detected."
     echo ""
-    read -p "  Add PRE as an MCP server for Codex? [Y/n] " -n 1 -r
-    echo ""
-
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    if ask_yn "  Add PRE as an MCP server for Codex? [Y/n] " "Y"; then
         # Add MCP server to config.toml
         if [ -f "$CODEX_CONFIG" ] && grep -q '\[mcp_servers\.pre\]' "$CODEX_CONFIG" 2>/dev/null; then
             ok "  PRE already configured in Codex."
@@ -515,10 +552,7 @@ if [ -d "$HOME/.gemini" ] || [ -d "$HOME/.antigravity" ] || command -v agy &>/de
     echo ""
     echo "  Antigravity detected."
     echo ""
-    read -p "  Add PRE as an MCP server for Antigravity? [Y/n] " -n 1 -r
-    echo ""
-
-    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+    if ask_yn "  Add PRE as an MCP server for Antigravity? [Y/n] " "Y"; then
         # Merge PRE into settings.json mcpServers
         if [ -f "$ANTIGRAVITY_SETTINGS" ] && grep -q '"pre"' "$ANTIGRAVITY_SETTINGS" 2>/dev/null; then
             ok "  PRE already configured in Antigravity."
@@ -563,7 +597,7 @@ echo -e "  See ${CYAN}web/README.md${RESET} for delegation guidelines and cost s
 step "Installing pre-launch command"
 
 chmod +x "$ENGINE_DIR/pre-launch"
-make install 2>&1
+make -C "$ENGINE_DIR" install 2>&1
 
 # Ensure ~/.local/bin is in PATH
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -601,6 +635,10 @@ ok "  Created ~/.pre/memory/"
 ok "  Created ~/.pre/memory/experience/"
 ok "  Created ~/.pre/checkpoints/"
 ok "  Created ~/.pre/artifacts/"
+
+# Write context window config (read at runtime by constants.js and pre-launch)
+echo "$OPTIMAL_CTX" > "$HOME/.pre/context"
+ok "  Context window: ${CTX_HUMAN} → ~/.pre/context"
 
 # Create default config files if they don't exist
 if [ ! -f "$HOME/.pre/hooks.json" ]; then
@@ -651,10 +689,7 @@ else
     echo -e "  This sets up ComfyUI + Stable Diffusion XL for generating images from text."
     echo -e "  ${DIM}Requires: ~8GB disk, Python 3.10-3.13 (PyTorch), ~6.5GB model download${RESET}"
     echo ""
-    read -p "  Install ComfyUI? [y/N] " -n 1 -r
-    echo ""
-
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+    if ask_yn "  Install ComfyUI? [y/N] " "N"; then
         # Find a compatible Python (3.10-3.13; 3.14+ lacks PyTorch support)
         COMFYUI_PYTHON=""
         for pyver in python3.12 python3.13 python3.11 python3.10; do
@@ -679,10 +714,11 @@ else
             ok "  Python $PYTHON_VERSION found ($COMFYUI_PYTHON)"
 
             # Create virtual environment
+            VENV_OK=true
             echo "  Creating Python virtual environment..."
-            $COMFYUI_PYTHON -m venv "$COMFYUI_VENV" || { warn "  Failed to create venv — skipping."; REPLY=n; }
+            $COMFYUI_PYTHON -m venv "$COMFYUI_VENV" || { warn "  Failed to create venv — skipping."; VENV_OK=false; }
 
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if [ "$VENV_OK" = true ]; then
                 # Install PyTorch with MPS support
                 echo "  Installing PyTorch (Metal/MPS)..."
                 "$COMFYUI_VENV/bin/pip" install --quiet torch torchvision torchaudio 2>&1 | tail -1
@@ -711,8 +747,11 @@ else
                 echo -e "  ${CYAN}2)${RESET} ${BOLD}SDXL Turbo${RESET} — Fast but lower quality"
                 echo -e "     ~5s per image, 4 steps at 512x512"
                 echo ""
-                read -p "  Choice [1/2, default=1]: " -n 1 -r IMG_CHOICE
-                echo ""
+                IMG_CHOICE="1"
+                if [ "$AUTO_YES" = false ]; then
+                    read -p "  Choice [1/2, default=1]: " -n 1 -r IMG_CHOICE
+                    echo ""
+                fi
 
                 SELECTED_CHECKPOINT=""
                 if [ "$IMG_CHOICE" = "2" ]; then
@@ -804,11 +843,11 @@ fi
 # ============================================================================
 step "Pre-warming model into GPU memory"
 
-echo "  Loading $CUSTOM_MODEL into GPU with full 128K context (this takes 30-60 seconds)..."
+echo "  Loading $CUSTOM_MODEL into GPU with ${CTX_HUMAN} context (this takes 30-60 seconds)..."
 # Send a real message with full num_ctx to force Ollama to allocate the complete KV cache.
 # An empty messages array defers KV allocation to the first real request.
 curl -sf --max-time 300 "http://localhost:${PORT}/api/chat" \
-    -d "{\"model\":\"$CUSTOM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"keep_alive\":\"24h\",\"options\":{\"num_predict\":1,\"num_ctx\":131072}}" \
+    -d "{\"model\":\"$CUSTOM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"keep_alive\":\"24h\",\"options\":{\"num_predict\":1,\"num_ctx\":$OPTIMAL_CTX}}" \
     >/dev/null 2>&1 || true
 
 for i in $(seq 1 60); do
@@ -836,6 +875,10 @@ echo -e "  ${BOLD}Launch:${RESET}"
 echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE (CLI + Web GUI)"
 echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
 echo -e "    Web GUI auto-starts at ${CYAN}http://localhost:7749${RESET}"
+echo ""
+echo -e "  ${BOLD}Hardware Profile:${RESET}"
+echo -e "    ${RAM_GB}GB unified memory → ${GREEN}${CTX_HUMAN} context window${RESET} (${OPTIMAL_CTX} tokens)"
+echo -e "    ${DIM}To change: edit ~/.pre/context and restart PRE${RESET}"
 echo ""
 echo -e "  ${BOLD}First Launch:${RESET}"
 echo -e "    PRE will ask you to name your agent and optionally"
@@ -892,3 +935,9 @@ echo -e "    ${DIM}~/.pre/telegram.log${RESET}       Telegram bot log"
 echo ""
 echo -e "  Type ${BOLD}/help${RESET} inside PRE for all commands."
 echo ""
+
+# Keep Terminal window open if launched via Finder double-click
+if [ "$AUTO_YES" = false ] && [ -t 0 ]; then
+    read -n 1 -s -r -p "  Press any key to close this window."
+    echo ""
+fi
