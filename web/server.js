@@ -10,7 +10,7 @@ const os = require('os');
 const { healthCheck, streamChat } = require('./src/ollama');
 const { runToolLoop } = require('./src/tools');
 const {
-  listSessions, getSession, appendMessage,
+  listSessions, getSession, getSessionMessages, appendMessage,
   createSession, deleteSession, renameSession, rewindSession,
   listProjects, createProject, renameProject, deleteProject, moveSessionToProject,
 } = require('./src/sessions');
