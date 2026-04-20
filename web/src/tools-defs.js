@@ -487,6 +487,57 @@ function buildToolDefs() {
     }, ['action']));
   }
 
+  // Workflow capture and replay
+  tools.push(tool('workflow', 'Record, replay, and manage desktop automation workflows. Record a sequence of Computer Use actions, save as a replayable workflow, and replay on demand or schedule via cron. Actions: record (start capturing), stop (save recording), status, list, replay (re-execute), show (view steps), delete, export', {
+    action: { type: 'string', description: 'Action: record, stop, status, list, replay, show, delete, export' },
+    name: { type: 'string', description: 'Workflow name (for record, replay, show, delete, export)' },
+    description: { type: 'string', description: 'Workflow description (for record)' },
+    speed: { type: 'number', description: 'Replay speed multiplier (default: 1.0, 2.0 = double speed)' },
+  }, ['action']));
+
+  // Voice (speech-to-text / text-to-speech)
+  if (require('./tools/voice').hasWhisper || require('./tools/voice').hasSay) {
+    tools.push(tool('voice', 'Voice interface — speech-to-text via Whisper (local) and text-to-speech via macOS say. Actions: transcribe (audio → text), speak/say (text → audio), voices (list available), status (check capabilities)', {
+      action: { type: 'string', description: 'Action: transcribe, speak, voices, status' },
+      text: { type: 'string', description: 'Text to speak (for speak/say action)' },
+      path: { type: 'string', description: 'Path to audio file (for transcribe action)' },
+      audio_base64: { type: 'string', description: 'Base64-encoded audio data (for transcribe from browser)' },
+      mime_type: { type: 'string', description: 'Audio MIME type (default: audio/webm)' },
+      voice: { type: 'string', description: 'TTS voice name (default: Samantha)' },
+      rate: { type: 'integer', description: 'TTS speaking rate in WPM (default: 185)' },
+      output: { type: 'string', description: 'Output file path for TTS audio' },
+      format: { type: 'string', description: 'Output format: aiff (default) or mp3' },
+      model: { type: 'string', description: 'Whisper model: tiny.en, base.en, small.en, medium.en (default: base.en)' },
+      language: { type: 'string', description: 'Language code for transcription (default: en)' },
+    }, ['action']));
+  }
+
+  // Event-driven triggers
+  tools.push(tool('trigger', 'Event-driven triggers that fire prompts in response to events (file changes, webhooks). Like cron but reactive instead of scheduled. Actions: add, list, remove, enable, disable', {
+    action: { type: 'string', description: 'Action: add (create trigger), list (show all), remove (delete), enable, disable' },
+    type: { type: 'string', description: 'Trigger type: file_watch (fires on file changes) or webhook (fires on HTTP POST)' },
+    name: { type: 'string', description: 'Human-readable name for the trigger' },
+    prompt: { type: 'string', description: 'Prompt to execute when triggered. Variables: {file} {event} {path} for file_watch; {payload} {headers} for webhook' },
+    path: { type: 'string', description: 'Directory or file to watch (for file_watch type)' },
+    glob: { type: 'string', description: 'Glob pattern to filter watched files (e.g. "*.log", "*.py")' },
+    recursive: { type: 'boolean', description: 'Watch subdirectories recursively (default: true)' },
+    debounce: { type: 'integer', description: 'Debounce interval in ms — batches rapid changes (default: 3000)' },
+    secret: { type: 'string', description: 'Secret for webhook authentication (X-Webhook-Secret header)' },
+    id: { type: 'string', description: 'Trigger ID (for remove/enable/disable)' },
+  }, ['action']));
+
+  // RAG (local document intelligence)
+  tools.push(tool('rag', 'Local document RAG (Retrieval-Augmented Generation). Index files and directories into searchable vector databases for semantic search. Use this to find information across codebases, documents, notes, and any text files. Actions: index, search, list, status, delete', {
+    action: { type: 'string', description: 'Action: index (index files/directory), search (semantic search), list (show all indexes), status (detailed index info), delete (remove an index)' },
+    path: { type: 'string', description: 'File or directory path to index (for index action)' },
+    query: { type: 'string', description: 'Natural language search query (for search action)' },
+    index_name: { type: 'string', description: 'Index name (default: "default"). Use different names to organize separate document collections.' },
+    top_k: { type: 'integer', description: 'Number of results to return (for search, default: 5, max: 20)' },
+    min_score: { type: 'number', description: 'Minimum similarity threshold 0-1 (for search, default: 0.3)' },
+    recursive: { type: 'boolean', description: 'Index subdirectories recursively (default: true)' },
+    description: { type: 'string', description: 'Human-readable description for the index (for index action)' },
+  }, ['action']));
+
   // Append MCP tools from all connected servers
   const mcpTools = mcp.getAllTools();
   tools.push(...mcpTools);

@@ -76,6 +76,27 @@
   opacity: 0.85;
 }
 
+/* Voice button */
+.btn-voice {
+  padding: 6px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.btn-voice:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.btn-voice.recording {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.15);
+  animation: voicePulse 1.5s ease-in-out infinite;
+}
+@keyframes voicePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* Panel header */
 .panel-header {
   display: flex;

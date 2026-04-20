@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pre": {
+      "command": "node",
+      "args": ["/Users/christopher.bradford/pre/web/mcp-stdio.js"]
+    }
+  }
+}

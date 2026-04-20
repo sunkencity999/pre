@@ -35,6 +35,7 @@ const delegate = require('./src/tools/delegate');
 const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
 const experienceSystem = require('./src/experience');
+const triggerSystem = require('./src/triggers');
 const chronosSystem = require('./src/chronos');
 const { createMcpServer } = require('./src/mcp-server');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
@@ -426,6 +427,158 @@ app.post('/api/cron/:id/run', (req, res) => {
     console.error(`[cron] Manual run error for ${job.id}: ${err.message}`);
   });
   res.json({ ok: true, id: job.id, run_count: job.run_count });
+});
+
+// ── Trigger REST API ──
+
+app.get('/api/triggers', (_req, res) => {
+  res.json(triggerSystem.loadTriggers());
+});
+
+app.post('/api/triggers', (req, res) => {
+  const result = triggerSystem.trigger({ action: 'add', ...req.body });
+  if (result.startsWith('Error')) return res.status(400).json({ error: result });
+  res.json({ ok: true, message: result });
+});
+
+app.patch('/api/triggers/:id', (req, res) => {
+  const action = req.body.enabled === false ? 'disable' : 'enable';
+  const result = triggerSystem.trigger({ action, id: req.params.id });
+  if (result.startsWith('Error')) return res.status(400).json({ error: result });
+  res.json({ ok: true, message: result });
+});
+
+app.delete('/api/triggers/:id', (req, res) => {
+  const result = triggerSystem.trigger({ action: 'remove', id: req.params.id });
+  if (result.startsWith('Error')) return res.status(404).json({ error: result });
+  res.json({ ok: true, message: result });
+});
+
+// Webhook endpoint — external services POST here to fire triggers
+app.post('/api/triggers/webhook/:id', (req, res) => {
+  const result = triggerSystem.handleWebhook(req.params.id, {
+    body: req.body,
+    headers: req.headers,
+  });
+  if (result.error) return res.status(result.status || 400).json({ error: result.error });
+  res.json(result);
+});
+
+// ── Voice API ──
+
+app.post('/api/voice/transcribe', async (req, res) => {
+  const voiceTool = require('./src/tools/voice');
+  const { audio, mime_type } = req.body;
+  if (!audio) return res.status(400).json({ error: 'audio (base64) is required' });
+  try {
+    const result = await voiceTool.transcribeBuffer(audio, mime_type || 'audio/webm');
+    if (result.error) return res.status(500).json({ error: result.error });
+    res.json({ text: result.text, model: result.model, language: result.language });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/voice/speak', (req, res) => {
+  const voiceTool = require('./src/tools/voice');
+  const { text, voice, rate } = req.body;
+  if (!text) return res.status(400).json({ error: 'text is required' });
+  const result = voiceTool.speak(text, { voice, rate, play: true });
+  if (result.error) return res.status(500).json({ error: result.error });
+  res.json(result);
+});
+
+// ── RAG API ──
+
+app.get('/api/rag', async (_req, res) => {
+  const ragTool = require('./src/tools/rag');
+  const result = await ragTool.rag({ action: 'list' });
+  // Parse the text result into structured data
+  res.json({ text: result });
+});
+
+app.get('/api/rag/:name', async (req, res) => {
+  const ragTool = require('./src/tools/rag');
+  const result = await ragTool.rag({ action: 'status', index_name: req.params.name });
+  res.json({ text: result });
+});
+
+app.post('/api/rag/index', async (req, res) => {
+  const ragTool = require('./src/tools/rag');
+  const { path: dirPath, index_name, recursive } = req.body;
+  if (!dirPath) return res.status(400).json({ error: 'path is required' });
+  const result = await ragTool.rag({ action: 'index', path: dirPath, index_name, recursive });
+  res.json({ text: result });
+});
+
+app.post('/api/rag/search', async (req, res) => {
+  const ragTool = require('./src/tools/rag');
+  const { query, index_name, top_k, min_score } = req.body;
+  if (!query) return res.status(400).json({ error: 'query is required' });
+  const result = await ragTool.rag({ action: 'search', query, index_name, top_k, min_score });
+  res.json({ text: result });
+});
+
+app.delete('/api/rag/:name', async (req, res) => {
+  const ragTool = require('./src/tools/rag');
+  const result = await ragTool.rag({ action: 'delete', index_name: req.params.name });
+  if (result.startsWith('Error') || result.includes('not found')) return res.status(404).json({ error: result });
+  res.json({ ok: true, message: result });
+});
+
+// ── Workflow API ──
+
+app.get('/api/workflows', (_req, res) => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const wfDir = path.join(os.homedir(), '.pre', 'workflows');
+  if (!fs.existsSync(wfDir)) return res.json([]);
+  const workflows = fs.readdirSync(wfDir)
+    .filter(f => f.endsWith('.json'))
+    .map(f => {
+      try { return JSON.parse(fs.readFileSync(path.join(wfDir, f), 'utf-8')); } catch { return null; }
+    })
+    .filter(Boolean)
+    .sort((a, b) => new Date(b.created) - new Date(a.created));
+  res.json(workflows);
+});
+
+app.get('/api/workflows/:name', async (req, res) => {
+  const wfTool = require('./src/tools/workflow');
+  const result = await wfTool.workflow({ action: 'show', name: req.params.name });
+  if (result.includes('not found')) return res.status(404).json({ error: result });
+  res.json({ text: result });
+});
+
+app.post('/api/workflows/:name/replay', async (req, res) => {
+  const wfTool = require('./src/tools/workflow');
+  const result = await wfTool.workflow({ action: 'replay', name: req.params.name, speed: req.body.speed || 1.0 });
+  res.json({ text: result });
+});
+
+app.delete('/api/workflows/:name', async (req, res) => {
+  const wfTool = require('./src/tools/workflow');
+  const result = await wfTool.workflow({ action: 'delete', name: req.params.name });
+  if (result.includes('not found')) return res.status(404).json({ error: result });
+  res.json({ ok: true, message: result });
+});
+
+app.get('/api/workflows/recording/status', (_req, res) => {
+  const wfTool = require('./src/tools/workflow');
+  const status = wfTool.recordingStatus();
+  res.json(status || { recording: false });
+});
+
+// ── Voice status API ──
+
+app.get('/api/voice/status', (_req, res) => {
+  const voiceTool = require('./src/tools/voice');
+  res.json({
+    whisper: voiceTool.hasWhisper,
+    say: voiceTool.hasSay,
+    ffmpeg: voiceTool.hasFfmpeg,
+  });
 });
 
 // Broadcast a WS event to all connected clients
@@ -987,6 +1140,7 @@ wss.on('connection', (ws) => {
 
 function shutdown() {
   console.log('\n  PRE Web GUI shutting down...');
+  triggerSystem.shutdown();
   wss.clients.forEach(ws => ws.close());
   server.close();
   process.exit(0);
@@ -1044,6 +1198,16 @@ server.listen(PORT, async () => {
   console.log(`  Working directory: ${CWD}`);
   console.log(`  Model context: ${MODEL_CTX} tokens`);
   console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total`);
+
+  // Initialize event-driven triggers (file watchers, webhooks)
+  const triggerStats = triggerSystem.init(async (job) => {
+    return executeCronJob(job, { broadcastWS });
+  });
+  const triggers = triggerSystem.loadTriggers();
+  if (triggers.length > 0) {
+    console.log(`  Triggers: ${triggerStats.watcherCount} active / ${triggers.length} total`);
+  }
+
   console.log(`  MCP server: HTTP at /mcp | stdio via mcp-stdio.js`);
 
   // Check for cron jobs that were missed while the system was down

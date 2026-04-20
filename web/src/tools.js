@@ -120,6 +120,10 @@ const linearTool = require('./tools/linear');
 const zoomTool = require('./tools/zoom');
 const figmaTool = require('./tools/figma');
 const asanaTool = require('./tools/asana');
+const ragTool = require('./tools/rag');
+const voiceTool = require('./tools/voice');
+const workflowTool = require('./tools/workflow');
+const triggerSystem = require('./triggers');
 
 // Tool name aliases — models hallucinate wrong names frequently
 const ALIASES = {
@@ -166,6 +170,14 @@ const ALIASES = {
   zoom_meeting: 'zoom', meeting: 'zoom', zoom_create: 'zoom',
   figma_file: 'figma', design: 'figma', figma_comments: 'figma',
   asana_task: 'asana', task_manager: 'asana', asana_search: 'asana',
+  rag_search: 'rag', rag_index: 'rag', vector_search: 'rag', semantic_search: 'rag',
+  document_search: 'rag', knowledge_base: 'rag', kb: 'rag',
+  triggers: 'trigger', watch: 'trigger', file_watch: 'trigger', webhook: 'trigger',
+  event_trigger: 'trigger', watcher: 'trigger',
+  speak: 'voice', say: 'voice', tts: 'voice', stt: 'voice',
+  transcribe: 'voice', speech: 'voice', dictate: 'voice',
+  record_workflow: 'workflow', replay_workflow: 'workflow', macro: 'workflow',
+  automation: 'workflow', playback: 'workflow',
   export_pdf: 'pdf_export', share_pdf: 'pdf_export', artifact_pdf: 'pdf_export',
   export_artifact: 'pdf_export', share: 'pdf_export',
   send_mail: 'apple_mail', email_send: 'apple_mail', read_mail: 'apple_mail',
@@ -194,6 +206,9 @@ const CONFIRM_ACTIONS = {
   apple_mail: new Set(['send']),
   apple_calendar: new Set(['delete_event']),
   apple_reminders: new Set(['delete']),
+  rag: new Set(['delete']),
+  trigger: new Set(['delete']),
+  workflow: new Set(['delete']),
 };
 
 // Dispatch a tool call to its handler
@@ -313,7 +328,14 @@ async function executeTool(name, args, cwd, opts) {
     case 'image_generate': return imageTool.imageGenerate(args);
 
     // Computer Use (desktop automation)
-    case 'computer': return computerTool.computerUse(args);
+    case 'computer': {
+      const result = await computerTool.computerUse(args);
+      // Record step for workflow capture
+      if (workflowTool.isRecording()) {
+        workflowTool.recordStep(args.action, args);
+      }
+      return result;
+    }
 
     // Browser
     case 'browser': return browserTool.browserAction(args);
@@ -343,6 +365,18 @@ async function executeTool(name, args, cwd, opts) {
       if (entries.length === 0) return 'No experience entries yet. The ledger builds automatically as you complete tasks.';
       return entries.map(e => `[${e.created}] **${e.name}**: ${e.description}`).join('\n');
     }
+
+    // RAG (local document intelligence)
+    case 'rag': return ragTool.rag(args, cwd);
+
+    // Event-driven triggers
+    case 'trigger': return triggerSystem.trigger(args);
+
+    // Voice (STT/TTS)
+    case 'voice': return voiceTool.voice(args);
+
+    // Workflow capture and replay
+    case 'workflow': return workflowTool.workflow(args);
 
     // Chronos
     case 'memory_health': {
@@ -409,7 +443,7 @@ async function executeTool(name, args, cwd, opts) {
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
       }
-      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document, pdf_export, apple_mail, apple_calendar, apple_contacts, spotlight, apple_reminders, apple_notes`;
+      return `Error: unknown tool '${name}'. Available tools: bash, read_file, list_dir, glob, grep, file_write, file_edit, web_fetch, web_search, memory_save, memory_search, memory_list, memory_delete, system_info, image_generate, cron, spawn_agent, spawn_multi, list_agents, rag, github, jira, confluence, smartsheet, slack, sharepoint, gmail, gdrive, gdocs, telegram, artifact, document, pdf_export, apple_mail, apple_calendar, apple_contacts, spotlight, apple_reminders, apple_notes`;
   }
 }
 

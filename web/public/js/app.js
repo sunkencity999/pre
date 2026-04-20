@@ -1824,6 +1824,501 @@
     },
   };
 
+  // ── Triggers panel ──
+  document.getElementById('triggers-btn').addEventListener('click', () => {
+    openTriggersPanel();
+  });
+
+  async function openTriggersPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Triggers';
+    panel.classList.remove('hidden');
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/triggers');
+      const triggers = await res.json();
+      renderTriggersPanel(content, triggers);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load triggers</p>';
+    }
+  }
+
+  function renderTriggersPanel(container, triggers) {
+    let html = '<div class="settings-section">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<div class="settings-section-title" style="margin:0">Triggers</div>';
+    html += '<button class="btn btn-primary btn-sm" onclick="window.Triggers.showAdd()">+ New Trigger</button>';
+    html += '</div>';
+
+    if (triggers.length === 0) {
+      html += '<p style="color:var(--text-muted);font-size:0.85rem">No triggers yet. Create a file watcher or webhook to fire prompts automatically.</p>';
+    } else {
+      for (const t of triggers) {
+        const statusDot = t.enabled
+          ? '<span style="color:var(--success)">&#9679;</span>'
+          : '<span style="color:var(--text-muted)">&#9679;</span>';
+        const typeLabel = t.type === 'file_watch' ? 'File Watch' : 'Webhook';
+        const typeBadge = `<span style="font-size:0.7rem;padding:1px 6px;border-radius:4px;background:var(--surface-hover);color:var(--text-secondary)">${typeLabel}</span>`;
+        const lastFired = t.last_fired_at ? new Date(t.last_fired_at).toLocaleString() : 'Never';
+        const detail = t.type === 'file_watch' && t.config?.path
+          ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">Path: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(t.config.path)}</code>${t.config.glob ? ` &middot; Glob: ${Markdown.escapeHtml(t.config.glob)}` : ''}</div>`
+          : t.type === 'webhook'
+            ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">Endpoint: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">/api/triggers/webhook/${Markdown.escapeHtml(t.id)}</code></div>`
+            : '';
+
+        html += `<div class="connection-card" style="margin-bottom:10px">
+          <div class="connection-card-header" style="padding:12px 14px">
+            <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+              ${statusDot}
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:0.9rem;display:flex;align-items:center;gap:8px">${Markdown.escapeHtml(t.name)} ${typeBadge}</div>
+                ${detail}
+                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">Fires: ${t.fire_count || 0} &middot; Last: ${lastFired}</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button class="btn btn-ghost btn-sm" onclick="window.Triggers.toggle('${t.id}', ${!t.enabled})">${t.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.Triggers.del('${t.id}')" style="color:var(--danger)" title="Delete">&times;</button>
+            </div>
+          </div>
+          <div style="padding:8px 14px;font-size:0.8rem;color:var(--text-secondary);border-top:1px solid var(--border)">${Markdown.escapeHtml(t.prompt.length > 200 ? t.prompt.slice(0, 200) + '...' : t.prompt)}</div>
+        </div>`;
+      }
+    }
+
+    // Add trigger form
+    html += `<div id="trigger-add-form" style="display:none;margin-top:16px">
+      <div class="settings-section-title">New Trigger</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Type</label>
+          <select id="trigger-type" onchange="window.Triggers.typeChanged()" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+            <option value="file_watch">File Watcher</option>
+            <option value="webhook">Webhook</option>
+          </select>
+        </div>
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Name (optional)</label>
+          <input id="trigger-name" type="text" placeholder="My trigger" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div id="trigger-path-group">
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Watch path</label>
+          <input id="trigger-path" type="text" placeholder="/Users/you/Documents" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div id="trigger-glob-group">
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Glob filter (optional)</label>
+          <input id="trigger-glob" type="text" placeholder="*.pdf" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div id="trigger-secret-group" style="display:none">
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Webhook secret (optional)</label>
+          <input id="trigger-secret" type="text" placeholder="shared-secret" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Prompt (executed when triggered)</label>
+          <textarea id="trigger-prompt" rows="3" placeholder="Summarize the new files in {path}" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;font-family:inherit;resize:vertical"></textarea>
+          <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px">Variables: <code>{file}</code>, <code>{event}</code>, <code>{path}</code> (file watch) &middot; <code>{payload}</code>, <code>{headers}</code> (webhook)</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" onclick="window.Triggers.save()">Create Trigger</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.Triggers.hideAdd()">Cancel</button>
+        </div>
+      </div>
+    </div>`;
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  window.Triggers = {
+    showAdd() {
+      const form = document.getElementById('trigger-add-form');
+      if (form) form.style.display = 'block';
+    },
+    hideAdd() {
+      const form = document.getElementById('trigger-add-form');
+      if (form) form.style.display = 'none';
+    },
+    typeChanged() {
+      const type = document.getElementById('trigger-type')?.value;
+      const pathGroup = document.getElementById('trigger-path-group');
+      const globGroup = document.getElementById('trigger-glob-group');
+      const secretGroup = document.getElementById('trigger-secret-group');
+      if (type === 'webhook') {
+        if (pathGroup) pathGroup.style.display = 'none';
+        if (globGroup) globGroup.style.display = 'none';
+        if (secretGroup) secretGroup.style.display = 'block';
+      } else {
+        if (pathGroup) pathGroup.style.display = 'block';
+        if (globGroup) globGroup.style.display = 'block';
+        if (secretGroup) secretGroup.style.display = 'none';
+      }
+    },
+    async save() {
+      const type = document.getElementById('trigger-type')?.value;
+      const name = document.getElementById('trigger-name')?.value.trim();
+      const prompt = document.getElementById('trigger-prompt')?.value.trim();
+      if (!prompt) return alert('Prompt is required.');
+      const body = { type, prompt };
+      if (name) body.name = name;
+      if (type === 'file_watch') {
+        const path = document.getElementById('trigger-path')?.value.trim();
+        if (!path) return alert('Watch path is required for file watchers.');
+        body.path = path;
+        const glob = document.getElementById('trigger-glob')?.value.trim();
+        if (glob) body.glob = glob;
+      }
+      if (type === 'webhook') {
+        const secret = document.getElementById('trigger-secret')?.value.trim();
+        if (secret) body.secret = secret;
+      }
+      try {
+        const res = await fetch('/api/triggers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          return alert(err.error || 'Failed to create trigger');
+        }
+        openTriggersPanel();
+      } catch (e) { alert('Error: ' + e.message); }
+    },
+    async toggle(id, enabled) {
+      await fetch(`/api/triggers/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      openTriggersPanel();
+    },
+    async del(id) {
+      if (!confirm('Delete this trigger?')) return;
+      await fetch(`/api/triggers/${id}`, { method: 'DELETE' });
+      openTriggersPanel();
+    },
+  };
+
+  // ── RAG panel ──
+  document.getElementById('rag-btn').addEventListener('click', () => {
+    openRagPanel();
+  });
+
+  async function openRagPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'RAG Indexes';
+    panel.classList.remove('hidden');
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/rag');
+      const data = await res.json();
+      renderRagPanel(content, data.text);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load RAG indexes</p>';
+    }
+  }
+
+  function renderRagPanel(container, ragText) {
+    let html = '<div class="settings-section">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<div class="settings-section-title" style="margin:0">Document Indexes</div>';
+    html += '<button class="btn btn-primary btn-sm" onclick="window.RAG.showIndex()">+ Index Directory</button>';
+    html += '</div>';
+
+    // Parse the text output to display indexes
+    if (ragText.includes('No indexes')) {
+      html += '<p style="color:var(--text-muted);font-size:0.85rem">No RAG indexes yet. Index a directory to enable semantic search over your documents.</p>';
+    } else {
+      // Display the raw formatted text from the tool
+      html += `<div style="font-size:0.85rem;white-space:pre-wrap;line-height:1.6;padding:12px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border)">${Markdown.escapeHtml(ragText)}</div>`;
+    }
+
+    // Search form
+    html += `<div style="margin-top:16px">
+      <div class="settings-section-title">Semantic Search</div>
+      <div style="display:flex;gap:8px">
+        <input id="rag-search-query" type="text" placeholder="Search your indexed documents..." style="flex:1;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem" onkeydown="if(event.key==='Enter')window.RAG.search()">
+        <input id="rag-search-index" type="text" placeholder="Index name (optional)" style="width:160px;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        <button class="btn btn-primary btn-sm" onclick="window.RAG.search()">Search</button>
+      </div>
+      <div id="rag-search-results" style="margin-top:10px"></div>
+    </div>`;
+
+    // Index form
+    html += `<div id="rag-index-form" style="display:none;margin-top:16px">
+      <div class="settings-section-title">Index a Directory</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Directory path</label>
+          <input id="rag-index-path" type="text" placeholder="/Users/you/project" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div>
+          <label style="font-size:0.75rem;color:var(--text-muted);display:block;margin-bottom:4px">Index name (optional — defaults to directory name)</label>
+          <input id="rag-index-name" type="text" placeholder="my-project" style="width:100%;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" onclick="window.RAG.doIndex()">Index</button>
+          <button class="btn btn-ghost btn-sm" onclick="window.RAG.hideIndex()">Cancel</button>
+        </div>
+        <div id="rag-index-status" style="font-size:0.82rem"></div>
+      </div>
+    </div>`;
+
+    // Delete section
+    html += `<div style="margin-top:16px">
+      <div class="settings-section-title">Manage</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="rag-delete-name" type="text" placeholder="Index name to delete" style="flex:1;padding:7px 10px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem">
+        <button class="btn btn-ghost btn-sm" onclick="window.RAG.del()" style="color:var(--danger)">Delete</button>
+      </div>
+    </div>`;
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  window.RAG = {
+    showIndex() {
+      const form = document.getElementById('rag-index-form');
+      if (form) form.style.display = 'block';
+    },
+    hideIndex() {
+      const form = document.getElementById('rag-index-form');
+      if (form) form.style.display = 'none';
+    },
+    async doIndex() {
+      const dirPath = document.getElementById('rag-index-path')?.value.trim();
+      const indexName = document.getElementById('rag-index-name')?.value.trim();
+      const statusEl = document.getElementById('rag-index-status');
+      if (!dirPath) return alert('Directory path is required.');
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--primary)">Indexing... this may take a moment.</span>';
+      try {
+        const body = { path: dirPath };
+        if (indexName) body.index_name = indexName;
+        const res = await fetch('/api/rag/index', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (statusEl) statusEl.innerHTML = `<div style="white-space:pre-wrap;padding:8px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border);margin-top:8px">${Markdown.escapeHtml(data.text)}</div>`;
+        // Refresh the index list after a short delay
+        setTimeout(() => openRagPanel(), 2000);
+      } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--danger)">Error: ${e.message}</span>`;
+      }
+    },
+    async search() {
+      const query = document.getElementById('rag-search-query')?.value.trim();
+      const indexName = document.getElementById('rag-search-index')?.value.trim();
+      const resultsEl = document.getElementById('rag-search-results');
+      if (!query) return;
+      if (resultsEl) resultsEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.82rem">Searching...</span>';
+      try {
+        const body = { query };
+        if (indexName) body.index_name = indexName;
+        const res = await fetch('/api/rag/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (resultsEl) resultsEl.innerHTML = `<div style="white-space:pre-wrap;font-size:0.82rem;padding:10px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">${Markdown.escapeHtml(data.text)}</div>`;
+      } catch (e) {
+        if (resultsEl) resultsEl.innerHTML = `<span style="color:var(--danger);font-size:0.82rem">Error: ${e.message}</span>`;
+      }
+    },
+    async del() {
+      const name = document.getElementById('rag-delete-name')?.value.trim();
+      if (!name) return alert('Enter an index name to delete.');
+      if (!confirm(`Delete RAG index "${name}"? This cannot be undone.`)) return;
+      try {
+        await fetch(`/api/rag/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        openRagPanel();
+      } catch {}
+    },
+  };
+
+  // ── Workflow panel ──
+  document.getElementById('workflow-btn').addEventListener('click', () => {
+    openWorkflowPanel();
+  });
+
+  async function openWorkflowPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Workflows';
+    panel.classList.remove('hidden');
+    content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+    try {
+      const res = await fetch('/api/workflows');
+      const workflows = await res.json();
+      renderWorkflowPanel(content, workflows);
+    } catch {
+      content.innerHTML = '<p style="color:var(--danger)">Failed to load workflows</p>';
+    }
+  }
+
+  function renderWorkflowPanel(container, workflows) {
+    let html = '<div class="settings-section">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
+    html += '<div class="settings-section-title" style="margin:0">Saved Workflows</div>';
+    html += '</div>';
+
+    if (workflows.length === 0) {
+      html += '<p style="color:var(--text-muted);font-size:0.85rem">No saved workflows yet. Record a workflow by asking PRE to start recording, then performing Computer Use actions.</p>';
+    } else {
+      for (const wf of workflows) {
+        const dur = wf.duration ? `${(wf.duration / 1000).toFixed(0)}s` : '?';
+        const created = wf.created ? new Date(wf.created).toLocaleDateString() : '?';
+        html += `<div class="connection-card" style="margin-bottom:10px">
+          <div class="connection-card-header" style="padding:12px 14px">
+            <div style="flex:1;min-width:0">
+              <div style="font-weight:600;font-size:0.9rem">${Markdown.escapeHtml(wf.name)}</div>
+              ${wf.description ? `<div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px">${Markdown.escapeHtml(wf.description)}</div>` : ''}
+              <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">${wf.stepCount} steps &middot; ${dur} duration &middot; ${created}</div>
+            </div>
+            <div style="display:flex;gap:4px;flex-shrink:0">
+              <button class="btn btn-ghost btn-sm" onclick="window.Workflows.view('${Markdown.escapeHtml(wf.name)}')" title="View steps">View</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.Workflows.replay('${Markdown.escapeHtml(wf.name)}')" title="Replay workflow">Replay</button>
+              <button class="btn btn-ghost btn-sm" onclick="window.Workflows.del('${Markdown.escapeHtml(wf.name)}')" style="color:var(--danger)" title="Delete">&times;</button>
+            </div>
+          </div>
+        </div>`;
+      }
+    }
+
+    html += '<div id="workflow-detail" style="margin-top:12px"></div>';
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  window.Workflows = {
+    async view(name) {
+      const detailEl = document.getElementById('workflow-detail');
+      if (!detailEl) return;
+      detailEl.innerHTML = '<span style="color:var(--text-muted);font-size:0.82rem">Loading...</span>';
+      try {
+        const res = await fetch(`/api/workflows/${encodeURIComponent(name)}`);
+        const data = await res.json();
+        detailEl.innerHTML = `<div style="white-space:pre-wrap;font-size:0.82rem;padding:10px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border);max-height:400px;overflow-y:auto">${Markdown.escapeHtml(data.text)}</div>`;
+      } catch {
+        detailEl.innerHTML = '<span style="color:var(--danger);font-size:0.82rem">Failed to load workflow</span>';
+      }
+    },
+    async replay(name) {
+      if (!confirm(`Replay workflow "${name}"? This will execute desktop actions.`)) return;
+      const detailEl = document.getElementById('workflow-detail');
+      if (detailEl) detailEl.innerHTML = '<span style="color:var(--primary);font-size:0.82rem">Replaying...</span>';
+      try {
+        const res = await fetch(`/api/workflows/${encodeURIComponent(name)}/replay`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ speed: 1.0 }),
+        });
+        const data = await res.json();
+        if (detailEl) detailEl.innerHTML = `<div style="white-space:pre-wrap;font-size:0.82rem;padding:10px;background:var(--surface-2, var(--surface));border-radius:6px;border:1px solid var(--border)">${Markdown.escapeHtml(data.text)}</div>`;
+      } catch (e) {
+        if (detailEl) detailEl.innerHTML = `<span style="color:var(--danger);font-size:0.82rem">Replay failed: ${e.message}</span>`;
+      }
+    },
+    async del(name) {
+      if (!confirm(`Delete workflow "${name}"?`)) return;
+      await fetch(`/api/workflows/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      openWorkflowPanel();
+    },
+  };
+
+  // ── Voice input ──
+  (async function initVoice() {
+    const voiceBtn = document.getElementById('voice-btn');
+    if (!voiceBtn) return;
+
+    // Check if voice capabilities are available
+    try {
+      const res = await fetch('/api/voice/status');
+      const status = await res.json();
+      if (status.whisper) {
+        voiceBtn.classList.remove('hidden');
+      }
+    } catch {
+      // Voice not available — leave button hidden
+      return;
+    }
+
+    let mediaRecorder = null;
+    let audioChunks = [];
+    let isRecording = false;
+
+    voiceBtn.addEventListener('mousedown', startRecording);
+    voiceBtn.addEventListener('mouseup', stopRecording);
+    voiceBtn.addEventListener('mouseleave', stopRecording);
+    // Touch support
+    voiceBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+    voiceBtn.addEventListener('touchend', (e) => { e.preventDefault(); stopRecording(); });
+
+    async function startRecording() {
+      if (isRecording) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioChunks = [];
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunks.push(e.data); };
+        mediaRecorder.onstop = async () => {
+          stream.getTracks().forEach(t => t.stop());
+          if (audioChunks.length === 0) return;
+          const blob = new Blob(audioChunks, { type: 'audio/webm' });
+          const reader = new FileReader();
+          reader.onloadend = async () => {
+            const base64 = reader.result.split(',')[1];
+            voiceBtn.title = 'Transcribing...';
+            try {
+              const res = await fetch('/api/voice/transcribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ audio: base64, mime_type: 'audio/webm' }),
+              });
+              const data = await res.json();
+              if (data.text) {
+                const input = document.getElementById('chat-input');
+                if (input) {
+                  input.value = (input.value ? input.value + ' ' : '') + data.text;
+                  input.focus();
+                  input.dispatchEvent(new Event('input'));
+                }
+              }
+            } catch {}
+            voiceBtn.title = 'Voice input (hold to record)';
+          };
+          reader.readAsDataURL(blob);
+        };
+        mediaRecorder.start();
+        isRecording = true;
+        voiceBtn.classList.add('recording');
+        voiceBtn.title = 'Recording... release to transcribe';
+      } catch {
+        // Microphone permission denied or not available
+      }
+    }
+
+    function stopRecording() {
+      if (!isRecording || !mediaRecorder) return;
+      isRecording = false;
+      voiceBtn.classList.remove('recording');
+      if (mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+      }
+    }
+  })();
+
   async function openSettingsPanel() {
     const panel = document.getElementById('right-panel');
     const title = document.getElementById('panel-title');

@@ -1,52 +1,59 @@
 # PRE Web GUI
 
-Browser interface for the Personal Reasoning Engine. Runs alongside the CLI, sharing the same sessions, memory, and tools.
+A local AI operating system for macOS. 63+ tools, desktop automation, document intelligence, voice interface, 15 enterprise integrations, event-driven triggers, persistent memory, and a full management GUI — all running on your Apple Silicon Mac with zero cloud dependency.
 
-## Why PRE? What Frontier Models Can't Do
+PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated AI platform** that controls your desktop, reads your email, searches your documents semantically, reacts to file changes, speaks and listens, records and replays workflows, schedules autonomous tasks, and connects to every enterprise tool your team uses — through a single conversational interface backed by Google Gemma 4 26B running locally at ~73 tokens/second.
 
-PRE isn't competing with Claude, GPT, or Gemini on raw reasoning. Frontier models are better at that and will continue to be. PRE exists because there are things frontier models structurally cannot offer — and those things matter in enterprise environments.
+---
 
-### Data Sovereignty
+## What Sets PRE Apart
 
-Every token, every prompt, every tool result stays on your machine. Nothing leaves. For organizations handling ITAR-controlled data, proprietary operational information, or sensitive internal communications, this isn't a preference — it's a requirement. PRE lets you use AI on work that cloud APIs are off-limits for.
-
-### Autonomous Scheduled Operations
-
-Frontier models only work when you're talking to them. PRE runs on its own schedule. The cron system executes prompts at specified times — daily briefings, recurring reports, monitoring checks — and delivers results via Telegram, macOS notifications, or stored sessions. AI that works while you sleep, without a human in the loop.
-
-### Enterprise Integration Density
-
-PRE connects to Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Gmail, Google Drive, GitHub, and Telegram — all accessible through natural language in a single conversational interface. No frontier product lets you search Jira, cross-reference with Confluence, pull a file from SharePoint, and post a summary to Slack in one conversation. PRE does, and it does it locally.
-
-### Zero Marginal Cost
-
-Once running, PRE generates tokens for free. No per-token pricing, no API rate limits, no monthly seat fees. At enterprise scale, where teams can burn through thousands of dollars in API costs per month, local inference eliminates an entire budget line. Every prompt, every scheduled job, every sub-agent loop — zero incremental cost. The only resource consumed is electricity and GPU time you already own.
-
-### Persistent Local Memory
-
-PRE builds a durable understanding of who you are, how you work, and what's happening across your projects. Its memory system — with automatic extraction, age-aware staleness tracking, and semantic search — accumulates context over weeks and months. Frontier models offer limited memory that resets across sessions or is managed opaquely. PRE's memory is local, auditable, and under your control.
-
-### Desktop Automation Without Cloud Dependencies
-
-Computer Use gives PRE control over any desktop application through a vision-action loop. Fill out forms in apps that have no API, navigate complex GUIs, automate repetitive desktop workflows — all running locally with no screenshots sent to external servers.
+| Capability | What It Means |
+|-----------|---------------|
+| **Data sovereignty** | Every token, prompt, screenshot, and tool result stays on your machine. Nothing leaves. ITAR-safe, HIPAA-compatible, zero exposure. |
+| **Desktop automation** | Computer Use + Workflow recording: PRE sees your screen and operates any application. Record actions, replay on demand. |
+| **Document intelligence** | Local RAG indexes your files and searches by meaning, not keywords. Powered by `nomic-embed-text` embeddings. |
+| **Voice interface** | Hold-to-record microphone in the GUI. Whisper transcribes locally; macOS `say` speaks responses. No audio leaves your machine. |
+| **Event-driven triggers** | File watchers and webhooks that fire prompts automatically. PRE reacts to your environment without being asked. |
+| **Enterprise integrations** | 15 services (Jira, Confluence, SharePoint, Slack, Linear, Zoom, Figma, Asana, Gmail, Drive, GitHub, Smartsheet, Telegram, Brave, Wolfram) in one interface. |
+| **Autonomous scheduling** | Cron jobs run server-side — daily briefings, monitoring, reports — even when you're not at the computer. |
+| **Persistent memory** | Auto-extracted from conversations, age-tracked, semantically searchable. PRE gets smarter over weeks and months. |
+| **Zero marginal cost** | No API pricing, no rate limits, no seat fees. Every prompt, every scheduled job, every sub-agent loop — free. |
+| **MCP server** | Frontier models (Claude, Codex, Gemini) can delegate execution-heavy tasks to PRE, saving thousands in API tokens. |
+| **Full GUI management** | Sidebar panels for triggers, RAG indexes, workflows, memory, cron jobs, and settings — everything is visual, not just CLI. |
 
 ---
 
 ## Quick Start
 
+The fastest path is the one-touch installer — double-click `install.sh` (or run it from a terminal) and it handles everything: Ollama, model pull, CLI build, npm install, ComfyUI, context sizing, and optional auto-start at login.
+
 ```bash
-npm install      # First time only
-node server.js   # http://localhost:7749
+./install.sh           # Interactive — prompts for optional steps
+./install.sh --yes     # Non-interactive — accepts all defaults
 ```
 
-Or let `pre-launch` start it automatically — the web GUI launches in the background when you run PRE.
+Or start the web GUI manually:
+
+```bash
+cd web && npm install   # First time only
+node server.js          # http://localhost:7749
+```
+
+The `pre-launch` command also starts the web GUI automatically in the background when you launch the CLI.
 
 ## Features
 
 - **Computer Use** — desktop automation via screenshot + mouse/keyboard control; the model sees your screen and operates any application
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
-- **Full tool execution** — 60+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
+- **Full tool execution** — 63+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
 - **Local image generation** — ComfyUI + Stable Diffusion XL on Apple Silicon GPU, inline image preview in chat
+- **Auto-start at login** — optional macOS LaunchAgent keeps the web GUI running in the background; toggle from Settings
+- **Local RAG** — index directories and search by meaning using `nomic-embed-text` embeddings; incremental re-indexing, paragraph-aware chunking
+- **Event-driven triggers** — file watchers and webhooks that fire prompts automatically when things change
+- **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say`; all audio stays on your machine
+- **Workflow capture and replay** — record Computer Use action sequences and replay them at configurable speed
+- **Auto-sized context window** — the installer detects your Mac's RAM and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
@@ -330,6 +337,282 @@ PRE integrates with [Asana](https://asana.com) for task management, project trac
 
 ---
 
+## Local RAG (Document Intelligence)
+
+PRE can index directories of files and search them semantically — ask questions in natural language and find relevant content even when the exact words don't match. All indexing and search runs locally using `nomic-embed-text` embeddings through Ollama.
+
+### How It Works
+
+1. Index a directory: PRE reads all text files, splits them into chunks (paragraph-boundary-aware), and generates 768-dimensional embeddings via Ollama
+2. Search by meaning: queries are embedded and matched against stored chunks using cosine similarity
+3. Incremental updates: re-indexing skips unchanged files (mtime tracking), so only new/modified files are processed
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `index` | Index a directory (recursive by default). Supports incremental re-indexing. |
+| `search` | Semantic search across an index — returns top-K matching chunks with scores |
+| `list` | List all indexes with file counts, chunk counts, and sizes |
+| `status` | Detailed status of a specific index (files, chunks, last indexed) |
+| `delete` | Delete an index and all its data (requires confirmation) |
+
+### Configuration
+
+- **Chunk size:** ~1,500 characters with 200-character overlap at paragraph boundaries
+- **File types:** `.txt`, `.md`, `.js`, `.ts`, `.py`, `.java`, `.c`, `.h`, `.css`, `.html`, `.json`, `.yaml`, `.yml`, `.toml`, `.xml`, `.csv`, `.sh`, `.rb`, `.go`, `.rs`, `.swift`, `.m`, `.sql`, `.r`, `.scala`, `.kt`, `.lua`, `.pl`, `.ex`, `.clj`, `.hs`, `.ml`
+- **Max file size:** 512 KB per file
+- **Batch embedding:** 40 chunks per Ollama API call
+- **Storage:** `~/.pre/rag/{index_name}/` (meta.json, chunks.json, vectors.json)
+
+### Example Uses
+
+> "Index my project at ~/code/api-service"
+
+> "Search the api-service index for authentication middleware"
+
+> "What files mention database migration in the api-service index?"
+
+> "List all my RAG indexes"
+
+### Performance
+
+On an M4 Max with 128GB: indexing 33 files (266 chunks) completes in ~4 seconds. Semantic search returns results in under 10ms. Incremental re-indexing of an unchanged directory takes ~0ms.
+
+### GUI Panel
+
+Click the **search+ icon** in the sidebar footer to open the RAG management panel. Index directories, run semantic searches, and delete indexes visually. See the [GUI Management Panels](#gui-management-panels) section for details.
+
+---
+
+## Event-Driven Triggers
+
+PRE can react to events automatically — watch files for changes or listen for webhooks, then execute prompts when triggered. Triggers use the same execution pipeline as cron jobs, so they create sessions, run tool loops, and deliver notifications.
+
+### Trigger Types
+
+| Type | How It Fires |
+|------|-------------|
+| **File watcher** | Monitors a directory (recursive) for file changes. Debounced (default 3s) to batch rapid changes. Optional glob filter. |
+| **Webhook** | Listens at `/api/triggers/webhook/:id`. Fires when an HTTP POST is received. Optional secret verification via `X-Webhook-Secret` header. |
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `add` | Create a new trigger (file_watch or webhook) |
+| `list` | List all triggers with status and hit counts |
+| `remove` | Delete a trigger (requires confirmation) |
+| `enable` | Re-enable a disabled trigger |
+| `disable` | Temporarily disable a trigger without deleting it |
+
+### Variable Substitution
+
+Trigger prompts support variables that are replaced with event data at fire time:
+
+**File watcher:** `{file}` (changed filename), `{event}` (change/rename), `{path}` (watched directory)
+
+**Webhook:** `{payload}` (POST body as JSON), `{headers}` (request headers)
+
+### Example Uses
+
+> "Watch ~/Documents/reports for new files and summarize any new PDFs"
+
+> "Create a webhook trigger that processes incoming JSON payloads and posts a summary to Slack"
+
+> "List all my active triggers"
+
+> "Disable the reports-watcher trigger"
+
+### Storage
+
+Triggers are stored in `~/.pre/triggers.json`. File watchers start automatically when the server boots (via `triggers.init()`). Webhooks are stateless listeners on the REST API.
+
+### GUI Panel
+
+Click the **lightning icon** in the sidebar footer to open the Triggers management panel. Create, enable/disable, and delete triggers visually. See the [GUI Management Panels](#gui-management-panels) section for details.
+
+---
+
+## Voice Interface
+
+PRE supports speech-to-text and text-to-speech, all running locally. Transcribe audio with OpenAI Whisper, speak responses with macOS `say`.
+
+### Requirements
+
+| Component | Install | Purpose |
+|-----------|---------|---------|
+| **Whisper** | `pip install openai-whisper` | Speech-to-text (local, no API) |
+| **macOS `say`** | Built-in | Text-to-speech (25+ English voices) |
+| **FFmpeg** (optional) | `brew install ffmpeg` | Audio format conversion (WebM→WAV, AIFF→MP3) |
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `transcribe` | Transcribe audio from a file path or base64-encoded buffer |
+| `speak` / `say` / `tts` | Speak text aloud or save to audio file (AIFF or MP3) |
+| `voices` | List available macOS English voices |
+| `status` | Check which voice capabilities are installed |
+
+### GUI: Microphone Button
+
+When Whisper is installed, a **microphone icon** appears in the chat input area. Hold it to record, release to transcribe:
+
+1. Press and hold the microphone button — it pulses red while recording
+2. Speak your message
+3. Release — the audio is transcribed locally via Whisper and appears in the input box
+4. Edit if needed, then send
+
+Audio is recorded via the Web Audio API, encoded as base64 WebM, and sent to `POST /api/voice/transcribe` for local Whisper transcription. No audio leaves your machine.
+
+### Example Uses
+
+> "Speak this summary aloud: The quarterly report shows a 15% increase in throughput"
+
+> "What voices are available for text-to-speech?"
+
+> "Check my voice capabilities — is Whisper installed?"
+
+### Configuration
+
+- **Whisper model:** `base.en` (good balance of speed and accuracy for English)
+- **Default voice:** Samantha (clear, natural macOS voice)
+- **Speech rate:** 185 words per minute
+- **Max recording:** 120 seconds (enforced browser-side)
+
+---
+
+## Workflow Capture and Replay
+
+Record sequences of Computer Use actions as replayable workflows. Automate repetitive desktop tasks by recording them once and replaying on demand.
+
+### How It Works
+
+1. Start recording — PRE begins capturing every Computer Use action (click, type, key, scroll, drag)
+2. Perform the task — use Computer Use normally; each action is recorded with inter-step timing
+3. Stop recording — the workflow is saved as a JSON file in `~/.pre/workflows/`
+4. Replay — re-execute the recorded steps with configurable speed
+
+Observation-only actions (screenshot, screen_size, cursor_position) are automatically filtered out — only actions that change state are recorded.
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `record` / `start` | Start recording a new workflow |
+| `stop` | Stop recording and save the workflow |
+| `status` | Check if currently recording and how many steps captured |
+| `list` | List all saved workflows with step counts and durations |
+| `replay` / `run` | Replay a workflow with optional speed multiplier |
+| `show` / `inspect` | View the steps of a saved workflow |
+| `delete` | Delete a saved workflow (requires confirmation) |
+| `export` | Export a workflow as a shell-friendly description |
+
+### Example Uses
+
+> "Start recording a workflow called 'daily-standup-setup'"
+
+(Perform Computer Use actions: open Zoom, join meeting, open notes app, etc.)
+
+> "Stop recording"
+
+> "Replay the daily-standup-setup workflow at 2x speed"
+
+> "Show me the steps in the daily-standup-setup workflow"
+
+> "List all my saved workflows"
+
+### Storage
+
+Workflows are stored as JSON in `~/.pre/workflows/`. Each file contains metadata (name, description, created date, duration) and an array of steps with action, arguments, inter-step delay, and a deduplication hash.
+
+### GUI Panel
+
+Click the **grid icon** in the sidebar footer to open the Workflows panel. From here you can:
+- View all saved workflows with step counts and durations
+- Click **View** to inspect individual steps
+- Click **Replay** to re-execute a workflow (with confirmation prompt)
+- Delete workflows you no longer need
+
+---
+
+## GUI Management Panels
+
+Every major PRE capability has a dedicated management panel accessible from the sidebar footer. No CLI needed — everything can be configured and monitored visually.
+
+### Sidebar Footer Icons
+
+The sidebar footer contains these buttons (left to right):
+
+| Icon | Panel | What You Can Do |
+|------|-------|-----------------|
+| Sun/Moon | Theme | Toggle between Dark and Light themes |
+| Book | **Memory Browser** | View, create, search, and delete persistent memories grouped by type |
+| Clock | **Cron Scheduler** | Create, enable/disable, run, and delete scheduled jobs with natural language input |
+| Lightning | **Triggers** | Create file watchers and webhooks, enable/disable, view fire counts, delete |
+| Search+ | **RAG Indexes** | Index directories, semantic search across documents, manage and delete indexes |
+| Grid | **Workflows** | View saved workflows, inspect steps, replay, delete |
+| Gear | **Settings** | Configure all 15 enterprise integrations, MCP servers, auto-start at login |
+
+### Voice Input (Microphone Button)
+
+The **microphone icon** appears in the chat input area (next to the model selector) when Whisper is installed. It provides push-to-talk voice input:
+
+1. **Hold** the microphone button (or press and hold on mobile)
+2. **Speak** your message — the button pulses red while recording
+3. **Release** — audio is sent to local Whisper for transcription
+4. Transcribed text appears in the input box, ready to send or edit
+
+The microphone button is hidden if Whisper is not installed. Install it with `pip install openai-whisper`.
+
+### Triggers Panel
+
+Click the **lightning icon** to manage event-driven triggers:
+
+- **+ New Trigger** — opens a form with:
+  - **Type selector**: File Watcher or Webhook
+  - **File Watcher fields**: watch path, glob filter (e.g., `*.pdf`)
+  - **Webhook fields**: optional shared secret for verification
+  - **Prompt**: the text sent to the model when triggered (supports `{file}`, `{event}`, `{path}`, `{payload}`, `{headers}` variables)
+- Each trigger shows: name, type badge, status dot (green=enabled), watch path or webhook endpoint, fire count, last fired time
+- **Disable/Enable** toggles without deleting
+- **Delete** removes the trigger permanently
+
+### RAG Panel
+
+Click the **search+ icon** to manage document indexes:
+
+- **+ Index Directory** — enter a directory path and optional index name; PRE reads all text files, chunks them, and generates embeddings
+- **Semantic Search** — enter a natural language query and optional index name; results show matched content chunks ranked by relevance score
+- **Index list** shows all indexes with file counts, chunk counts, and creation dates
+- **Delete** removes an index and all its embeddings
+
+Indexing progress is shown inline. Large directories may take 10-30 seconds; incremental re-indexing of unchanged files is instant.
+
+### Memory Browser
+
+Click the **book icon** to browse and manage persistent memories:
+
+- Memories are grouped by type with color coding: **user** (blue), **feedback** (amber), **project** (green), **reference** (purple)
+- Click any memory to view its full content, metadata, and age
+- **+ New** to create a memory manually with name, type, description, and content
+- **Delete** with confirmation
+- Modification dates and scope (global/project) displayed on each card
+
+### Cron Scheduler
+
+Click the **clock icon** to manage scheduled jobs:
+
+- **+ New Job** — enter schedule in natural language ("every weekday at 9am"), description, and prompt
+- Live preview shows the parsed cron expression and human-readable description
+- Each job shows: status dot, description, schedule, run count, last run time
+- **Run Now** executes immediately; **Result** opens the output session
+- **Enable/Disable** toggles; **Delete** removes the job
+- Results are delivered via macOS notification, Telegram, and in-browser toast
+
+---
+
 ## Microsoft SharePoint Setup
 
 PRE integrates with Microsoft SharePoint via the Microsoft Graph API. One Azure AD app registration serves your entire organization — each user authenticates with their own Microsoft credentials.
@@ -429,6 +712,76 @@ ComfyUI runs as a background process, started on-demand by either the CLI or web
 - **Web GUI** (`src/tools/image.js`) — `startComfyUI()` spawns the server and polls until ready
 - Both write to the same artifacts directory and share `~/.pre/comfyui.json` config
 - ComfyUI is **not** started by `pre-launch` — it only runs when needed to save GPU memory
+
+## Auto-Start at Login
+
+PRE can optionally start the web GUI server automatically when you log in to your Mac, so it's always available at `http://localhost:7749` without manually running anything.
+
+### How It Works
+
+A macOS LaunchAgent (`com.pre.server`) runs `pre-server.sh` at login. The launcher ensures Ollama is running, pre-warms the model into GPU memory, and starts the Node.js server. If the server crashes, launchd restarts it automatically.
+
+### Enabling Auto-Start
+
+**From the GUI:** Open Settings (gear icon) → scroll to the **System** section → toggle **Start at Login**.
+
+**From the installer:** The install script (`install.sh`) offers to enable auto-start during installation (Step 10).
+
+**Manually:**
+
+```bash
+# Enable
+web/pre-server.sh           # Verify it starts correctly first
+launchctl load ~/Library/LaunchAgents/com.pre.server.plist
+
+# Disable
+launchctl unload ~/Library/LaunchAgents/com.pre.server.plist
+rm ~/Library/LaunchAgents/com.pre.server.plist
+```
+
+### Management Commands
+
+`pre-server.sh` doubles as a management tool:
+
+```bash
+web/pre-server.sh --status   # Check if server and model are running
+web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
+```
+
+### Details
+
+- **Plist:** `~/Library/LaunchAgents/com.pre.server.plist`
+- **Log:** `~/.pre/server.log`
+- **Restart policy:** `KeepAlive` with `SuccessfulExit: false` — launchd restarts on crash but not on clean shutdown
+- **Coexistence:** `pre-launch` detects the LaunchAgent-managed server (via PPID=1) and reuses it instead of killing and restarting
+
+---
+
+## Context Window Auto-Sizing
+
+The install script detects your Mac's unified memory and sets the optimal context window size. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
+
+| RAM | Context Window | Tokens |
+|-----|---------------|--------|
+| 128GB+ | 128K | 131,072 |
+| 64–95GB | 64K | 65,536 |
+| 48–63GB | 32K | 32,768 |
+| 36–47GB | 16K | 16,384 |
+| <36GB | 8K | 8,192 |
+
+The context window can be overridden by editing `~/.pre/context` directly (any value from 2048 to 262144). Changes take effect the next time the CLI or web GUI starts.
+
+### Where It's Read
+
+| Component | How |
+|-----------|-----|
+| `web/src/constants.js` | `fs.readFileSync('~/.pre/context')` at require-time |
+| `engine/pre.m` | `NSString` file read in `main()` |
+| `engine/pre-launch` | Bash `read` for model warmup `num_ctx` |
+
+All three fall back to 131,072 if the file is missing or invalid.
+
+---
 
 ## Memory System
 
@@ -570,7 +923,7 @@ No additional setup needed — the HTTP transport is always available when the s
 
 | Tool | Description |
 |------|-------------|
-| `pre_agent` | Run a full agentic task through PRE's local model with 60+ tools. Multi-turn tool loop, zero API cost. |
+| `pre_agent` | Run a full agentic task through PRE's local model with 63+ tools. Multi-turn tool loop, zero API cost. |
 | `pre_chat` | One-shot query to the local model. No tools, no agent loop — just fast, free LLM reasoning. |
 | `pre_memory_search` | Search PRE's persistent memory for context about the user, projects, and preferences. |
 | `pre_sessions` | List recent PRE sessions to understand what tasks have been worked on. |
@@ -582,7 +935,7 @@ The MCP tool descriptions tell Claude *what* PRE can do. To tell Claude *when* t
 ```markdown
 ## Local Agent Delegation (PRE)
 
-You have access to PRE, a local AI agent running Gemma 4 26B with 60+ tools
+You have access to PRE, a local AI agent running Gemma 4 26B with 63+ tools
 on Apple Silicon. PRE runs at zero token cost. Delegate to PRE (`pre_agent`)
 when the task is execution-heavy but not reasoning-heavy:
 
@@ -664,7 +1017,7 @@ Claude/GPT (frontier model)
          │
          PRE Server (localhost:7749)
               │
-              └─ Gemma 4 26B + 60+ tools
+              └─ Gemma 4 26B + 63+ tools
                    ├─ apple_mail.search → 8 results
                    ├─ apple_mail.read → full thread
                    └─ Returns summary to Claude
@@ -748,16 +1101,18 @@ PRE requires Apple Silicon with sufficient unified memory. At moderate delegatio
 ```
 server.js                  Express + WebSocket + MCP server, REST API
 mcp-stdio.js               MCP stdio transport (auto-starts server + Ollama)
+pre-server.sh              Headless launcher for LaunchAgent auto-start (--status, --stop)
 src/
   ollama.js                Ollama /api/chat NDJSON streaming
   sessions.js              JSONL read/write + project management
   tools.js                 Tool dispatcher + execution loop
-  tools-defs.js            60+ tool definitions for Ollama
+  tools-defs.js            63+ tool definitions for Ollama
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
-  constants.js             MODEL_CTX=131072, paths
+  constants.js             MODEL_CTX (from ~/.pre/context), paths
+  triggers.js              Event-driven trigger engine (file watchers, webhooks)
   tools/
     bash.js                Shell execution (stderr capture)
     files.js               read_file, list_dir, glob, grep, file_write, file_edit
@@ -787,6 +1142,9 @@ src/
     zoom.js                Zoom REST API (S2S OAuth)
     figma.js               Figma REST API
     asana.js               Asana REST API
+    rag.js                 Local RAG (directory indexing + semantic search)
+    voice.js               Voice interface (Whisper STT + macOS say TTS)
+    workflow.js            Workflow capture and replay (Computer Use sequences)
 public/
   index.html               SPA shell
   fonts/                   Calendas Plus (regular, italic, bold)
@@ -811,7 +1169,7 @@ Switch between themes using the dropdown in the sidebar footer.
 
 ## Key Design Decisions
 
-1. **Always send `num_ctx=131072`** — must match across CLI and Web GUI to prevent Ollama model reload (300s+ penalty)
+1. **Context window must match across CLI and Web GUI** — both read `~/.pre/context` at startup so the `num_ctx` value stays in sync; a mismatch triggers a 300s+ Ollama model reload
 2. **Vanilla JS, no framework** — local tool, one user, loads instantly, no build step
 3. **Credentials stay server-side** — API keys never sent to the browser
 4. **Tool execution server-side** — security, CORS, file system access
