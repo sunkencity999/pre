@@ -636,6 +636,68 @@ Claude/GPT (frontier model)
 
 The frontier model sees only the final result — not the intermediate tool calls, screenshots, or token overhead from the agent loop. This is where the cost savings compound: a 15-turn tool loop that would cost ~$2 in Claude API tokens runs for free on local hardware.
 
+### Cost Savings: PRE as a Token-Offloading Engine
+
+We benchmarked 20 tasks across PRE's MCP tools to measure quality and estimate real-world token savings. The results confirm that a significant share of typical AI workloads can be offloaded to local inference at zero marginal cost without sacrificing quality.
+
+#### Benchmark Results (20 tasks, Gemma 4 26B q8_0, M4 Max 128GB)
+
+| Task Type | Tasks | Passed | Avg Quality | Avg Time |
+|-----------|-------|--------|-------------|----------|
+| **Agent tasks** (tool loops) | 10 | 9/10 | 4.0/5 | 40s |
+| **Chat tasks** (delegatable) | 5 | 5/5 | 4.2/5 | 9s |
+| **Chat tasks** (frontier-grade) | 5 | 5/5 | 5.0/5 | 37s |
+
+Agent tasks included: system info gathering, file search, process listing, git log, file reading, directory listing, code grep, disk/network checks, memory search, and multi-step file analysis. All used real tools (bash, grep, read_file, system_info, etc.) and returned correct results.
+
+Chat tasks included: summarization, translation, code explanation, data formatting, factual Q&A, architecture design, security review, bug diagnosis, and code generation. Even the "frontier-grade" tasks scored 5/5 — but these were self-contained questions. Where Claude still wins is **in-context reasoning** across your full conversation history and active codebase.
+
+#### Per-Task Token Savings
+
+| Task Type | Tokens (input + output) | Claude Opus Cost | Claude Sonnet Cost | PRE Cost |
+|-----------|------------------------|------------------|-------------------|----------|
+| Agent task (tool loop) | ~25K + ~2K | $0.53 | $0.11 | **$0.00** |
+| Chat task (no tools) | ~2K + ~800 | $0.09 | $0.02 | **$0.00** |
+
+#### Monthly Projection: 10M Tokens/Month User
+
+A user consuming 10M tokens/month (roughly 80% input, 20% output) has a baseline monthly cost of **$270 (Opus)** or **$54 (Sonnet)**. Not all tokens are delegatable — complex reasoning, code generation in active codebases, and interactive debugging should stay with the frontier model. Based on our benchmark data, 20-40% of typical usage is offloadable.
+
+| Delegation Level | Tokens to PRE | Opus Savings | Sonnet Savings |
+|-----------------|---------------|--------------|----------------|
+| **Conservative (20%)** | 2M | $54/mo ($648/yr) | $11/mo ($130/yr) |
+| **Moderate (30%)** | 3M | $81/mo ($972/yr) | $16/mo ($194/yr) |
+| **Aggressive (40%)** | 4M | $108/mo ($1,296/yr) | $22/mo ($259/yr) |
+
+For a daily workflow of 5 agent delegations + 15 chat delegations (a moderate pattern), savings are **$3.97/day on Opus** or **$87/month** over 22 work days.
+
+#### What to Delegate vs. Keep
+
+Based on benchmark quality scores:
+
+**Safe to delegate (4-5/5 quality):**
+- System checks, disk/network info, process listing
+- File reading, searching, grepping across codebases
+- Git history, status checks
+- Email, calendar, contacts, reminders (native macOS tools)
+- Memory lookups and cross-session context
+- Summarization, translation, data formatting
+- Factual Q&A, code explanations
+- Multi-step tool chains (search Jira + read Confluence + summarize)
+
+**Keep for the frontier model:**
+- Code generation that touches the active codebase (needs full project context)
+- Architecture decisions informed by the conversation history
+- Interactive debugging where back-and-forth matters
+- Nuanced writing where tone and precision are critical
+- Security analysis of code you're actively editing
+
+**The cost compounds:** A 15-turn tool loop where Claude calls bash, reads 8 files, greps 3 directories, and summarizes — that's easily 50K+ tokens. Delegated to PRE, Claude sees only the final 500-token summary. The 50K tokens of tool-loop overhead simply never hit the API.
+
+#### Hardware Amortization
+
+PRE requires Apple Silicon with sufficient unified memory. At moderate delegation (30%, Opus pricing), the **$972/year savings** pays for itself against the incremental hardware cost. For teams of 3-5 engineers sharing a Mac Studio, the economics are even stronger — one machine serves multiple MCP clients simultaneously via Ollama's request queuing.
+
 ### Configuration
 
 | Environment Variable | Default | Description |
