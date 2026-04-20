@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "PRE Web GUI — browser interface for Personal Reasoning Engine",
   "main": "server.js",
+  "bin": {
+    "pre-mcp": "./mcp-stdio.js"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js --dev"

@@ -7,7 +7,7 @@ const { WebSocketServer } = require('ws');
 const path = require('path');
 const os = require('os');
 
-const { healthCheck } = require('./src/ollama');
+const { healthCheck, streamChat } = require('./src/ollama');
 const { runToolLoop } = require('./src/tools');
 const {
   listSessions, getSession, appendMessage,
@@ -34,6 +34,8 @@ const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
 const experienceSystem = require('./src/experience');
 const chronosSystem = require('./src/chronos');
+const { createMcpServer } = require('./src/mcp-server');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 const CWD = process.env.PRE_CWD || os.homedir();
@@ -548,6 +550,162 @@ app.get('/api/status', async (_req, res) => {
   });
 });
 
+// ── MCP Server API (PRE as an MCP tool provider) ──
+
+// Health check — used by mcp-stdio.js to detect if server is up
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Run a full agent task (multi-turn tool loop)
+app.post('/api/mcp-server/agent', async (req, res) => {
+  const { task, maxTurns } = req.body || {};
+  if (!task) return res.status(400).json({ error: 'task is required' });
+
+  const sessionId = createSession('mcp', 'agent', true);
+  appendMessage(sessionId, { role: 'user', content: task });
+
+  const events = [];
+  const send = (msg) => events.push(msg);
+  const onConfirmRequest = async () => true; // Auto-approve in MCP mode
+  const effectiveMaxTurns = Math.min(Math.max(maxTurns || 15, 1), 30);
+
+  try {
+    await runToolLoop({
+      sessionId,
+      cwd: CWD,
+      send,
+      signal: null,
+      onConfirmRequest,
+      userMessage: task,
+      needsTitle: true,
+      maxTurns: effectiveMaxTurns,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+
+  // Extract the final assistant response
+  const messages = getSessionMessages(sessionId);
+  const assistantMsgs = messages.filter(m => m.role === 'assistant');
+  const lastAssistant = assistantMsgs[assistantMsgs.length - 1];
+
+  const toolsUsed = events
+    .filter(e => e.type === 'tool_call')
+    .map(e => e.name)
+    .filter(Boolean);
+
+  res.json({
+    response: lastAssistant?.content || 'No response generated.',
+    sessionId,
+    toolsUsed: [...new Set(toolsUsed)],
+    turns: assistantMsgs.length,
+  });
+});
+
+// One-shot chat (no tools, no agent loop)
+app.post('/api/mcp-server/chat', async (req, res) => {
+  const { message, systemPrompt } = req.body || {};
+  if (!message) return res.status(400).json({ error: 'message is required' });
+
+  const messages = [];
+  if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+  messages.push({ role: 'user', content: message });
+
+  try {
+    const result = await streamChat({ messages, maxTokens: 4096 });
+    res.json({
+      response: result.response || '',
+      thinking: result.thinking || '',
+      stats: result.stats,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Search persistent memory
+app.post('/api/mcp-server/memory', (req, res) => {
+  const { query } = req.body || {};
+  const memories = memorySystem.searchMemories(query || '');
+  res.json({
+    memories: memories.map(m => ({
+      name: m.name,
+      type: m.type,
+      description: m.description,
+      body: m.body,
+      scope: m.scope,
+      created: m.created,
+    })),
+  });
+});
+
+// List recent sessions
+app.get('/api/mcp-server/sessions', (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  const sessions = listSessions();
+  res.json({
+    sessions: sessions.slice(0, limit).map(s => ({
+      id: s.id,
+      displayName: s.displayName,
+      messageCount: s.messageCount,
+      updated: s.updatedAt,
+      project: s.project,
+    })),
+  });
+});
+
+// ── MCP HTTP Transport ──
+// Connect MCP clients via StreamableHTTP at /mcp
+const mcpSessions = new Map();
+
+app.post('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+
+  // Existing session — route to its transport
+  if (sessionId && mcpSessions.has(sessionId)) {
+    const session = mcpSessions.get(sessionId);
+    return session.transport.handleRequest(req, res);
+  }
+
+  // New session — create transport + server
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` });
+  const mcpSrv = createMcpServer();
+
+  transport.onclose = () => {
+    const sid = transport.sessionId;
+    if (sid) mcpSessions.delete(sid);
+    console.log(`[mcp-server] HTTP client disconnected (${sid})`);
+  };
+
+  await mcpSrv.connect(transport);
+
+  // Store session for subsequent requests
+  if (transport.sessionId) {
+    mcpSessions.set(transport.sessionId, { transport, server: mcpSrv });
+  }
+
+  console.log(`[mcp-server] HTTP client connected (session ${transport.sessionId})`);
+  return transport.handleRequest(req, res);
+});
+
+app.get('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (sessionId && mcpSessions.has(sessionId)) {
+    return mcpSessions.get(sessionId).transport.handleRequest(req, res);
+  }
+  res.status(400).json({ error: 'MCP session ID required. POST /mcp to start a new session.' });
+});
+
+app.delete('/mcp', async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'];
+  if (sessionId && mcpSessions.has(sessionId)) {
+    const session = mcpSessions.get(sessionId);
+    await session.transport.close();
+    mcpSessions.delete(sessionId);
+    return res.status(200).json({ closed: true });
+  }
+  res.status(404).json({ error: 'Unknown MCP session' });
+});
+
 // ── WebSocket handler ──
 
 wss.on('connection', (ws) => {
@@ -805,6 +963,7 @@ server.listen(PORT, async () => {
   console.log(`  Working directory: ${CWD}`);
   console.log(`  Model context: ${MODEL_CTX} tokens`);
   console.log(`  Cron jobs: ${enabledCount} active / ${jobs.length} total`);
+  console.log(`  MCP server: HTTP at /mcp | stdio via mcp-stdio.js`);
 
   // Check for cron jobs that were missed while the system was down
   if (enabledCount > 0) {

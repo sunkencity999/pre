@@ -512,10 +512,144 @@ The memory icon in the sidebar footer opens a right panel with:
 
 The web GUI reads and writes the same `~/.pre/memory/` directory as the CLI. Memories created in one are immediately available in the other. Both maintain the `MEMORY.md` index (and the legacy `index.md` for backwards compatibility).
 
+## MCP Server — Use PRE from Claude, Codex, or Any MCP Client
+
+PRE doubles as an MCP (Model Context Protocol) server. This lets frontier models like Claude or GPT delegate execution-heavy tasks to PRE's local Gemma 4 agent instead of burning API tokens on tool loops. The local model handles the grunt work — file searches, multi-step tool chains, email lookups, data gathering — while the frontier model stays focused on complex reasoning and planning.
+
+**Why this matters:** A single Claude conversation that searches files, reads 15 documents, calls 8 tools, and synthesizes results can consume 100K+ tokens at API pricing. Delegating the search/tool phase to PRE costs zero tokens — Gemma 4 runs locally on your Apple Silicon GPU.
+
+### Installation
+
+#### Claude Code (CLI / IDE extensions)
+
+Add PRE to your project-level `.mcp.json` or global settings:
+
+```json
+{
+  "mcpServers": {
+    "pre": {
+      "command": "node",
+      "args": ["/path/to/pre/web/mcp-stdio.js"]
+    }
+  }
+}
+```
+
+Replace `/path/to/pre` with your actual PRE install path (e.g., `~/pre`).
+
+The stdio transport auto-starts Ollama and the PRE server if they're not already running — no need to launch PRE separately.
+
+#### Claude Desktop
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "pre": {
+      "command": "node",
+      "args": ["/path/to/pre/web/mcp-stdio.js"]
+    }
+  }
+}
+```
+
+Restart Claude Desktop after saving. PRE will appear as an available tool.
+
+#### Other MCP Clients (HTTP transport)
+
+If the PRE server is already running, any MCP client that supports StreamableHTTP can connect directly:
+
+```
+POST http://localhost:7749/mcp
+```
+
+No additional setup needed — the HTTP transport is always available when the server is running.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `pre_agent` | Run a full agentic task through PRE's local model with 60+ tools. Multi-turn tool loop, zero API cost. |
+| `pre_chat` | One-shot query to the local model. No tools, no agent loop — just fast, free LLM reasoning. |
+| `pre_memory_search` | Search PRE's persistent memory for context about the user, projects, and preferences. |
+| `pre_sessions` | List recent PRE sessions to understand what tasks have been worked on. |
+
+### Teaching Claude When to Delegate
+
+The MCP tool descriptions tell Claude *what* PRE can do. To tell Claude *when* to prefer PRE over doing work itself, add delegation guidance to your `CLAUDE.md`:
+
+```markdown
+## Local Agent Delegation (PRE)
+
+You have access to PRE, a local AI agent running Gemma 4 26B with 60+ tools
+on Apple Silicon. PRE runs at zero token cost. Delegate to PRE (`pre_agent`)
+when the task is execution-heavy but not reasoning-heavy:
+
+**Delegate to PRE:**
+- File searches, code grep, reading many files to gather context
+- Sending emails, creating calendar events, posting to Slack
+- Multi-step tool chains (search Jira → cross-reference Confluence → summarize)
+- Data gathering and formatting that requires many tool calls
+- Running shell commands, system checks, process management
+- Searching PRE's memory for user context (`pre_memory_search`)
+
+**Keep for yourself (Claude):**
+- Complex reasoning, planning, and architecture decisions
+- Code generation requiring deep understanding of large codebases
+- Nuanced writing where tone and precision matter
+- Tasks requiring your full context window and conversation history
+- Anything the user is actively discussing with you interactively
+
+**Use `pre_chat` for:**
+- Quick questions you'd otherwise answer yourself but that burn tokens
+- Summarization of long text you've already gathered
+- Translation, reformatting, or analysis of data
+
+When delegating, be specific in the task description — PRE is an agent, not
+a search engine. "Search my email for messages from Jane about the Q3 budget
+and summarize what she said" will work. "Email stuff" will not.
+```
+
+This snippet goes in any `CLAUDE.md` file — project-level or global. Claude reads it at the start of every conversation and will proactively delegate appropriate tasks.
+
+#### For Codex / GPT
+
+The same pattern applies: add similar delegation instructions to the system prompt or project instructions. The MCP tools work identically regardless of which frontier model is calling them.
+
+### Architecture
+
+```
+Claude/GPT (frontier model)
+    │
+    ├─ Complex reasoning, planning, code generation
+    │
+    └─ pre_agent("search my email for the DocuSign issue")
+         │
+         PRE Server (localhost:7749)
+              │
+              └─ Gemma 4 26B + 60+ tools
+                   ├─ apple_mail.search → 8 results
+                   ├─ apple_mail.read → full thread
+                   └─ Returns summary to Claude
+```
+
+The frontier model sees only the final result — not the intermediate tool calls, screenshots, or token overhead from the agent loop. This is where the cost savings compound: a 15-turn tool loop that would cost ~$2 in Claude API tokens runs for free on local hardware.
+
+### Configuration
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `PRE_WEB_PORT` | `7749` | Port for the PRE server (MCP endpoints share this) |
+| `PRE_MCP_CHILD` | — | Set automatically when stdio transport spawns the server |
+
+---
+
 ## Architecture
 
 ```
-server.js                  Express + WebSocket, REST API
+server.js                  Express + WebSocket + MCP server, REST API
+mcp-stdio.js               MCP stdio transport (auto-starts server + Ollama)
 src/
   ollama.js                Ollama /api/chat NDJSON streaming
   sessions.js              JSONL read/write + project management
@@ -523,6 +657,7 @@ src/
   tools-defs.js            60+ tool definitions for Ollama
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
+  mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
   constants.js             MODEL_CTX=131072, paths
   tools/

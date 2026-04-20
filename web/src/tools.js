@@ -425,14 +425,15 @@ async function executeTool(name, args, cwd, opts) {
  * @param {Function} opts.onConfirmRequest - Ask client to confirm dangerous tool
  * @returns {Promise<void>}
  */
-async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle }) {
+async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle, maxTurns }) {
+  const turnLimit = maxTurns || MAX_TOOL_TURNS;
   let tokensIn = 0;
   let tokensOut = 0;
   let pendingScreenshots = []; // Screenshots from computer/browser tools, injected transiently
   let usedComputerUse = false; // Track if computer use was invoked for completion notification
   let pendingClickWarning = null; // Click-loop warning to inject with next screenshot
 
-  for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+  for (let turn = 0; turn < turnLimit; turn++) {
     if (signal?.aborted) break;
 
     const systemPrompt = buildSystemPrompt(cwd);
@@ -741,7 +742,7 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   }
 
   // Hit max tool turns
-  send({ type: 'error', message: `Tool loop reached maximum of ${MAX_TOOL_TURNS} turns` });
+  send({ type: 'error', message: `Tool loop reached maximum of ${turnLimit} turns` });
 }
 
 module.exports = { executeTool, runToolLoop, ALIASES, CONFIRM_TOOLS };
