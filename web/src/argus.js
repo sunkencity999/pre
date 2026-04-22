@@ -27,6 +27,7 @@ const eventWindow = [];       // sliding window of recent event summaries
 const MAX_WINDOW = 12;
 let currentUserMessage = '';  // the user's most recent prompt (for context)
 let recentResponseText = '';  // accumulates assistant response tokens
+let deferredReaction = null;  // pending tool_result reaction timer
 
 // ── Config management ──
 
@@ -109,6 +110,9 @@ function summarizeEvent(event) {
   return summary;
 }
 
+// Returns 'immediate', 'deferred', or false.
+// - immediate: fire now (done, error, artifact)
+// - deferred: wait for tool chain to settle before firing (tool_result)
 function shouldReact(event) {
   const cfg = getConfig();
   if (!cfg.enabled) return false;
@@ -120,24 +124,27 @@ function shouldReact(event) {
   const cooldown = event.type === 'done' ? Math.min(cfg.cooldownMs, 10000) : cfg.cooldownMs;
   if (Date.now() - lastReactionAt < cooldown) return false;
 
-  // Always react to errors
-  if (event.type === 'error') return true;
+  // Always react immediately to errors
+  if (event.type === 'error') return 'immediate';
 
-  // React to tool results — prioritize interesting tools and errors
+  // Tool results are DEFERRED — wait for the tool chain to settle so Argus
+  // sees all results before reacting. This also prevents Ollama serialization
+  // from impacting the main response's time-to-first-token.
   if (event.type === 'tool_result') {
     const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output || '');
-    if (event.status === 'error' || /error|failed|exception/i.test(out.slice(0, 500))) return true;
-    if (INTERESTING_TOOLS.has(event.name)) return true;
+    // Errors still fire immediately
+    if (event.status === 'error' || /error|failed|exception/i.test(out.slice(0, 500))) return 'immediate';
+    if (INTERESTING_TOOLS.has(event.name)) return 'deferred';
     // React to ~30% of other tool results for variety
-    return Math.random() < 0.3;
+    return Math.random() < 0.3 ? 'deferred' : false;
   }
 
-  // React to task completion, artifacts, images
+  // React immediately to task completion, artifacts, images
   if (event.type === 'done' || event.type === 'artifact' ||
-      event.type === 'image_generated' || event.type === 'document') return true;
+      event.type === 'image_generated' || event.type === 'document') return 'immediate';
 
   // React to sub-agent events occasionally
-  if (event.type === 'agent_status') return Math.random() < 0.5;
+  if (event.type === 'agent_status') return Math.random() < 0.5 ? 'immediate' : false;
 
   return false;
 }
@@ -296,6 +303,7 @@ function observeEvent(event) {
     currentUserMessage = event.content.slice(0, 300);
     recentResponseText = ''; // reset for new turn
     eventWindow.length = 0;  // clear stale events from previous session/turn
+    if (deferredReaction) { clearTimeout(deferredReaction); deferredReaction = null; }
     return;
   }
 
@@ -311,15 +319,39 @@ function observeEvent(event) {
   if (event.type === 'thinking') return;
 
   // Don't reset response text on 'done' — the done-triggered reaction needs it.
-  // It resets on the next user_message instead (line 289-291).
+  // It resets on the next user_message instead.
+  // Cancel any deferred tool_result reaction — done will fire its own.
+  if (event.type === 'done' && deferredReaction) {
+    clearTimeout(deferredReaction);
+    deferredReaction = null;
+  }
+
+  // Cancel any pending deferred reaction when new tool activity arrives —
+  // the chain is still running, so wait for it to settle.
+  if (deferredReaction && (event.type === 'tool_call' || event.type === 'tool_result')) {
+    clearTimeout(deferredReaction);
+    deferredReaction = null;
+  }
 
   const summary = summarizeEvent(event);
   eventWindow.push(summary);
   if (eventWindow.length > MAX_WINDOW) eventWindow.shift();
 
-  if (shouldReact(event)) {
-    // Fire and forget — never block
+  const reaction = shouldReact(event);
+  if (reaction === 'immediate') {
+    // Fire now — errors, done events, artifacts
     generateReaction(summary).catch(() => {});
+  } else if (reaction === 'deferred') {
+    // Wait for tool chain to settle (3s with no new tool activity).
+    // This ensures Argus sees ALL tool results before commenting and
+    // never queues an Ollama request that competes with the main response.
+    if (deferredReaction) clearTimeout(deferredReaction);
+    deferredReaction = setTimeout(() => {
+      deferredReaction = null;
+      // Build reaction from the full event window, not just the trigger
+      const latest = eventWindow[eventWindow.length - 1] || summary;
+      generateReaction(latest).catch(() => {});
+    }, 3000);
   }
 }
 
