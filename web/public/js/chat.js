@@ -659,7 +659,12 @@ const Chat = (() => {
           <div class="welcome-logo">PRE</div>
           <p class="welcome-text">Personal Reasoning Engine</p>
           <p class="welcome-sub">Local AI assistant running on Apple Silicon. All data stays on this machine.</p>
+          <div class="welcome-tutorial" id="welcome-tutorial"></div>
         </div>`;
+      // Re-render tutorial cards if Tutorial module is loaded
+      if (window.Tutorial && typeof window.Tutorial._renderWelcome === 'function') {
+        window.Tutorial._renderWelcome();
+      }
       return;
     }
 

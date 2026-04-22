@@ -3,7 +3,7 @@
 // and delivers notifications via macOS, Telegram, and Slack.
 
 const { execSync } = require('child_process');
-const { createSession, appendMessage, renameSession } = require('./sessions');
+const { createSession, appendMessage, renameSession, ensureProject, moveSessionToProject } = require('./sessions');
 const { runToolLoop } = require('./tools');
 const { loadJobs, saveJobs, previousMatchTime } = require('./tools/cron');
 const telegramTool = require('./tools/telegram');
@@ -36,10 +36,12 @@ async function executeCronJob(job, { broadcastWS } = {}) {
   const ts = Date.now().toString(36);
   const sessionId = createSession('cron', `${job.id}-${ts}`, true);
 
-  // Name the session after the job
+  // Name the session after the job and group under Cron Jobs project
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   renameSession(sessionId, `${job.description} — ${dateStr}`);
+  ensureProject('scheduled-jobs', 'Scheduled Jobs');
+  moveSessionToProject(sessionId, 'scheduled-jobs');
 
   // Add the cron prompt as a user message
   appendMessage(sessionId, {

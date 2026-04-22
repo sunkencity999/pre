@@ -29,7 +29,7 @@ function generateSessionTitle(sessionId, userMessage, send) {
       },
       { role: 'user', content: truncated },
     ],
-    maxTokens: 64,
+    maxTokens: 128,
   }).then((result) => {
     console.log(`[title-gen] response: "${result.response}" thinking: "${(result.thinking || '').slice(0, 200)}"`);
     let title = '';
@@ -47,20 +47,22 @@ function generateSessionTitle(sessionId, userMessage, send) {
 
     // Fallback: extract from thinking if response is empty (Gemma 4 thinking mode)
     if (!title && result.thinking) {
-      // Look for the last short, clean line — skip reasoning/meta lines
+      // Strip bullet/list prefixes and common labels, then filter
       const lines = result.thinking.split('\n')
-        .map(l => l.trim())
+        .map(l => l.trim()
+          .replace(/^[*\-#>]+\s*/, '')          // strip bullet/heading markers
+          .replace(/^(topic|title|subject)\s*[:=]\s*/i, '')  // strip label prefixes
+          .trim()
+        )
         .filter(l =>
           l.length >= 3 && l.length < 60
-          && !l.startsWith('*') && !l.startsWith('-') && !l.startsWith('#')
-          && !l.startsWith('>')
           && !junkPattern.test(l)
           && !l.toLowerCase().includes('user message') && !l.toLowerCase().includes('the user')
           && !l.toLowerCase().includes('generate') && !l.toLowerCase().includes('should be')
           && !l.toLowerCase().includes('let me') && !l.toLowerCase().includes("let's")
           && !l.toLowerCase().includes('i need') && !l.toLowerCase().includes('i think')
           && !l.toLowerCase().includes('how about') && !l.toLowerCase().includes('go with')
-          && !l.toLowerCase().includes('title:') && !l.toLowerCase().includes('→')
+          && !l.toLowerCase().includes('→')
           && !l.toLowerCase().includes('possible') && !l.toLowerCase().includes('option')
           && !/^(ok|so|now|here|this|that)\b/i.test(l)
         );

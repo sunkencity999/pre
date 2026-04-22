@@ -1096,6 +1096,607 @@ PRE requires Apple Silicon with sufficient unified memory. At moderate delegatio
 
 ---
 
+## Tutorial — Getting the Most Out of PRE
+
+This tutorial walks you through every major feature of PRE using real example prompts. Each section builds on the last, but you can jump to any section that interests you. Copy any prompt below and paste it directly into PRE.
+
+```
+  ╔══════════════════════════════════════════════════════════════╗
+  ║                                                              ║
+  ║     ██████╗ ██████╗ ███████╗    ████████╗██╗   ██╗████████╗ ║
+  ║     ██╔══██╗██╔══██╗██╔════╝    ╚══██╔══╝██║   ██║╚══██╔══╝ ║
+  ║     ██████╔╝██████╔╝█████╗         ██║   ██║   ██║   ██║    ║
+  ║     ██╔═══╝ ██╔══██╗██╔══╝         ██║   ██║   ██║   ██║    ║
+  ║     ██║     ██║  ██║███████╗        ██║   ╚██████╔╝   ██║    ║
+  ║     ╚═╝     ╚═╝  ╚═╝╚══════╝        ╚═╝    ╚═════╝    ╚═╝    ║
+  ║                                                              ║
+  ║          Personal Reasoning Engine — Tutorial Guide          ║
+  ║                                                              ║
+  ╚══════════════════════════════════════════════════════════════╝
+```
+
+### Table of Contents
+
+1. [Your First Conversation](#1-your-first-conversation)
+2. [Working with Files](#2-working-with-files)
+3. [Your Mac, Your Way — Native App Control](#3-your-mac-your-way--native-app-control)
+4. [Desktop Automation — Computer Use](#4-desktop-automation--computer-use)
+5. [Browser Automation](#5-browser-automation)
+6. [Memory — PRE Learns Over Time](#6-memory--pre-learns-over-time)
+7. [RAG — Search Your Documents by Meaning](#7-rag--search-your-documents-by-meaning)
+8. [Scheduling & Automation](#8-scheduling--automation)
+9. [Sub-Agents — Parallel Research](#9-sub-agents--parallel-research)
+10. [Cloud Integrations](#10-cloud-integrations)
+11. [Artifacts — Interactive Documents](#11-artifacts--interactive-documents)
+12. [Voice Interface](#12-voice-interface)
+13. [Deep Research Mode](#13-deep-research-mode)
+14. [Power User Workflows](#14-power-user-workflows)
+
+---
+
+### 1. Your First Conversation
+
+PRE is a conversational AI that runs entirely on your Mac. Just type naturally.
+
+```
+┌─────────────────────────────────────────────────────┐
+│  YOU:  What can you help me with?                   │
+│                                                     │
+│  PRE:  I have 63+ tools at my disposal...           │
+│        [lists capabilities]                         │
+│                                                     │
+│  YOU:  Summarize what's in my Downloads folder       │
+│                                                     │
+│  PRE:  ┌─ Tool: list_dir ──────────┐               │
+│        │ ~/Downloads               │               │
+│        └───────────────────────────┘               │
+│        Your Downloads folder has 47 items...        │
+└─────────────────────────────────────────────────────┘
+```
+
+**Try these prompts:**
+
+> What's the weather like in my area? Search the web for the current forecast.
+
+> What day of the week was July 4, 1776?
+
+> Explain quantum computing like I'm 10 years old.
+
+> What's running on my Mac right now? Show me the top 10 processes by CPU usage.
+
+**Tip:** PRE auto-generates a session title from your first message. Use the **+ Session** button to start fresh conversations, or **+ Project** to organize them into folders.
+
+---
+
+### 2. Working with Files
+
+PRE can read, write, search, and edit files across your entire system.
+
+```
+  ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+  │   read_file  │      │   file_write │      │   file_edit  │
+  │              │      │              │      │              │
+  │  Read any    │ ──── │  Create new  │ ──── │  Edit with   │
+  │  file on     │      │  files from  │      │  surgical    │
+  │  your Mac    │      │  scratch     │      │  precision   │
+  └──────────────┘      └──────────────┘      └──────────────┘
+         │                                           │
+         ▼                                           ▼
+  ┌──────────────┐                           ┌──────────────┐
+  │   glob       │                           │   grep       │
+  │              │                           │              │
+  │  Find files  │                           │  Search file │
+  │  by pattern  │                           │  contents    │
+  └──────────────┘                           └──────────────┘
+```
+
+**Try these prompts:**
+
+> Find all Python files in my home directory that import pandas.
+
+> Read my ~/.zshrc and suggest improvements for performance.
+
+> Create a shell script at ~/Desktop/cleanup.sh that finds and lists files larger than 100MB in my home directory.
+
+> Search my Documents folder for any file mentioning "quarterly review".
+
+> Find all images on my Desktop that were modified in the last week.
+
+**Advanced file operations:**
+
+> Read my package.json, find all outdated patterns, and update the dependencies section to use ES modules.
+
+> Find every TODO comment in the src/ directory and create a summary report.
+
+> Compare the two most recent log files in /var/log/ and highlight the differences.
+
+---
+
+### 3. Your Mac, Your Way — Native App Control
+
+PRE controls Mail, Calendar, Contacts, Reminders, Notes, and Spotlight directly through macOS — no API keys, no OAuth, no setup. Whatever accounts you have configured on your Mac just work.
+
+```
+  ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌───────────┐
+  │  Mail   │   │ Calendar │   │ Contacts │   │ Reminders │
+  │  ✉️      │   │  📅       │   │  👤       │   │  ☑️        │
+  └────┬────┘   └────┬─────┘   └────┬─────┘   └─────┬─────┘
+       │             │              │               │
+       └─────────────┴──────────────┴───────────────┘
+                          │
+                    ┌─────┴─────┐
+                    │   Notes   │   ┌───────────┐
+                    │   📝       │   │ Spotlight │
+                    └───────────┘   │  🔍        │
+                                    └───────────┘
+```
+
+**Email:**
+
+> Check my email for anything from my boss in the last 3 days.
+
+> Draft an email to sarah@example.com about rescheduling our Wednesday meeting to Thursday at 2pm. Keep it professional but friendly.
+
+> Search my email for the latest shipping confirmation and tell me the tracking number.
+
+**Calendar:**
+
+> What's on my calendar today? Include meeting links if available.
+
+> Create a "Dentist Appointment" event on May 5th from 2pm to 3pm at "123 Main St, Suite 200".
+
+> What does my week look like? Flag any conflicts or back-to-back meetings.
+
+**Contacts & Reminders:**
+
+> Find the phone number for John at Acme Corp in my contacts.
+
+> Remind me to submit the expense report by Friday at 5pm with high priority.
+
+> Show me all my incomplete reminders from the "Work" list.
+
+**Notes & Spotlight:**
+
+> Search my notes for anything about the API migration project.
+
+> Create a new note in my "Work" folder titled "Meeting Notes - April 21" with the key discussion points from today.
+
+> Find all PDF documents on my Mac that contain "budget proposal".
+
+---
+
+### 4. Desktop Automation — Computer Use
+
+This is PRE's most powerful feature. It takes a screenshot, analyzes what's on screen, and controls your mouse and keyboard to operate **any** application — even ones without APIs.
+
+```
+  ┌─────────────────────────────────────────────────┐
+  │              THE VISION LOOP                     │
+  │                                                  │
+  │   ┌──────────┐    ┌───────────┐    ┌─────────┐ │
+  │   │Screenshot│───>│  Analyze  │───>│  Act    │ │
+  │   │  📸      │    │  with AI  │    │ 🖱️ ⌨️    │ │
+  │   └──────────┘    └───────────┘    └────┬────┘ │
+  │        ▲                                │      │
+  │        └────────────────────────────────┘      │
+  │               Repeat until done                │
+  └─────────────────────────────────────────────────┘
+```
+
+**Try these prompts:**
+
+> Take a screenshot and describe what's on my screen.
+
+> Open System Settings and navigate to the Wi-Fi section. Tell me what networks are available.
+
+> Open TextEdit, create a new document, and type "Meeting notes for today" as the title.
+
+> Open Finder, navigate to my Downloads folder, and sort the files by date modified.
+
+**Multi-step automation:**
+
+> Open Safari, go to news.ycombinator.com, and tell me the top 5 stories right now.
+
+> Open the Calculator app, compute 15% tip on $86.50, and tell me the result.
+
+> Take a screenshot of my desktop, then open Preview and annotate the screenshot with a red circle around any Finder windows.
+
+**Keyboard shortcuts and combos:**
+
+> Press Cmd+Space to open Spotlight, type "Activity Monitor", and press Enter to launch it.
+
+> In the current window, press Cmd+A to select all, then Cmd+C to copy the text, and paste it into a new note.
+
+**Workflow recording (record once, replay anytime):**
+
+> Start recording a workflow called "morning-setup". Open Mail, Safari, and Slack, then arrange them side by side. Stop recording when done.
+
+> Replay the "morning-setup" workflow.
+
+> Show me all my saved workflows.
+
+---
+
+### 5. Browser Automation
+
+PRE has a built-in headless Chrome browser for web scraping, form filling, and automated browsing.
+
+**Try these prompts:**
+
+> Open the browser, go to https://example.com, and read the page content.
+
+> Navigate to Wikipedia's main page and tell me what today's featured article is about.
+
+> Go to https://httpbin.org/forms/post, fill in the form with test data, and submit it.
+
+> Search Google for "best hiking trails near Santa Cruz" and give me the top 5 results with links.
+
+**Data extraction:**
+
+> Navigate to my company's status page and check if all services are operational.
+
+> Go to a recipe site, find a recipe for chocolate chip cookies, and save the ingredients list to a file on my Desktop.
+
+---
+
+### 6. Memory — PRE Learns Over Time
+
+PRE remembers things between conversations. Memories are auto-extracted from your chats or you can save them explicitly. They're searchable by meaning, not just keywords.
+
+```
+  ┌────────────────────────────────────────────────┐
+  │              MEMORY LIFECYCLE                    │
+  │                                                  │
+  │  Conversation ──> Auto-Extract ──> Memory Store │
+  │       │                               │         │
+  │       │          Manual Save          │         │
+  │       └──────────────────────────────>│         │
+  │                                       │         │
+  │  Future Conversations <── Recall <────┘         │
+  │                                                  │
+  │  Types: user | feedback | project | reference   │
+  └────────────────────────────────────────────────┘
+```
+
+**Try these prompts:**
+
+> Remember that our team standup is at 9:15 AM Pacific every weekday, and the Zoom link is in the #engineering channel on Slack.
+
+> Remember that I prefer TypeScript over JavaScript and always use strict mode.
+
+> Search my memories for anything about deployment procedures.
+
+> List all my saved memories.
+
+> What do you remember about my work projects?
+
+**The Memory Panel** (book icon in the sidebar footer) lets you browse, search, and manage all memories visually.
+
+**Pro tip:** PRE auto-extracts memories every ~3 conversation turns. The more you chat, the smarter it gets. Memories are age-tracked — PRE knows when it learned something and flags potentially stale information.
+
+---
+
+### 7. RAG — Search Your Documents by Meaning
+
+Local RAG (Retrieval-Augmented Generation) indexes your files and lets you search by concept, not just keywords. Everything stays on your machine.
+
+```
+  ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
+  │  Your Files  │       │  nomic-embed │       │  Semantic    │
+  │              │       │    -text     │       │  Search      │
+  │  ~/project/  │──────>│              │──────>│              │
+  │  *.md, *.py  │ chunk │  768-dim     │ index │  "How does   │
+  │  *.js, *.txt │       │  embeddings  │       │   auth work?"│
+  └──────────────┘       └──────────────┘       └──────────────┘
+```
+
+**Try these prompts:**
+
+> Index my ~/Documents/notes folder and call the index "my-notes".
+
+> Search my "my-notes" index for anything about project deadlines or milestones.
+
+> Index this Git repository and search for how error handling works.
+
+> List all my RAG indexes and their stats.
+
+> Delete the "old-project" index, I don't need it anymore.
+
+**The RAG Panel** (magnifying glass + icon in the sidebar footer) lets you manage indexes, trigger re-indexing, and search visually.
+
+**Supported file types:** Markdown, Python, JavaScript/TypeScript, JSON, YAML, HTML, CSS, SQL, shell scripts, C/C++/Rust/Go/Java, plain text, and 30+ more.
+
+---
+
+### 8. Scheduling & Automation
+
+PRE can run tasks on a schedule (cron) or react to file changes and webhooks (triggers) — even when you're not at the computer.
+
+```
+  ┌─────────────────────────────────────────────────────┐
+  │                AUTOMATION ENGINE                      │
+  │                                                       │
+  │  ┌───────────┐    ┌────────────┐    ┌─────────────┐ │
+  │  │   Cron    │    │  Triggers  │    │  Workflows  │ │
+  │  │ ⏰ Time   │    │ 📁 Files   │    │ 🔄 Replay   │ │
+  │  │  based    │    │ 🌐 Webhooks│    │   recorded  │ │
+  │  └─────┬─────┘    └─────┬──────┘    └──────┬──────┘ │
+  │        │               │                  │         │
+  │        └───────────────┴──────────────────┘         │
+  │                        │                             │
+  │              ┌─────────▼──────────┐                 │
+  │              │  Headless Agent    │                 │
+  │              │  (runs in          │                 │
+  │              │   background)      │                 │
+  │              └─────────┬──────────┘                 │
+  │                        │                             │
+  │              ┌─────────▼──────────┐                 │
+  │              │  Notifications     │                 │
+  │              │  macOS + Telegram  │                 │
+  │              └────────────────────┘                 │
+  └─────────────────────────────────────────────────────┘
+```
+
+**Cron jobs — scheduled recurring tasks:**
+
+> Schedule a daily morning briefing at 8am that checks my calendar, unread emails, and any high-priority Jira tickets. Run it Monday through Friday.
+
+> Schedule a job that runs every 6 hours to check disk usage and alert me if any volume is over 80% full.
+
+> List all my scheduled jobs and their next run times.
+
+> Disable the "morning-briefing" cron job — I'm on vacation this week.
+
+**Triggers — react to changes:**
+
+> Create a trigger that watches my ~/Downloads folder. When a new PDF appears, summarize its contents and save the summary to ~/Documents/summaries/.
+
+> Create a trigger that watches the server.log file and alerts me via notification if it detects any ERROR lines.
+
+> Create a webhook trigger called "deploy-notify" that sends me a Slack message when our CI/CD pipeline posts to it.
+
+**The Cron Panel** (clock icon) and **Triggers Panel** (lightning icon) in the sidebar footer let you manage everything visually.
+
+---
+
+### 9. Sub-Agents — Parallel Research
+
+When a task requires deep research, PRE can spawn sub-agents that work autonomously — reading files, searching the web, and gathering data without cluttering your main conversation.
+
+```
+  ┌──────────────────────────────────────────────────┐
+  │                 AGENT ARCHITECTURE                │
+  │                                                    │
+  │  YOU ──> PRE (Main) ──┬──> Agent 1: "Research X" │
+  │                       │                           │
+  │                       ├──> Agent 2: "Research Y" │
+  │                       │                           │
+  │                       └──> Agent 3: "Research Z" │
+  │                                                    │
+  │  Each agent gets its own session, tools, and      │
+  │  context. Results feed back to the main model.    │
+  │                                                    │
+  │  ┌─ Agent Feed (sidebar) ────────────────────┐   │
+  │  │ ◉ Agent 1: Research X — 4 tools — 12.3s  │   │
+  │  │ ◉ Agent 2: Research Y — 2 tools — 8.1s   │   │
+  │  │ ✓ Agent 3: Research Z — 6 tools — 22.5s  │   │
+  │  │                          [Open Session]    │   │
+  │  └───────────────────────────────────────────┘   │
+  └──────────────────────────────────────────────────┘
+```
+
+**Try these prompts:**
+
+> Research the pros and cons of PostgreSQL vs. MySQL for a high-write workload. Spawn agents to investigate each database independently, then synthesize the findings.
+
+> I need a competitive analysis. Spawn agents to research Notion, Obsidian, and Logseq — features, pricing, and user sentiment — then give me a comparison table.
+
+> Spawn an agent to read all the README files in my ~/projects directory and create a summary of what each project does.
+
+**The Agent Feed** (robot icon in the sidebar footer) shows real-time progress, tool usage, and results for all running agents. Each agent gets its own session you can click into for the full transcript.
+
+---
+
+### 10. Cloud Integrations
+
+PRE connects to 15 enterprise services. Configure them in **Settings** (gear icon in the sidebar footer). Each requires a simple API key or OAuth setup.
+
+**GitHub:**
+
+> List my open pull requests on the frontend repo.
+
+> Search GitHub for repositories related to "local AI assistants" with more than 100 stars.
+
+> Show me the latest issues on my project, sorted by most recent.
+
+**Slack:**
+
+> Search Slack for messages about the production deployment in the last 24 hours.
+
+> Send a message to #engineering saying "Deployment complete — all services green."
+
+> Who's been most active in the #support channel this week?
+
+**Jira:**
+
+> Show me all Jira tickets assigned to me that are in "In Progress" status.
+
+> Create a new Jira bug report: "Login page crashes on Safari 17 when using SSO". Set priority to High.
+
+> What tickets were completed in the current sprint?
+
+**Linear:**
+
+> List my active Linear issues sorted by priority.
+
+> Create a Linear issue in the Backend project: "Add rate limiting to the /api/search endpoint."
+
+**Figma:**
+
+> Show me the file structure of our Design System Figma file.
+
+> Export the "Hero Section" component from our landing page Figma file as a PNG.
+
+> Post a comment on the login screen frame: "The spacing between the input fields needs to match the 8px grid."
+
+**Zoom:**
+
+> What Zoom meetings do I have scheduled this week?
+
+> Create a Zoom meeting for Thursday at 3pm called "Sprint Planning" with a 60-minute duration.
+
+**Asana:**
+
+> List all tasks assigned to me in the "Q2 Launch" Asana project.
+
+> Create a new task: "Update API documentation for v2 endpoints" in the Engineering project, due next Friday.
+
+**SharePoint:**
+
+> Search SharePoint for documents about "onboarding procedures".
+
+> List the files in our team's shared drive.
+
+---
+
+### 11. Artifacts — Interactive Documents
+
+PRE can create rich, interactive HTML documents — dashboards, visualizations, games, and reports — that open directly in your browser.
+
+**Try these prompts:**
+
+> Create an interactive HTML dashboard showing a sample project timeline with milestones, progress bars, and status indicators. Make it visually stunning.
+
+> Build a simple Pomodoro timer as an HTML artifact with start/pause/reset buttons, a circular progress indicator, and sound notifications.
+
+> Create an HTML artifact that visualizes the Fibonacci sequence as a spiral using SVG.
+
+> Generate a professional project status report as a formatted HTML document with charts, RAG status indicators, and an executive summary.
+
+**Image generation (requires ComfyUI):**
+
+> Generate an image of a serene Japanese garden at sunset with cherry blossoms, painted in watercolor style.
+
+> Create a photorealistic image of a modern home office with warm lighting, a standing desk, and large monitors.
+
+**Document export:**
+
+> Create a Word document summarizing our meeting notes with action items and owners.
+
+> Export the current conversation as a PDF.
+
+---
+
+### 12. Voice Interface
+
+If Whisper is installed, PRE can listen to you speak and respond with voice. The microphone button appears in the chat input area.
+
+**How it works:**
+
+```
+  ┌───────────┐      ┌──────────────┐      ┌───────────┐
+  │ Hold mic  │      │  Whisper     │      │  PRE      │
+  │ button    │─────>│  (local STT) │─────>│  processes│
+  │ & speak   │      │  on your Mac │      │  & replies│
+  └───────────┘      └──────────────┘      └─────┬─────┘
+                                                   │
+                                            ┌──────▼──────┐
+                                            │  macOS say  │
+                                            │  (TTS)      │
+                                            │  speaks the │
+                                            │  response   │
+                                            └─────────────┘
+```
+
+**Try these prompts (type or speak):**
+
+> Read this text aloud: "Good morning! Here's your daily briefing."
+
+> What voices are available for text-to-speech?
+
+> Speak my calendar events for today.
+
+**All audio is processed locally** — nothing leaves your machine. No cloud transcription services, no recordings sent anywhere.
+
+---
+
+### 13. Deep Research Mode
+
+For complex questions that need multi-step investigation, toggle **Deep Research** mode (beaker icon next to the send button). PRE will perform multiple rounds of tool use, searching, reading, and synthesizing before delivering a comprehensive answer.
+
+**Try these prompts in Deep Research mode:**
+
+> What are the current best practices for securing a Node.js REST API in 2026? Cover authentication, rate limiting, input validation, and dependency management.
+
+> Research the history of the Scotts Valley, CA area — from the indigenous peoples to the present day tech industry. Include key dates and events.
+
+> Analyze the architectural patterns used in large-scale local-first applications. Compare CRDTs, event sourcing, and operational transforms.
+
+**Frontier AI delegation** (available from the dropdown next to the send button):
+
+If you have Claude, Codex, or Gemini CLI installed, PRE can delegate complex reasoning tasks to frontier models while handling all local execution itself:
+
+> [Delegate to Claude] Review this code architecture and suggest improvements for scalability.
+
+> [Delegate to Gemini] Write a comprehensive technical specification for a real-time collaboration feature.
+
+---
+
+### 14. Power User Workflows
+
+These prompts combine multiple features into real-world workflows.
+
+**Morning startup routine:**
+
+> Check my calendar for today, summarize any unread emails flagged as important, list my top-priority Jira tickets, and check if any cron jobs ran overnight. Give me a concise briefing.
+
+**Project onboarding:**
+
+> Index the entire ~/projects/new-app repository with RAG. Then search it for the main entry point, database schema, and authentication flow. Give me a developer onboarding summary.
+
+**Automated documentation:**
+
+> Read all the source files in src/tools/, identify every exported function, and create a comprehensive API reference document as an HTML artifact with a table of contents.
+
+**System health check:**
+
+> Check disk usage on all volumes, list the top 20 processes by memory, check if my Time Machine backup ran in the last 24 hours, and verify my network connectivity. Format as a system health report.
+
+**Meeting preparation:**
+
+> Search my email for the latest messages from the product team. Check my calendar for any meetings with them this week. Search Confluence for their latest project spec. Summarize everything so I'm prepared for tomorrow's meeting.
+
+**End-of-day wrap-up:**
+
+> Summarize what I worked on today based on our conversation history. Create a reminder for tomorrow's top priorities. Draft a standup update for Slack with what I accomplished and what's planned for tomorrow.
+
+---
+
+### GUI Quick Reference
+
+```
+  ┌────────────────────────────────────────────────────────────────┐
+  │ SIDEBAR FOOTER — Your Control Center                           │
+  │                                                                │
+  │  ┌──────────────────────────────────────────────────────┐     │
+  │  │ [Theme Toggle]                        [Settings ⚙️ ]  │     │
+  │  ├──────────────────────────────────────────────────────┤     │
+  │  │ [📖 Memory] [⏰ Cron] [⚡ Triggers]                   │     │
+  │  │ [🔍 RAG] [🔄 Workflows] [🤖 Agent Feed]              │     │
+  │  └──────────────────────────────────────────────────────┘     │
+  │                                                                │
+  │  📖 Memory     — Browse, search, and manage saved memories     │
+  │  ⏰ Cron       — Create and manage scheduled recurring tasks   │
+  │  ⚡ Triggers    — Set up file watchers and webhook listeners    │
+  │  🔍 RAG        — Manage document indexes and semantic search   │
+  │  🔄 Workflows  — View, replay, and manage recorded workflows   │
+  │  🤖 Agent Feed — Monitor sub-agents and background jobs        │
+  │  ⚙️ Settings    — Configure cloud integrations and preferences │
+  └────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Architecture
 
 ```

@@ -572,7 +572,7 @@
       updateSessionName();
     }
 
-    const displayLabel = session.displayName || session.channel || 'general';
+    const displayLabel = session.displayName || (session.turnCount === 0 ? 'New Session' : session.channel || 'general');
 
     const info = document.createElement('button');
     info.className = 'session-item-info';
@@ -604,13 +604,8 @@
       try {
         await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
         if (session.id === currentSession) {
-          setCurrentSession('web:general');
-          await fetch('/api/sessions/new', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ project: 'web', channel: 'general' }),
-          });
-          WS.send({ type: 'switch_session', sessionId: currentSession });
+          // Show welcome screen with a fresh session
+          showWelcomeScreen();
         }
         loadSessionList();
       } catch {}
@@ -1296,11 +1291,34 @@
       if (currentDisplayName) {
         el.textContent = currentDisplayName;
       } else {
-        const parts = currentSession.split(':');
-        el.textContent = parts[1] || parts[0] || 'general';
+        el.textContent = 'New Session';
       }
     }
   }
+
+  // Show the welcome screen by creating a fresh empty session
+  async function showWelcomeScreen() {
+    try {
+      const res = await fetch('/api/sessions/new', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: 'web', channel: 'general' }),
+      });
+      const data = await res.json();
+      setCurrentSession(data.id);
+      currentDisplayName = null;
+      updateSessionName();
+      WS.send({ type: 'switch_session', sessionId: currentSession });
+      loadSessionList();
+    } catch (err) {
+      console.error('Failed to show welcome screen:', err);
+    }
+  }
+
+  // Logo click → welcome screen
+  document.querySelector('.logo').addEventListener('click', () => {
+    showWelcomeScreen();
+  });
 
   function formatTime(isoString) {
     if (!isoString) return '';
@@ -2433,6 +2451,195 @@
       renderAgentFeedPanel(document.getElementById('panel-content'));
     }
   }
+
+  // ── Tutorial system ──
+  const TUTORIAL_DATA = [
+    {
+      icon: '💬', title: 'Getting Started', category: 'basics',
+      tip: 'PRE auto-titles sessions and remembers context within a conversation.',
+      prompts: [
+        "What can you help me with? Give me a quick overview of your capabilities.",
+        "What's running on my Mac right now? Show me the top 10 processes by CPU usage.",
+        "Summarize what's in my Downloads folder.",
+        "What day of the week was July 4, 1776?",
+      ]
+    },
+    {
+      icon: '📁', title: 'File Operations', category: 'files',
+      tip: 'PRE can read, write, search, and edit any file on your system.',
+      prompts: [
+        "Find all Python files in my home directory that import pandas.",
+        "Read my ~/.zshrc and suggest improvements for performance.",
+        "Search my Documents folder for any file mentioning \"quarterly review\".",
+        "Find every TODO comment in this project and create a summary.",
+      ]
+    },
+    {
+      icon: '🍎', title: 'Native macOS', category: 'macos',
+      tip: 'Works with any email/calendar provider configured on your Mac — no API keys needed.',
+      prompts: [
+        "What's on my calendar today? Include meeting links if available.",
+        "Check my email for anything from my boss in the last 3 days.",
+        "Remind me to submit the expense report by Friday at 5pm.",
+        "Search my notes for anything about the API migration.",
+        "Find all PDF documents on my Mac that contain \"budget proposal\".",
+      ]
+    },
+    {
+      icon: '🖥️', title: 'Desktop Automation', category: 'computer',
+      tip: 'PRE sees your screen and operates any app via mouse and keyboard.',
+      prompts: [
+        "Take a screenshot and describe what's on my screen.",
+        "Open System Settings and navigate to the Wi-Fi section.",
+        "Press Cmd+Space to open Spotlight, type \"Activity Monitor\", and press Enter.",
+        "Start recording a workflow called \"morning-setup\".",
+      ]
+    },
+    {
+      icon: '🌐', title: 'Browser & Web', category: 'browser',
+      tip: 'Built-in headless Chrome for scraping, browsing, and form filling.',
+      prompts: [
+        "Search the web for the latest news about Apple Silicon.",
+        "Open the browser, go to news.ycombinator.com, and tell me the top 5 stories.",
+        "Navigate to Wikipedia and find today's featured article.",
+      ]
+    },
+    {
+      icon: '🧠', title: 'Memory & RAG', category: 'memory',
+      tip: 'Memories persist across sessions. RAG searches documents by meaning.',
+      prompts: [
+        "Remember that our team standup is at 9:15 AM Pacific every weekday.",
+        "Search my memories for anything about deployment procedures.",
+        "Index my ~/Documents/notes folder and call the index \"my-notes\".",
+        "Search the \"my-notes\" index for anything about project deadlines.",
+      ]
+    },
+    {
+      icon: '⏰', title: 'Scheduling & Triggers', category: 'automation',
+      tip: 'Cron jobs run in the background, even when you\'re away.',
+      prompts: [
+        "Schedule a daily morning briefing at 8am that checks my calendar and unread emails. Run it Monday through Friday.",
+        "Create a trigger that watches ~/Downloads for new PDFs and summarizes them.",
+        "List all my scheduled jobs and their next run times.",
+      ]
+    },
+    {
+      icon: '🤖', title: 'Sub-Agents', category: 'agents',
+      tip: 'Agents work autonomously, each with their own session and tools.',
+      prompts: [
+        "Spawn agents to research PostgreSQL vs MySQL for a high-write workload, then compare their findings.",
+        "Spawn an agent to read all README files in my ~/projects directory and summarize each project.",
+      ]
+    },
+    {
+      icon: '☁️', title: 'Cloud Integrations', category: 'cloud',
+      tip: 'Configure integrations in Settings (gear icon). 15 services available.',
+      prompts: [
+        "Show me all Jira tickets assigned to me that are In Progress.",
+        "Search Slack for messages about the production deployment in the last 24 hours.",
+        "List my open pull requests on GitHub.",
+        "What Zoom meetings do I have scheduled this week?",
+      ]
+    },
+    {
+      icon: '🎨', title: 'Artifacts & Exports', category: 'artifacts',
+      tip: 'PRE creates interactive HTML documents, reports, and visualizations.',
+      prompts: [
+        "Create an interactive HTML dashboard showing a sample project timeline with milestones and progress bars.",
+        "Build a Pomodoro timer as an HTML artifact with start/pause/reset buttons.",
+        "Create a Word document summarizing today's meeting notes with action items.",
+      ]
+    },
+    {
+      icon: '🎙️', title: 'Voice Interface', category: 'voice',
+      tip: 'All audio is processed locally via Whisper — nothing leaves your Mac.',
+      prompts: [
+        "Read this aloud: \"Good morning! Here's your daily briefing.\"",
+        "What voices are available for text-to-speech?",
+      ]
+    },
+    {
+      icon: '🔥', title: 'Power Workflows', category: 'power',
+      tip: 'Combine multiple features into real-world multi-step workflows.',
+      prompts: [
+        "Check my calendar for today, summarize important unread emails, list my top Jira tickets, and give me a morning briefing.",
+        "Index this repository with RAG, then search for the authentication flow and database schema. Give me a developer onboarding summary.",
+        "Check disk usage, list top 20 processes by memory, and verify network connectivity. Format as a system health report.",
+      ]
+    },
+  ];
+
+  // Send a tutorial prompt to the chat
+  function sendTutorialPrompt(text) {
+    input.value = text;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+    input.focus();
+    // Scroll input into view
+    input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // Render welcome screen tutorial cards (compact, 6 random categories)
+  function renderWelcomeTutorial() {
+    const container = document.getElementById('welcome-tutorial');
+    if (!container) return;
+
+    // Pick 6 diverse categories for the welcome screen
+    const showcaseOrder = ['basics', 'macos', 'computer', 'memory', 'automation', 'power'];
+    const showcase = showcaseOrder
+      .map(cat => TUTORIAL_DATA.find(t => t.category === cat))
+      .filter(Boolean);
+
+    container.innerHTML = showcase.map(t => {
+      const prompt = t.prompts[Math.floor(Math.random() * t.prompts.length)];
+      return `<div class="tutorial-card" onclick="window.Tutorial.send(this.dataset.prompt)" data-prompt="${escapeHtml(prompt)}">
+        <span class="tutorial-card-icon">${t.icon}</span>
+        <div class="tutorial-card-title">${escapeHtml(t.title)}</div>
+        <div class="tutorial-card-prompt">${escapeHtml(prompt)}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Full tutorial panel (opened from sidebar or welcome)
+  function openTutorialPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Tutorial';
+    panel.classList.remove('hidden');
+
+    let html = '<div style="padding:0 4px">';
+    html += '<p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:16px;line-height:1.5">Click any prompt below to load it into the chat input. These examples showcase every major feature of PRE.</p>';
+
+    for (const cat of TUTORIAL_DATA) {
+      html += `<div class="tutorial-category">`;
+      html += `<div class="tutorial-category-title">${cat.icon} ${escapeHtml(cat.title)}</div>`;
+      for (const prompt of cat.prompts) {
+        html += `<div class="tutorial-prompt-item" onclick="window.Tutorial.send(this.dataset.prompt)" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</div>`;
+      }
+      html += `<div class="tutorial-tip">${escapeHtml(cat.tip)}</div>`;
+      html += '</div>';
+    }
+
+    html += '</div>';
+    content.innerHTML = html;
+  }
+
+  // Global Tutorial API
+  window.Tutorial = {
+    send(prompt) {
+      if (prompt) sendTutorialPrompt(prompt);
+    },
+    open() {
+      openTutorialPanel();
+    },
+    _renderWelcome() {
+      renderWelcomeTutorial();
+    },
+  };
+
+  // Render welcome tutorial on load
+  renderWelcomeTutorial();
 
   // ── Voice input ──
   (async function initVoice() {

@@ -139,6 +139,23 @@ function deleteProject(slug) {
   return true;
 }
 
+/**
+ * Ensure a project exists by slug, creating it if needed. Returns the slug.
+ */
+function ensureProject(slug, name) {
+  const meta = loadMeta();
+  if (!meta._projects) meta._projects = {};
+  if (!meta._projects[slug]) {
+    meta._projects[slug] = {
+      name: name || slug,
+      created: new Date().toISOString(),
+      order: Object.keys(meta._projects).length,
+    };
+    saveMeta(meta);
+  }
+  return slug;
+}
+
 function moveSessionToProject(sessionId, projectSlug) {
   const meta = loadMeta();
   if (!meta._projectMap) meta._projectMap = {};
@@ -266,4 +283,5 @@ module.exports = {
   renameProject,
   deleteProject,
   moveSessionToProject,
+  ensureProject,
 };

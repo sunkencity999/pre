@@ -7699,6 +7699,7 @@ static void cmd_name(const char *args);
 static void cmd_artifacts(const char *args);
 static void cmd_cron(const char *args);
 static void cmd_pdf(const char *args);
+static void cmd_tutorial(const char *args);
 
 typedef struct {
     const char *name;
@@ -7740,6 +7741,7 @@ static SlashCommand commands[] = {
     {"/artifacts","[open|dir]","List session artifacts or open one", cmd_artifacts},
     {"/pdf",     "[title|N]", "Export artifact to PDF",              cmd_pdf},
     {"/cron",    "[add|rm|ls]","Manage recurring scheduled tasks",   cmd_cron},
+    {"/tutorial","[topic]",   "Interactive tutorial with examples",  cmd_tutorial},
     {NULL, NULL, NULL, NULL}
 };
 
@@ -7933,7 +7935,8 @@ static void cmd_help(const char *args) {
                "  " ANSI_CYAN "/help memory" ANSI_RESET
                "  " ANSI_CYAN "/help channels" ANSI_RESET
                "  " ANSI_CYAN "/help projects" ANSI_RESET
-               "  " ANSI_CYAN "/help tips" ANSI_RESET "\n\n");
+               "  " ANSI_CYAN "/help tips" ANSI_RESET
+               "  " ANSI_CYAN "/tutorial" ANSI_RESET "\n\n");
         return;
     }
     while (*args == ' ') args++;
@@ -7946,6 +7949,7 @@ static void cmd_help(const char *args) {
     if (strcmp(args, "channels") == 0 || strcmp(args, "channel") == 0) { help_channels(); return; }
     if (strcmp(args, "projects") == 0 || strcmp(args, "project") == 0) { help_projects(); return; }
     if (strcmp(args, "tips") == 0 || strcmp(args, "best") == 0 || strcmp(args, "practices") == 0) { help_tips(); return; }
+    if (strcmp(args, "tutorial") == 0 || strcmp(args, "examples") == 0) { cmd_tutorial(""); return; }
     if (strcmp(args, "all") == 0) {
         help_commands();
         help_tools();
@@ -8473,6 +8477,174 @@ static void cmd_pdf(const char *args) {
     } else {
         printf(ANSI_RED "  PDF export failed. Requires macOS 13+." ANSI_RESET "\n");
     }
+}
+
+// ============================================================================
+// Tutorial
+// ============================================================================
+
+static void tutorial_section(const char *icon, const char *title, const char **prompts, int count, const char *tip) {
+    printf("\n  %s " ANSI_BOLD "%s" ANSI_RESET "\n", icon, title);
+    printf("  " ANSI_DIM "──────────────────────────────────────" ANSI_RESET "\n");
+    for (int i = 0; i < count; i++) {
+        printf("  " ANSI_CYAN "→" ANSI_RESET " %s\n", prompts[i]);
+    }
+    if (tip) printf("  " ANSI_DIM "💡 %s" ANSI_RESET "\n", tip);
+}
+
+static void cmd_tutorial(const char *args) {
+    while (args && *args == ' ') args++;
+
+    printf("\n");
+    printf(ANSI_BOLD "  ╔══════════════════════════════════════════════════════╗\n");
+    printf("  ║                                                      ║\n");
+    printf("  ║   ██████╗ ██████╗ ███████╗  Tutorial                 ║\n");
+    printf("  ║   ██╔══██╗██╔══██╗██╔════╝  ─────────               ║\n");
+    printf("  ║   ██████╔╝██████╔╝█████╗    Copy any prompt below   ║\n");
+    printf("  ║   ██╔═══╝ ██╔══██╗██╔══╝    and paste it to try     ║\n");
+    printf("  ║   ██║     ██║  ██║███████╗   it out.                 ║\n");
+    printf("  ║   ╚═╝     ╚═╝  ╚═╝╚══════╝                          ║\n");
+    printf("  ║                                                      ║\n");
+    printf("  ╚══════════════════════════════════════════════════════╝" ANSI_RESET "\n");
+
+    // Topic filter
+    int show_all = (!args || !args[0] || strcmp(args, "all") == 0);
+    int show_topic = 0;
+
+    #define MATCH_TOPIC(t) (show_all || (args && (strcasecmp(args, t) == 0)))
+
+    if (MATCH_TOPIC("basics") || MATCH_TOPIC("start") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "What can you help me with? Give me a quick overview.",
+            "What's running on my Mac right now? Show me top 10 processes by CPU.",
+            "Summarize what's in my Downloads folder.",
+            "Search the web for the latest news about Apple Silicon.",
+        };
+        tutorial_section("💬", "Getting Started", p, 4,
+            "PRE auto-titles sessions. Use /new for fresh conversations.");
+    }
+
+    if (MATCH_TOPIC("files") || MATCH_TOPIC("file") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Find all Python files in my home directory that import pandas.",
+            "Read my ~/.zshrc and suggest improvements.",
+            "Search my Documents folder for any file mentioning \"quarterly review\".",
+            "Find every TODO comment in this project and create a summary.",
+        };
+        tutorial_section("📁", "File Operations", p, 4,
+            "PRE can read, write, search, and edit any file on your system.");
+    }
+
+    if (MATCH_TOPIC("macos") || MATCH_TOPIC("mac") || MATCH_TOPIC("native") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "What's on my calendar today? Include meeting links.",
+            "Check my email for anything from my boss in the last 3 days.",
+            "Remind me to submit the expense report by Friday at 5pm.",
+            "Search my notes for anything about the API migration.",
+            "Find all PDFs on my Mac that contain \"budget proposal\".",
+        };
+        tutorial_section("🍎", "Native macOS (Mail, Calendar, Contacts, etc.)", p, 5,
+            "Works with any provider configured on your Mac — no API keys needed.");
+    }
+
+    if (MATCH_TOPIC("desktop") || MATCH_TOPIC("computer") || MATCH_TOPIC("automation") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Take a screenshot and describe what's on my screen.",
+            "Open System Settings and navigate to the Wi-Fi section.",
+            "Open TextEdit and type \"Meeting notes for today\" as the title.",
+            "Press Cmd+Space, type \"Activity Monitor\", and press Enter.",
+        };
+        tutorial_section("🖥️ ", "Desktop Automation (Computer Use)", p, 4,
+            "PRE sees your screen and operates any app via mouse/keyboard.");
+    }
+
+    if (MATCH_TOPIC("memory") || MATCH_TOPIC("rag") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Remember that our standup is at 9:15 AM Pacific every weekday.",
+            "Search my memories for anything about deployment procedures.",
+            "Index my ~/Documents/notes folder and call the index \"my-notes\".",
+            "Search the \"my-notes\" index for anything about project deadlines.",
+            "What do you remember about my work projects?",
+        };
+        tutorial_section("🧠", "Memory & RAG", p, 5,
+            "Memories persist across sessions. /memory to browse. RAG searches by meaning.");
+    }
+
+    if (MATCH_TOPIC("schedule") || MATCH_TOPIC("cron") || MATCH_TOPIC("triggers") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Schedule a daily morning briefing at 8am — calendar, emails, Jira tickets. Monday-Friday.",
+            "Create a trigger watching ~/Downloads for new PDFs — summarize each one.",
+            "Schedule a job every 6 hours to check disk usage. Alert if any volume over 80%%.",
+            "List all my scheduled jobs and their next run times.",
+        };
+        tutorial_section("⏰", "Scheduling & Triggers", p, 4,
+            "Cron jobs run in the background. /cron to manage. Triggers react to file changes.");
+    }
+
+    if (MATCH_TOPIC("agents") || MATCH_TOPIC("agent") || MATCH_TOPIC("research") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Research PostgreSQL vs MySQL for high-write workloads. Spawn agents for each, then compare.",
+            "Spawn an agent to read all README files in ~/projects and summarize each one.",
+            "Do a deep research pass on best practices for securing a Node.js REST API in 2026.",
+        };
+        tutorial_section("🤖", "Sub-Agents & Deep Research", p, 3,
+            "Agents work autonomously with their own tools and sessions.");
+    }
+
+    if (MATCH_TOPIC("cloud") || MATCH_TOPIC("integrations") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Show me all Jira tickets assigned to me in \"In Progress\" status.",
+            "Search Slack for messages about the production deployment.",
+            "List my open pull requests on GitHub.",
+            "Create a Linear issue: \"Add rate limiting to /api/search\".",
+            "What Zoom meetings do I have scheduled this week?",
+        };
+        tutorial_section("☁️ ", "Cloud Integrations (15 services)", p, 5,
+            "Configure in /connections. Supports Jira, Slack, GitHub, Linear, Zoom, and more.");
+    }
+
+    if (MATCH_TOPIC("artifacts") || MATCH_TOPIC("export") || MATCH_TOPIC("create") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Create an interactive HTML dashboard with a project timeline and progress bars.",
+            "Build a Pomodoro timer as an HTML artifact with start/pause/reset buttons.",
+            "Create a Word document summarizing today's meeting notes with action items.",
+            "Export the current conversation as a PDF.",
+        };
+        tutorial_section("🎨", "Artifacts & Exports", p, 4,
+            "/artifacts to list, /pdf to export. HTML artifacts open in your browser.");
+    }
+
+    if (MATCH_TOPIC("power") || MATCH_TOPIC("workflows") || MATCH_TOPIC("advanced") || show_all) {
+        show_topic = 1;
+        const char *p[] = {
+            "Check my calendar, summarize important emails, list top Jira tickets — morning briefing.",
+            "Index this repo with RAG, find the auth flow and DB schema, give me a developer onboarding summary.",
+            "Check disk usage, top 20 processes by memory, network connectivity — system health report.",
+            "Summarize what I worked on today, create a reminder for tomorrow, draft a standup update.",
+        };
+        tutorial_section("🔥", "Power Workflows", p, 4,
+            "Combine multiple features for real-world multi-step workflows.");
+    }
+
+    if (!show_topic) {
+        printf(ANSI_YELLOW "  Unknown topic: %s" ANSI_RESET "\n\n", args);
+        printf("  Available topics: " ANSI_CYAN "basics files macos desktop memory schedule agents cloud artifacts power" ANSI_RESET "\n");
+        printf("  Or just " ANSI_CYAN "/tutorial" ANSI_RESET " for everything.\n\n");
+        return;
+    }
+
+    printf("\n  " ANSI_DIM "Topics: /tutorial [basics|files|macos|desktop|memory|schedule|agents|cloud|artifacts|power]" ANSI_RESET "\n\n");
+
+    #undef MATCH_TOPIC
 }
 
 static void cmd_cron(const char *args) {

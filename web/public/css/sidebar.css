@@ -11,6 +11,7 @@
   font-weight: 700;
   color: var(--primary);
   letter-spacing: 4px;
+  cursor: pointer;
 }
 
 .logo-sub {
