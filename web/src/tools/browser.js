@@ -97,10 +97,17 @@ async function browserAction(args) {
       await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
       const title = await p.title();
       const screenshot = await takeScreenshot();
+      // Extract page text so the result is useful even without vision (e.g. sub-agents)
+      const text = await p.evaluate(() => {
+        const main = document.querySelector('main, article, [role="main"], .content, #content');
+        const target = main || document.body;
+        return target.innerText.slice(0, 8000);
+      });
       return JSON.stringify({
         action: 'navigate',
         url: p.url(),
         title,
+        text,
         screenshot,
         message: `Navigated to ${title} (${p.url()})`,
       });

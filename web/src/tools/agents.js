@@ -167,6 +167,19 @@ RULES:
         output = `Error: ${err.message}`;
       }
 
+      // Strip base64 screenshots from browser/computer results — sub-agents
+      // can't see images, and the base64 noise wastes context. The text field
+      // (added by navigate/read) gives the model what it actually needs.
+      if (typeof output === 'string' && output.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(output);
+          if (parsed.screenshot) {
+            delete parsed.screenshot;
+            output = JSON.stringify(parsed);
+          }
+        } catch {}
+      }
+
       const toolMsg = {
         role: 'tool',
         content: typeof output === 'string' ? output : JSON.stringify(output),
