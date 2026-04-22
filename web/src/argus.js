@@ -88,7 +88,7 @@ function summarizeEvent(event) {
   }
   if (event.type === 'tool_result' && event.output) {
     const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output);
-    summary.result = out.slice(0, 300);
+    summary.result = out.slice(0, 600);
     // Flag errors in tool output
     if (event.status === 'error' || /error|failed|exception|denied|not found/i.test(out.slice(0, 500))) {
       summary.hasError = true;
@@ -163,7 +163,7 @@ function buildReactionContext(trigger) {
   for (const e of eventWindow.slice(-6)) {
     let line = `[${e.tool || e.type}]`;
     if (e.hasError || e.status === 'error') line += ' ERROR';
-    if (e.result) line += ` → ${e.result.slice(0, 150)}`;
+    if (e.result) line += ` → ${e.result.slice(0, 400)}`;
     if (e.error) line += ` → ${e.error}`;
     if (e.title) line += ` "${e.title}"`;
     ctx += line + '\n';
@@ -180,7 +180,7 @@ function buildReactionContext(trigger) {
     let tLine = 'Latest: ';
     if (trigger.tool) tLine += trigger.tool;
     if (trigger.hasError) tLine += ' [ERROR]';
-    if (trigger.result) tLine += ` → ${trigger.result.slice(0, 200)}`;
+    if (trigger.result) tLine += ` → ${trigger.result.slice(0, 400)}`;
     if (trigger.error) tLine += ` → ${trigger.error}`;
     if (trigger.title) tLine += ` "${trigger.title}"`;
     ctx += tLine + '\n';
@@ -232,9 +232,10 @@ async function generateReaction(trigger) {
     // Choose prompt based on trigger type — 'done' events get the substantive
     // commentary prompt since the full response is available for analysis.
     const isContentTrigger = trigger.type === 'done' || trigger.type === 'artifact' || trigger.type === 'document';
+    const groundingRule = ' IMPORTANT: Tool results (especially web_search) are real-time data — trust them over your training knowledge. Never claim a feature or product does not exist if search results show otherwise.';
     const systemPrompt = isContentTrigger
-      ? 'You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. Speak to the substance, not the mechanics. No labels, no preamble.'
-      : 'You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. No labels, no preamble.';
+      ? 'You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. Speak to the substance, not the mechanics. No labels, no preamble.' + groundingRule
+      : 'You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. No labels, no preamble.' + groundingRule;
 
     const result = await streamChat({
       messages: [
