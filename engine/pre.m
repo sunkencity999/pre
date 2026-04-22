@@ -185,6 +185,8 @@ static void save_identity(const char *name) {
 // Forward declarations for functions used before their definition
 static int json_extract_str(const char *json, const char *key, char *dst, size_t dsz);
 static void comfyui_stop(void);
+static int g_argus_enabled = 0;  // Argus companion — toggle with /argus
+static void argus_react(const char *tool_name, const char *tool_output);
 
 // Telegram bot subprocess
 static pid_t g_telegram_pid = 0;
@@ -7582,6 +7584,29 @@ static char *handle_tool_calls(char *response) {
         // Free all ToolCall heap memory
         for (int i = 0; i < batch_count; i++) tool_call_free(&batch[i]);
 
+        // Argus reaction (fire after tools, before follow-up)
+        if (g_argus_enabled && batch_count > 0 && !denied) {
+            // Use the last tool name and combined output for context
+            char last_tool[64] = "tool";
+            // Extract last tool name from combined output
+            char *last_resp = strstr(combined, "<tool_response name=\"");
+            char *found = last_resp;
+            while (found) {
+                last_resp = found;
+                found = strstr(found + 1, "<tool_response name=\"");
+            }
+            if (last_resp) {
+                const char *name_start = last_resp + strlen("<tool_response name=\"");
+                int ni = 0;
+                while (name_start[ni] && name_start[ni] != '"' && ni < 63) {
+                    last_tool[ni] = name_start[ni];
+                    ni++;
+                }
+                last_tool[ni] = 0;
+            }
+            argus_react(last_tool, combined);
+        }
+
         // After successful artifact creation, compact the assistant's session turn
         // to strip the large HTML content. The full content is saved to disk by
         // execute_artifact; keeping it in the session bloats every future prefill.
@@ -7700,6 +7725,7 @@ static void cmd_artifacts(const char *args);
 static void cmd_cron(const char *args);
 static void cmd_pdf(const char *args);
 static void cmd_tutorial(const char *args);
+static void cmd_argus(const char *args);
 
 typedef struct {
     const char *name;
@@ -7742,6 +7768,7 @@ static SlashCommand commands[] = {
     {"/pdf",     "[title|N]", "Export artifact to PDF",              cmd_pdf},
     {"/cron",    "[add|rm|ls]","Manage recurring scheduled tasks",   cmd_cron},
     {"/tutorial","[topic]",   "Interactive tutorial with examples",  cmd_tutorial},
+    {"/argus",  NULL,       "Toggle Argus companion on/off",       cmd_argus},
     {NULL, NULL, NULL, NULL}
 };
 
@@ -8645,6 +8672,183 @@ static void cmd_tutorial(const char *args) {
     printf("\n  " ANSI_DIM "Topics: /tutorial [basics|files|macos|desktop|memory|schedule|agents|cloud|artifacts|power]" ANSI_RESET "\n\n");
 
     #undef MATCH_TOPIC
+}
+
+// ============================================================================
+// Argus companion
+// ============================================================================
+
+static const char *argus_config_path(void) {
+    static char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/.pre/argus.json", getenv("HOME") ?: "/tmp");
+    return path;
+}
+
+static void argus_load(void) {
+    FILE *f = fopen(argus_config_path(), "r");
+    if (!f) return;
+    char buf[512];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    fclose(f);
+    // Check "enabled" field
+    const char *p = strstr(buf, "\"enabled\"");
+    if (p) {
+        p = strchr(p, ':');
+        if (p) {
+            p++;
+            while (*p == ' ') p++;
+            g_argus_enabled = (strncmp(p, "true", 4) == 0) ? 1 : 0;
+        }
+    }
+}
+
+static void argus_save(void) {
+    FILE *f = fopen(argus_config_path(), "r");
+    char buf[1024] = {0};
+    if (f) {
+        fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+    }
+    // Update or write config with enabled state
+    f = fopen(argus_config_path(), "w");
+    if (!f) return;
+    // Simple: rewrite the whole config preserving other fields
+    if (strstr(buf, "\"enabled\"")) {
+        // Replace the enabled value
+        char *p = strstr(buf, "\"enabled\"");
+        char *colon = strchr(p, ':');
+        if (colon) {
+            // Find the value (true or false)
+            char *val = colon + 1;
+            while (*val == ' ') val++;
+            char *end = val;
+            while (*end && *end != ',' && *end != '}' && *end != '\n') end++;
+            // Write: prefix + new value + suffix
+            fwrite(buf, 1, val - buf, f);
+            fprintf(f, "%s", g_argus_enabled ? "true" : "false");
+            fputs(end, f);
+        }
+    } else {
+        // No existing config — write fresh
+        fprintf(f, "{\n  \"enabled\": %s,\n  \"name\": \"Argus\",\n  \"personality\": \"thoughtful mentor\",\n  \"cooldownMs\": 30000,\n  \"maxReactionTokens\": 150\n}\n",
+                g_argus_enabled ? "true" : "false");
+    }
+    fclose(f);
+}
+
+// Print an Argus reaction after tool execution. Makes a quick Ollama API
+// call to generate a reaction. Fire-and-forget.
+static void argus_react(const char *tool_name, const char *tool_output) {
+    if (!g_argus_enabled) return;
+
+    // Build a simple request body for Argus
+    static time_t last_reaction = 0;
+    time_t now = time(NULL);
+    if (now - last_reaction < 30) return;  // 30s cooldown
+    last_reaction = now;
+
+    // Truncate output for context
+    char output_preview[512];
+    size_t olen = strlen(tool_output);
+    if (olen > 500) {
+        memcpy(output_preview, tool_output, 500);
+        output_preview[500] = 0;
+    } else {
+        strlcpy(output_preview, tool_output, sizeof(output_preview));
+    }
+
+    // Build minimal Ollama request directly (no web server dependency)
+    char body[4096];
+    // JSON-escape the output preview and tool name
+    char escaped_output[1200];
+    char escaped_tool[256];
+    int ei = 0;
+    for (int i = 0; output_preview[i] && ei < (int)sizeof(escaped_output) - 2; i++) {
+        if (output_preview[i] == '"' || output_preview[i] == '\\') escaped_output[ei++] = '\\';
+        if (output_preview[i] == '\n') { escaped_output[ei++] = '\\'; escaped_output[ei++] = 'n'; continue; }
+        if (output_preview[i] == '\r') continue;
+        if (output_preview[i] == '\t') { escaped_output[ei++] = ' '; continue; }
+        escaped_output[ei++] = output_preview[i];
+    }
+    escaped_output[ei] = 0;
+    ei = 0;
+    for (int i = 0; tool_name[i] && ei < (int)sizeof(escaped_tool) - 2; i++) {
+        if (tool_name[i] == '"' || tool_name[i] == '\\') escaped_tool[ei++] = '\\';
+        escaped_tool[ei++] = tool_name[i];
+    }
+    escaped_tool[ei] = 0;
+
+    snprintf(body, sizeof(body),
+        "{\"model\":\"%s\",\"stream\":false,\"options\":{\"num_predict\":150,\"num_ctx\":%d},"
+        "\"messages\":["
+        "{\"role\":\"system\",\"content\":\"You are Argus, a brief companion observer. You watch an AI assistant work and offer 1-2 short sentences. Be genuinely helpful: suggestions, encouragement, or gentle observations. Never repeat what the tool said. Be specific, not generic.\"},"
+        "{\"role\":\"user\",\"content\":\"Tool '%s' just ran.\\nResult: %s\\n\\nReact briefly.\"}"
+        "]}",
+        g_model, MODEL_CTX, escaped_tool, escaped_output);
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return;
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(g.port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    // Non-blocking connect with 5s timeout
+    struct timeval tv = {5, 0};
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        return;
+    }
+
+    char header[256];
+    int body_len = (int)strlen(body);
+    int hlen = snprintf(header, sizeof(header),
+        "POST /api/chat HTTP/1.1\r\n"
+        "Host: 127.0.0.1:%d\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Connection: close\r\n\r\n",
+        g.port, body_len);
+
+    send(sock, header, hlen, 0);
+    send(sock, body, body_len, 0);
+
+    // Read response
+    char resp[8192];
+    int total = 0;
+    while (total < (int)sizeof(resp) - 1) {
+        int n = (int)recv(sock, resp + total, sizeof(resp) - 1 - total, 0);
+        if (n <= 0) break;
+        total += n;
+    }
+    resp[total] = 0;
+    close(sock);
+
+    // Extract the response content from Ollama JSON
+    // Look for "content":"..." in the response body
+    char *json_start = strstr(resp, "\r\n\r\n");
+    if (!json_start) return;
+    json_start += 4;
+
+    char reaction[1024];
+    if (json_extract_str(json_start, "content", reaction, sizeof(reaction)) > 0 && strlen(reaction) >= 5) {
+        printf("\n  " ANSI_MAGENTA "✦ " ANSI_RESET ANSI_CYAN "%s" ANSI_RESET "\n", reaction);
+    }
+}
+
+static void cmd_argus(const char *args) {
+    (void)args;
+    g_argus_enabled = !g_argus_enabled;
+    argus_save();
+    printf("\n  " ANSI_MAGENTA "✦ Argus" ANSI_RESET " %s\n",
+           g_argus_enabled ? "enabled — reactions will appear between tool outputs"
+                          : "disabled");
+    printf("\n");
 }
 
 static void cmd_cron(const char *args) {
@@ -9893,6 +10097,9 @@ int main(int argc, char **argv) {
 
         // Load agent identity
         load_identity();
+
+        // Load Argus state
+        argus_load();
 
         // Banner
         tui_banner();

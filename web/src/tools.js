@@ -13,6 +13,7 @@ const mcp = require('./mcp');
 const hooks = require('./hooks');
 const experience = require('./experience');
 const chronos = require('./chronos');
+const argus = require('./argus');
 
 /**
  * Generate a short session title from the first user message.
@@ -30,6 +31,7 @@ function generateSessionTitle(sessionId, userMessage, send) {
       { role: 'user', content: truncated },
     ],
     maxTokens: 128,
+    think: false,
   }).then((result) => {
     console.log(`[title-gen] response: "${result.response}" thinking: "${(result.thinking || '').slice(0, 200)}"`);
     let title = '';
@@ -462,6 +464,17 @@ async function executeTool(name, args, cwd, opts) {
  * @returns {Promise<void>}
  */
 async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle, maxTurns }) {
+  // Wrap send to let Argus observe all events (fire-and-forget, never blocks)
+  const originalSend = send;
+  send = (event) => {
+    originalSend(event);
+    argus.observeEvent(event);
+  };
+  // Give Argus the user's prompt for conversational context
+  if (userMessage) {
+    argus.observeEvent({ type: 'user_message', content: userMessage });
+  }
+
   const turnLimit = maxTurns || MAX_TOOL_TURNS;
   let tokensIn = 0;
   let tokensOut = 0;

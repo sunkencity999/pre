@@ -14,15 +14,17 @@ const { MODEL, MODEL_CTX, OLLAMA_PORT } = require('./constants');
  * @param {AbortSignal} [opts.signal] - Abort signal to cancel request
  * @returns {Promise<{response: string, toolCalls: Array|null, stats: Object}>}
  */
-function streamChat({ messages, tools, maxTokens = 8192, onToken, signal }) {
+function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think, extraOptions }) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify({
       model: MODEL,
       stream: true,
       keep_alive: '24h',
+      ...(think === false ? { think: false } : {}),
       options: {
         num_predict: maxTokens,
         num_ctx: MODEL_CTX,
+        ...(extraOptions || {}),
       },
       messages,
       ...(tools && tools.length > 0 ? { tools } : {}),

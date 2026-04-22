@@ -53,6 +53,7 @@ The `pre-launch` command also starts the web GUI automatically in the background
 - **Event-driven triggers** — file watchers and webhooks that fire prompts automatically when things change
 - **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say`; all audio stays on your machine
 - **Workflow capture and replay** — record Computer Use action sequences and replay them at configurable speed
+- **Argus companion** — a real-time session observer that watches PRE work and adds brief, contextual reactions (tips, warnings, insights) via a floating widget
 - **Auto-sized context window** — the installer detects your Mac's RAM and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
@@ -534,6 +535,63 @@ Click the **grid icon** in the sidebar footer to open the Workflows panel. From 
 - Click **View** to inspect individual steps
 - Click **Replay** to re-execute a workflow (with confirmation prompt)
 - Delete workflows you no longer need
+
+---
+
+## Argus — Real-Time Session Companion
+
+Argus is a watchful observer that monitors your PRE sessions in real time and adds brief, contextual reactions as you work. Think of it as a senior engineer looking over your shoulder — it spots potential issues, adds useful context, and highlights things the main response might have missed.
+
+### How It Works
+
+1. **Event observation** — Argus watches every tool call, result, error, and completion in your session
+2. **Selective triggering** — only reacts to interesting events (errors, web searches, bash commands, file operations, task completions) with a 30-second cooldown between reactions
+3. **Separate LLM call** — generates reactions via a lightweight Ollama call with thinking mode disabled (`think: false`) for terse, direct output
+4. **Quality filtering** — an automatic filter rejects narration, meta-text, and instruction echoing, only surfacing genuinely useful observations
+
+### What Argus Is Good At
+
+- **Catching errors** — spots permission issues, failed commands, and mismatched data before you scroll back to check
+- **Analyzing search quality** — notes when search queries might return stale data, when results lack the needed information, or when a different query would be more effective
+- **Adding context** — provides relevant facts or technical details that complement the main response
+- **Flagging potential issues** — identifies edge cases, missing error handling, or assumptions in tool output
+
+### Configuration
+
+Argus config lives at `~/.pre/argus.json`:
+
+```json
+{
+  "enabled": true,
+  "name": "Argus",
+  "personality": "thoughtful mentor",
+  "cooldownMs": 30000,
+  "maxReactionTokens": 150
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `enabled` | `true` | Toggle Argus on/off |
+| `name` | `"Argus"` | Display name in the widget |
+| `cooldownMs` | `30000` | Minimum milliseconds between reactions |
+| `maxReactionTokens` | `150` | Max tokens for reaction generation |
+
+### GUI Widget
+
+A floating **✦** button in the bottom-right corner of the chat area. Click it to expand the Argus panel, which shows a scrollable list of reactions with timestamps and trigger context (e.g., "tool_result · web_search"). Reactions appear in real time as they're generated.
+
+### CLI Support
+
+The CLI (`/argus` command) toggles Argus on/off. When enabled, reactions appear inline after tool executions, styled in magenta/cyan to distinguish them from the main response.
+
+### REST API
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/argus` | `GET` | Get current Argus config |
+| `/api/argus` | `POST` | Update Argus config |
+| `/api/argus/status` | `GET` | Get Argus status (enabled, generating, window size) |
 
 ---
 
@@ -1711,6 +1769,7 @@ src/
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
+  argus.js                 Real-time session companion (event observation, reaction generation)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
   constants.js             MODEL_CTX (from ~/.pre/context), paths
   triggers.js              Event-driven trigger engine (file watchers, webhooks)

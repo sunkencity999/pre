@@ -37,6 +37,7 @@ const hooksSystem = require('./src/hooks');
 const experienceSystem = require('./src/experience');
 const triggerSystem = require('./src/triggers');
 const chronosSystem = require('./src/chronos');
+const argusSystem = require('./src/argus');
 const { createMcpServer } = require('./src/mcp-server');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 
@@ -579,6 +580,17 @@ app.get('/api/voice/status', (_req, res) => {
     say: voiceTool.hasSay,
     ffmpeg: voiceTool.hasFfmpeg,
   });
+});
+
+// ── Argus companion routes ──
+app.get('/api/argus', (_req, res) => {
+  res.json(argusSystem.getConfig());
+});
+app.post('/api/argus', (req, res) => {
+  res.json(argusSystem.saveConfig(req.body));
+});
+app.get('/api/argus/status', (_req, res) => {
+  res.json(argusSystem.getStatus());
 });
 
 // Broadcast a WS event to all connected clients
@@ -1207,6 +1219,11 @@ server.listen(PORT, async () => {
   if (triggers.length > 0) {
     console.log(`  Triggers: ${triggerStats.watcherCount} active / ${triggers.length} total`);
   }
+
+  // Initialize Argus companion
+  argusSystem.init(broadcastWS);
+  const buddyCfg = argusSystem.getConfig();
+  console.log(`  Argus: ${buddyCfg.enabled ? 'enabled' : 'disabled'} (${buddyCfg.name})`);
 
   console.log(`  MCP server: HTTP at /mcp | stdio via mcp-stdio.js`);
 

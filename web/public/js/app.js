@@ -142,6 +142,10 @@
         loadSessionList();
         break;
 
+      case 'argus_reaction':
+        if (window.Argus) window.Argus.addReaction(msg);
+        break;
+
       case 'cron_complete':
         // A cron job finished running server-side — show toast with link to its session
         showCronToast(msg.description, msg.sessionId, msg.preview);
@@ -3503,4 +3507,114 @@
       openSettingsPanel();
     },
   };
+
+  // ── Argus companion widget ──
+  const argusReactions = [];
+  const MAX_ARGUS_REACTIONS = 30;
+  let argusExpanded = false;
+  let argusEnabled = true;
+  let argusName = 'Argus';
+
+  function initArgus() {
+    // Create widget DOM
+    const widget = document.createElement('div');
+    widget.id = 'argus-widget';
+    widget.className = 'argus-widget';
+    widget.innerHTML = `
+      <div class="argus-panel" id="argus-panel">
+        <div class="argus-panel-header">
+          <div class="argus-panel-header-left">
+            <span id="argus-panel-name">${escapeHtml(argusName)}</span>
+          </div>
+          <div class="argus-panel-toggle active" id="argus-toggle" title="Toggle Argus"></div>
+        </div>
+        <div class="argus-panel-body" id="argus-panel-body">
+          <div class="argus-empty">Argus is watching and will share<br>thoughts as you work.</div>
+        </div>
+      </div>
+      <div class="argus-fab" id="argus-fab" title="Argus companion">
+        <span>✦</span>
+        <div class="argus-badge"></div>
+      </div>
+    `;
+    document.body.appendChild(widget);
+
+    // Load config
+    fetch('/api/argus').then(r => r.json()).then(cfg => {
+      argusEnabled = cfg.enabled;
+      argusName = cfg.name || 'Argus';
+      const nameEl = document.getElementById('argus-panel-name');
+      if (nameEl) nameEl.textContent = argusName;
+      const toggle = document.getElementById('argus-toggle');
+      if (toggle) toggle.classList.toggle('active', argusEnabled);
+      if (!argusEnabled) widget.style.opacity = '0.5';
+    }).catch(() => {});
+
+    // FAB click → toggle panel
+    document.getElementById('argus-fab').addEventListener('click', () => {
+      argusExpanded = !argusExpanded;
+      const panel = document.getElementById('argus-panel');
+      panel.classList.toggle('argus-panel--open', argusExpanded);
+      // Clear badge
+      document.getElementById('argus-fab').classList.remove('argus-fab--active');
+      if (argusExpanded) {
+        const body = document.getElementById('argus-panel-body');
+        body.scrollTop = body.scrollHeight;
+      }
+    });
+
+    // Toggle switch
+    document.getElementById('argus-toggle').addEventListener('click', (e) => {
+      e.stopPropagation();
+      argusEnabled = !argusEnabled;
+      e.currentTarget.classList.toggle('active', argusEnabled);
+      widget.style.opacity = argusEnabled ? '1' : '0.5';
+      fetch('/api/argus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: argusEnabled }),
+      }).catch(() => {});
+    });
+  }
+
+  function renderArgusReactions() {
+    const body = document.getElementById('argus-panel-body');
+    if (!body) return;
+    if (argusReactions.length === 0) {
+      body.innerHTML = '<div class="argus-empty">Argus is watching and will share<br>thoughts as you work.</div>';
+      return;
+    }
+    body.innerHTML = argusReactions.map(r => {
+      const time = new Date(r.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const trigger = r.trigger || '';
+      const tool = r.tool ? ` · ${r.tool}` : '';
+      return `<div class="argus-reaction">
+        <div class="argus-reaction-content">${escapeHtml(r.content)}</div>
+        <div class="argus-reaction-meta">
+          <span>${time}</span>
+          <span class="argus-reaction-trigger">${escapeHtml(trigger)}${escapeHtml(tool)}</span>
+        </div>
+      </div>`;
+    }).join('');
+    body.scrollTop = body.scrollHeight;
+  }
+
+  window.Argus = {
+    addReaction(msg) {
+      argusReactions.push(msg);
+      if (argusReactions.length > MAX_ARGUS_REACTIONS) argusReactions.shift();
+      renderArgusReactions();
+      // Pulse the FAB if panel is closed
+      if (!argusExpanded) {
+        document.getElementById('argus-fab')?.classList.add('argus-fab--active');
+      }
+    },
+    toggle() {
+      document.getElementById('argus-fab')?.click();
+    },
+    get reactions() { return argusReactions; },
+  };
+
+  // Init Argus on first load (DOM ready, don't need WS for setup)
+  initArgus();
 })();
