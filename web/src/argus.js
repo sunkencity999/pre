@@ -286,6 +286,7 @@ function observeEvent(event) {
   if (event.type === 'user_message' && event.content) {
     currentUserMessage = event.content.slice(0, 300);
     recentResponseText = ''; // reset for new turn
+    eventWindow.length = 0;  // clear stale events from previous session/turn
     return;
   }
 

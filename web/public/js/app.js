@@ -21,6 +21,8 @@
   function setCurrentSession(id) {
     currentSession = id;
     if (id) sessionStorage.setItem('pre-session', id);
+    // Clear Argus reactions when switching sessions — they're session-specific
+    if (window.Argus) window.Argus.clear();
   }
 
   // ── Background job tracking (cron/trigger events) ──
@@ -3608,6 +3610,11 @@
       if (!argusExpanded) {
         document.getElementById('argus-fab')?.classList.add('argus-fab--active');
       }
+    },
+    clear() {
+      argusReactions.length = 0;
+      renderArgusReactions();
+      document.getElementById('argus-fab')?.classList.remove('argus-fab--active');
     },
     toggle() {
       document.getElementById('argus-fab')?.click();
