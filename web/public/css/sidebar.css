@@ -336,8 +336,14 @@
 .footer-row {
   display: flex;
   align-items: center;
+  margin-bottom: 8px;
+}
+.footer-row-top {
   justify-content: space-between;
-  margin-bottom: 10px;
+}
+.footer-row-panels {
+  justify-content: center;
+  gap: 4px;
 }
 
 .theme-switcher {

@@ -545,6 +545,121 @@
   transform: translateX(20px);
 }
 
+/* ── Agent Feed panel ── */
+.agent-feed-empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: 32px 16px;
+}
+.agent-feed-entry {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  background: var(--surface);
+  overflow: hidden;
+  transition: border-color 0.2s ease;
+}
+.agent-feed-entry.running {
+  border-color: var(--primary);
+}
+.agent-feed-entry.completed {
+  border-color: var(--success);
+}
+.agent-feed-entry.failed {
+  border-color: var(--danger);
+}
+.agent-feed-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.agent-feed-header:hover {
+  background: var(--surface-hover);
+}
+.agent-feed-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+.agent-feed-entry.running .agent-feed-status {
+  background: var(--primary);
+  animation: agent-pulse 1s ease-in-out infinite;
+}
+.agent-feed-entry.completed .agent-feed-status { background: var(--success); }
+.agent-feed-entry.failed .agent-feed-status { background: var(--danger); }
+.agent-feed-info {
+  flex: 1;
+  min-width: 0;
+}
+.agent-feed-task {
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-feed-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.agent-feed-chevron {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.agent-feed-entry.expanded .agent-feed-chevron {
+  transform: rotate(90deg);
+}
+.agent-feed-body {
+  display: none;
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+  font-size: 0.8rem;
+}
+.agent-feed-entry.expanded .agent-feed-body {
+  display: block;
+}
+.agent-feed-tools {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px 0;
+}
+.agent-feed-tools li {
+  padding: 3px 0;
+  font-family: 'SF Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.agent-feed-tools li::before {
+  content: '→ ';
+  color: var(--text-muted);
+}
+.agent-feed-result {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.agent-feed-result pre {
+  margin: 4px 0;
+  max-height: 200px;
+  overflow: auto;
+}
+.agent-feed-session-btn {
+  margin-top: 8px;
+}
+
 /* ── Cron toast notifications ── */
 .cron-toast {
   position: fixed;

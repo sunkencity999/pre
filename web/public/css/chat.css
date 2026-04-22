@@ -423,7 +423,128 @@
   overflow: auto;
 }
 
-/* Agent status bar */
+/* ── Compact agent card (replaces verbose tool cards for spawn_agent) ── */
+.agent-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--primary);
+  border-radius: 10px;
+  margin: 8px 0;
+  overflow: hidden;
+  animation: toolCardEnter 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.agent-card.agent-done {
+  border-left-color: var(--success);
+}
+.agent-card.agent-failed {
+  border-left-color: var(--danger);
+}
+.agent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.agent-card-header:hover {
+  background: var(--surface-hover);
+}
+.agent-card-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+  color: var(--primary);
+}
+.agent-card.agent-done .agent-card-icon { color: var(--success); }
+.agent-card.agent-failed .agent-card-icon { color: var(--danger); }
+.agent-card-icon.spinning {
+  animation: agent-pulse 1s ease-in-out infinite;
+}
+.agent-card-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.agent-card-tools-count {
+  font-family: 'SF Mono', monospace;
+}
+.agent-card-chevron {
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.agent-card.expanded .agent-card-chevron {
+  transform: rotate(90deg);
+}
+.agent-card-details {
+  display: none;
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  font-size: 0.8rem;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.agent-card.expanded .agent-card-details {
+  display: block;
+}
+.agent-card-tool-log {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px 0;
+}
+.agent-card-tool-log li {
+  padding: 3px 0;
+  color: var(--text-secondary);
+  font-family: 'SF Mono', monospace;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-card-tool-log li::before {
+  content: '→';
+  color: var(--text-muted);
+}
+.agent-card-result {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-card-result pre {
+  margin: 4px 0;
+  max-height: 200px;
+  overflow: auto;
+}
+.agent-card-feed-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 0.72rem;
+  color: var(--primary);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+}
+.agent-card-feed-link:hover {
+  text-decoration: underline;
+}
+
+/* Legacy agent status bar (kept for non-agent status events) */
 .agent-status-bar {
   margin-top: 8px;
   padding: 8px 12px;

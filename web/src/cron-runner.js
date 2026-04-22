@@ -72,7 +72,7 @@ async function executeCronJob(job, { broadcastWS } = {}) {
         }
         // Forward events to connected WS clients so they can see live progress
         if (broadcastWS) {
-          broadcastWS({ ...event, cronSessionId: sessionId, cronJobId: job.id });
+          broadcastWS({ ...event, cronSessionId: sessionId, cronJobId: job.id, cronDescription: job.description });
         }
       },
       onConfirmRequest: async () => {

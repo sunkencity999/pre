@@ -23,8 +23,49 @@
     if (id) sessionStorage.setItem('pre-session', id);
   }
 
+  // ── Background job tracking (cron/trigger events) ──
+  const backgroundJobs = new Map(); // cronSessionId → { tokens, toolCount }
+
+  function handleBackgroundEvent(msg) {
+    const jobId = msg.cronJobId || msg.cronSessionId;
+    const sessionId = msg.cronSessionId;
+    if (!backgroundJobs.has(sessionId)) {
+      backgroundJobs.set(sessionId, { tokens: [], toolCount: 0, description: '' });
+      // Create a feed entry for this background job
+      const desc = msg.cronDescription || jobId || 'Background job';
+      backgroundJobs.get(sessionId).description = desc;
+      if (window.AgentFeed) window.AgentFeed.add(sessionId, desc, sessionId);
+    }
+    const job = backgroundJobs.get(sessionId);
+
+    if (msg.type === 'token' && msg.content) {
+      job.tokens.push(msg.content);
+    } else if (msg.type === 'tool_call') {
+      job.toolCount++;
+      if (window.AgentFeed) window.AgentFeed.addTool(sessionId, msg.name || 'tool');
+    } else if (msg.type === 'done') {
+      const result = job.tokens.join('');
+      if (window.AgentFeed) {
+        window.AgentFeed.setResult(sessionId, result);
+        window.AgentFeed.complete(sessionId);
+      }
+      backgroundJobs.delete(sessionId);
+    }
+    // agent_status events from cron sub-agents (type is 'agent_status', sub-type in event fields)
+    if (msg.type === 'agent_status' && msg.tool && window.AgentFeed) {
+      window.AgentFeed.addTool(sessionId, msg.tool);
+    }
+  }
+
   // ── WebSocket message handler ──
   WS.on('message', (msg) => {
+    // Route background job events (cron/triggers) to Agent Feed instead of current chat
+    if (msg.cronSessionId) {
+      handleBackgroundEvent(msg);
+      // Still allow cron_complete through for the toast notification
+      if (msg.type !== 'cron_complete') return;
+    }
+
     switch (msg.type) {
       case 'thinking':
         if (!Chat.isStreaming) Chat.startStream();
@@ -959,8 +1000,16 @@
   function renderSessionList(searchQuery) {
     const query = (searchQuery || '').toLowerCase();
 
-    // Filter sessions by search query
-    let sessions = allSessions;
+    // Filter out agent sub-sessions from the sidebar (still accessible via search or Agent Feed)
+    let sessions = allSessions.filter(s => {
+      const name = (s.displayName || s.channel || '').toLowerCase();
+      const id = (s.id || '').toLowerCase();
+      // Hide sessions that look like agent sub-sessions
+      if (name.startsWith('agent-') || id.includes(':agent-') || id.includes(':agent_')) return false;
+      return true;
+    });
+
+    // Apply search query (search restores hidden agent sessions so they're still findable)
     if (query) {
       sessions = allSessions.filter(s => {
         const name = (s.displayName || s.channel || '').toLowerCase();
@@ -2236,6 +2285,154 @@
       openWorkflowPanel();
     },
   };
+
+  // ── Agent Feed panel ──
+  document.getElementById('agent-feed-btn').addEventListener('click', () => {
+    openAgentFeedPanel();
+  });
+
+  // In-memory agent activity store (accumulates from WS events)
+  const agentFeedEntries = [];
+
+  function openAgentFeedPanel() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    const content = document.getElementById('panel-content');
+    title.textContent = 'Agent Feed';
+    panel.classList.remove('hidden');
+    renderAgentFeedPanel(content);
+  }
+
+  function renderAgentFeedPanel(container) {
+    if (agentFeedEntries.length === 0) {
+      container.innerHTML = '<div class="agent-feed-empty">No agent activity yet.<br>Agents will appear here when the model spawns sub-agents or background jobs run.</div>';
+      return;
+    }
+
+    let html = '<div class="settings-section">';
+    html += '<div class="settings-section-title" style="margin-bottom:12px">Agent Activity</div>';
+
+    // Render newest first
+    for (let i = agentFeedEntries.length - 1; i >= 0; i--) {
+      const entry = agentFeedEntries[i];
+      const statusClass = entry.status === 'running' ? 'running' : entry.status === 'failed' ? 'failed' : 'completed';
+      const dur = entry.duration || '';
+      const toolCount = entry.tools.length;
+      const time = entry.startedAt ? new Date(entry.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      const sessionBtn = entry.sessionId
+        ? `<button class="btn btn-ghost btn-sm agent-feed-session-btn" onclick="window.AgentFeed.openSession('${escapeHtml(entry.sessionId)}')">Open Session</button>`
+        : '';
+
+      html += `<div class="agent-feed-entry ${statusClass}" data-agent-feed-id="${escapeHtml(entry.id)}">
+        <div class="agent-feed-header" onclick="this.parentElement.classList.toggle('expanded')">
+          <span class="agent-feed-status"></span>
+          <div class="agent-feed-info">
+            <div class="agent-feed-task">${escapeHtml(entry.task)}</div>
+            <div class="agent-feed-meta">
+              <span>${toolCount} tool${toolCount !== 1 ? 's' : ''}</span>
+              ${dur ? `<span>${dur}</span>` : ''}
+              <span>${time}</span>
+            </div>
+          </div>
+          <svg class="agent-feed-chevron" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 3l5 5-5 5V3z"/></svg>
+        </div>
+        <div class="agent-feed-body">
+          ${toolCount > 0 ? '<ul class="agent-feed-tools">' + entry.tools.map(t => `<li>${escapeHtml(t)}</li>`).join('') + '</ul>' : ''}
+          ${entry.result ? `<div class="agent-feed-result"><pre><code>${escapeHtml(entry.result.length > 2000 ? entry.result.slice(0, 2000) + '\n...' : entry.result)}</code></pre></div>` : ''}
+          ${entry.error ? `<div style="color:var(--danger);font-size:0.82rem">Error: ${escapeHtml(entry.error)}</div>` : ''}
+          ${sessionBtn}
+        </div>
+      </div>`;
+    }
+
+    html += '</div>';
+    container.innerHTML = html;
+  }
+
+  // Global AgentFeed API — called from Chat agent cards, WS handler, and background job tracker
+  window.AgentFeed = {
+    add(agentId, task, sessionId) {
+      agentFeedEntries.push({
+        id: agentId,
+        task,
+        sessionId: sessionId || null,
+        status: 'running',
+        tools: [],
+        result: null,
+        error: null,
+        duration: null,
+        startedAt: Date.now(),
+      });
+      refreshFeedPanelIfOpen();
+    },
+    updateId(oldId, newId) {
+      const entry = agentFeedEntries.find(e => e.id === oldId);
+      if (entry) entry.id = newId;
+    },
+    setSessionId(agentId, sessionId) {
+      const entry = agentFeedEntries.find(e => e.id === agentId);
+      if (entry) entry.sessionId = sessionId;
+    },
+    addTool(agentId, toolName) {
+      const entry = agentFeedEntries.find(e => e.id === agentId);
+      if (entry) entry.tools.push(toolName);
+      refreshFeedPanelIfOpen();
+    },
+    setResult(agentId, result) {
+      const entry = agentFeedEntries.find(e => e.id === agentId);
+      if (entry) entry.result = result;
+      refreshFeedPanelIfOpen();
+    },
+    complete(agentId, duration) {
+      const entry = agentFeedEntries.find(e => e.id === agentId);
+      if (entry) {
+        entry.status = 'completed';
+        entry.duration = duration;
+      }
+      refreshFeedPanelIfOpen();
+    },
+    fail(agentId, error) {
+      const entry = agentFeedEntries.find(e => e.id === agentId);
+      if (entry) {
+        entry.status = 'failed';
+        entry.error = error;
+      }
+      refreshFeedPanelIfOpen();
+    },
+    open(agentId) {
+      openAgentFeedPanel();
+      // Expand the entry after render
+      setTimeout(() => {
+        const el = document.querySelector(`[data-agent-feed-id="${agentId}"]`);
+        if (el) {
+          el.classList.add('expanded');
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 50);
+    },
+    async openSession(sessionId) {
+      // Close the feed panel and switch to the agent/cron session
+      document.getElementById('right-panel').classList.add('hidden');
+      setCurrentSession(sessionId);
+      updateSessionName();
+      loadSessionList();
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`);
+        const messages = await res.json();
+        Chat.loadHistory(messages);
+      } catch {}
+      WS.send({ type: 'switch_session', sessionId });
+    },
+    get entries() { return agentFeedEntries; },
+  };
+
+  function refreshFeedPanelIfOpen() {
+    const panel = document.getElementById('right-panel');
+    const title = document.getElementById('panel-title');
+    if (!panel.classList.contains('hidden') && title.textContent === 'Agent Feed') {
+      renderAgentFeedPanel(document.getElementById('panel-content'));
+    }
+  }
 
   // ── Voice input ──
   (async function initVoice() {

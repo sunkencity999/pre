@@ -10,6 +10,11 @@ const Chat = (() => {
   let currentDelegateStreamEl = null;
   let delegateStreamContent = '';
 
+  // Agent tool names that get compact agent cards instead of verbose tool cards
+  const AGENT_TOOL_NAMES = new Set(['spawn_agent', 'spawn_multi']);
+  // Map toolId → { cardEl, toolLog, toolCount, agentId }
+  const activeAgentCards = new Map();
+
   const DELEGATE_META = {
     claude: { name: 'Claude', color: '#cc785c' },
     codex:  { name: 'Codex',  color: '#10a37f' },
@@ -264,9 +269,15 @@ const Chat = (() => {
   }
 
   /**
-   * Show a tool call card in the current message
+   * Show a tool call card in the current message.
+   * Agent tools (spawn_agent, spawn_multi) get compact agent cards.
    */
   function addToolCall(toolCall) {
+    const toolName = toolCall.name || toolCall.function?.name || '';
+    if (AGENT_TOOL_NAMES.has(toolName)) {
+      addAgentCard(toolCall);
+      return;
+    }
     const msgEl = document.getElementById('streaming-message') ||
                   messagesEl().lastElementChild;
     if (msgEl) {
@@ -276,9 +287,15 @@ const Chat = (() => {
   }
 
   /**
-   * Update an existing tool card with result
+   * Update an existing tool card with result.
+   * Agent tool cards get routed to the compact card finalizer.
    */
   function updateToolCard(toolId, output, status) {
+    // Check if this is an agent card
+    if (activeAgentCards.has(toolId)) {
+      finalizeAgentCard(toolId, output, status);
+      return;
+    }
     const card = document.querySelector(`[data-tool-id="${toolId}"]`);
     if (!card) return;
 
@@ -301,9 +318,70 @@ const Chat = (() => {
   }
 
   /**
-   * Show sub-agent status updates inline
+   * Route agent status events to the matching compact agent card.
+   * Falls back to the agent-status-bar if no card is tracking this agent.
    */
   function updateAgentStatus(event) {
+    // Find the card tracking this agent by agentId
+    let cardState = null;
+    for (const [, st] of activeAgentCards) {
+      if (st.agentId === event.id) { cardState = st; break; }
+    }
+
+    // For agent_started, match against pending cards (not yet assigned an agentId)
+    if (!cardState && event.type === 'agent_started') {
+      for (const [, st] of activeAgentCards) {
+        if (st.agentId.startsWith('pending_')) { cardState = st; break; }
+      }
+    }
+
+    if (cardState) {
+      const card = cardState.cardEl;
+      const icon = card.querySelector('.agent-card-icon');
+
+      if (event.type === 'agent_started') {
+        const oldId = cardState.agentId;
+        cardState.agentId = event.id;
+        if (event.sessionId) cardState.sessionId = event.sessionId;
+        if (icon) { icon.textContent = '◉'; icon.classList.add('spinning'); }
+        // Update feed entry with real agent ID and session
+        if (window.AgentFeed) {
+          window.AgentFeed.updateId(oldId, event.id);
+          if (event.sessionId) window.AgentFeed.setSessionId(event.id, event.sessionId);
+        }
+      } else if (event.type === 'agent_tool') {
+        cardState.toolCount++;
+        const countEl = card.querySelector('.agent-card-tools-count');
+        if (countEl) countEl.textContent = `${cardState.toolCount} tool${cardState.toolCount !== 1 ? 's' : ''}`;
+        // Add to tool log
+        const li = document.createElement('li');
+        li.textContent = event.tool || '';
+        cardState.toolLog.appendChild(li);
+        // Push to agent feed
+        if (window.AgentFeed) window.AgentFeed.addTool(cardState.agentId, event.tool);
+      } else if (event.type === 'agent_progress') {
+        const taskEl = card.querySelector('.agent-card-task');
+        if (taskEl) taskEl.textContent = `[${event.current}/${event.total}] ${event.task || ''}`;
+      } else if (event.type === 'agent_task_done') {
+        // multi-agent sub-task done
+        if (window.AgentFeed) window.AgentFeed.addTool(cardState.agentId, `Task ${event.current}/${event.total} complete`);
+      } else if (event.type === 'agent_completed') {
+        card.classList.add('agent-done');
+        if (icon) { icon.textContent = '✓'; icon.classList.remove('spinning'); }
+        const dur = event.duration ? (event.duration / 1000).toFixed(1) + 's' : '';
+        const durEl = card.querySelector('.agent-card-duration');
+        if (durEl) durEl.textContent = dur;
+        if (window.AgentFeed) window.AgentFeed.complete(cardState.agentId, dur);
+      } else if (event.type === 'agent_failed') {
+        card.classList.add('agent-failed');
+        if (icon) { icon.textContent = '✗'; icon.classList.remove('spinning'); }
+        if (window.AgentFeed) window.AgentFeed.fail(cardState.agentId, event.error);
+      }
+      scrollToBottom();
+      return;
+    }
+
+    // No matching card — fall back to legacy status bar (shouldn't normally happen)
     let container = document.getElementById('agent-status-bar');
     if (!container) {
       container = document.createElement('div');
@@ -313,24 +391,134 @@ const Chat = (() => {
                     messagesEl().lastElementChild;
       if (msgEl) msgEl.appendChild(container);
     }
-
-    if (event.type === 'agent_started') {
-      container.innerHTML = `<span class="agent-status-icon">◉</span> Agent started: ${Markdown.escapeHtml(event.task?.slice(0, 80) || '')}`;
-    } else if (event.type === 'agent_tool') {
-      container.innerHTML = `<span class="agent-status-icon spinning">◉</span> Agent using <strong>${Markdown.escapeHtml(event.tool || '')}</strong>...`;
-    } else if (event.type === 'agent_progress') {
-      container.innerHTML = `<span class="agent-status-icon spinning">◉</span> Task ${event.current}/${event.total}: ${Markdown.escapeHtml(event.task?.slice(0, 80) || '')}`;
-    } else if (event.type === 'agent_task_done') {
-      container.innerHTML = `<span class="agent-status-icon done">◉</span> Task ${event.current}/${event.total} complete`;
-    } else if (event.type === 'agent_completed') {
+    if (event.type === 'agent_completed') {
       const secs = event.duration ? (event.duration / 1000).toFixed(1) + 's' : '';
       container.innerHTML = `<span class="agent-status-icon done">◉</span> Agent finished ${secs}`;
       setTimeout(() => container.remove(), 5000);
     } else if (event.type === 'agent_failed') {
       container.innerHTML = `<span class="agent-status-icon error">◉</span> Agent failed: ${Markdown.escapeHtml(event.error || '')}`;
       setTimeout(() => container.remove(), 8000);
+    } else if (event.type === 'agent_tool') {
+      container.innerHTML = `<span class="agent-status-icon spinning">◉</span> Agent using <strong>${Markdown.escapeHtml(event.tool || '')}</strong>...`;
     }
     scrollToBottom();
+  }
+
+  /**
+   * Create a compact agent card for spawn_agent / spawn_multi tool calls.
+   */
+  function addAgentCard(toolCall) {
+    const toolId = toolCall.id;
+    const args = toolCall.args || toolCall.function?.arguments || {};
+    const task = args.task || args.tasks
+      ? (typeof args.tasks === 'string' ? args.tasks : JSON.stringify(args.tasks || args.task)).slice(0, 120)
+      : 'Agent task';
+    const isMulti = (toolCall.name || '').includes('multi');
+
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    if (toolId) card.setAttribute('data-tool-id', toolId);
+
+    const toolLog = document.createElement('ul');
+    toolLog.className = 'agent-card-tool-log';
+
+    card.innerHTML = `
+      <div class="agent-card-header">
+        <span class="agent-card-icon spinning">◉</span>
+        <span class="agent-card-task">${Markdown.escapeHtml(task)}</span>
+        <span class="agent-card-meta">
+          <span class="agent-card-tools-count">0 tools</span>
+          <span class="agent-card-duration"></span>
+        </span>
+        <svg class="agent-card-chevron" width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M6.5 3l5 5-5 5V3z"/></svg>
+      </div>
+      <div class="agent-card-details">
+        <div class="agent-card-result-container"></div>
+      </div>
+    `;
+
+    // Insert tool log into details
+    card.querySelector('.agent-card-details').prepend(toolLog);
+
+    // Toggle expand/collapse
+    card.querySelector('.agent-card-header').addEventListener('click', () => {
+      card.classList.toggle('expanded');
+    });
+
+    const msgEl = document.getElementById('streaming-message') ||
+                  messagesEl().lastElementChild;
+    if (msgEl) {
+      msgEl.appendChild(card);
+      scrollToBottom();
+    }
+
+    // Register a placeholder agentId — will be updated by agent_started event
+    const agentId = `pending_${toolId}`;
+    activeAgentCards.set(toolId, {
+      cardEl: card,
+      toolLog,
+      toolCount: 0,
+      agentId,
+      isMulti,
+    });
+
+    // Register in agent feed
+    if (window.AgentFeed) window.AgentFeed.add(agentId, task);
+  }
+
+  /**
+   * Finalize a compact agent card when the tool_result arrives.
+   */
+  function finalizeAgentCard(toolId, output, status) {
+    const state = activeAgentCards.get(toolId);
+    if (!state) return;
+
+    const card = state.cardEl;
+    const icon = card.querySelector('.agent-card-icon');
+
+    if (status === 'done' || status === 'skipped') {
+      card.classList.add(status === 'skipped' ? 'agent-failed' : 'agent-done');
+      if (icon) { icon.textContent = status === 'skipped' ? '⊘' : '✓'; icon.classList.remove('spinning'); }
+    }
+
+    // Add result to the details section (collapsed by default)
+    if (output) {
+      const container = card.querySelector('.agent-card-result-container');
+      if (container) {
+        const resultEl = document.createElement('div');
+        resultEl.className = 'agent-card-result';
+        const preview = output.length > 1500 ? output.slice(0, 1500) + '\n...' : output;
+        resultEl.innerHTML = `<pre><code>${Markdown.escapeHtml(preview)}</code></pre>`;
+        container.appendChild(resultEl);
+      }
+      // Session link (if agent has a dedicated session) or feed link
+      const details = card.querySelector('.agent-card-details');
+      if (details) {
+        if (state.sessionId) {
+          const sessionLink = document.createElement('button');
+          sessionLink.className = 'agent-card-feed-link';
+          sessionLink.innerHTML = '↗ Open Agent Session';
+          sessionLink.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (window.AgentFeed) window.AgentFeed.openSession(state.sessionId);
+          });
+          details.appendChild(sessionLink);
+        }
+        const feedLink = document.createElement('button');
+        feedLink.className = 'agent-card-feed-link';
+        feedLink.innerHTML = '↗ View in Agent Feed';
+        feedLink.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (window.AgentFeed) window.AgentFeed.open(state.agentId);
+        });
+        details.appendChild(feedLink);
+      }
+
+      // Update feed with result
+      if (window.AgentFeed) window.AgentFeed.setResult(state.agentId, output);
+    }
+
+    activeAgentCards.delete(toolId);
   }
 
   function createToolCard(tc) {

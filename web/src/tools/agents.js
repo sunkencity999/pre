@@ -5,6 +5,7 @@ const { streamChat } = require('../ollama');
 const { buildSystemPrompt } = require('../context');
 const { buildToolDefs } = require('../tools-defs');
 const { MODEL_CTX } = require('../constants');
+const { createSession, appendMessage: appendSessionMessage, renameSession } = require('../sessions');
 
 // Active agents: { id: { status, task, result, startedAt, ... } }
 const agents = {};
@@ -30,9 +31,18 @@ async function spawnAgent(args, cwd, onStatus, overrides) {
   if (!task) return 'Error: task description is required';
 
   const id = `agent_${++agentCounter}`;
+
+  // Create a dedicated session for this agent
+  const ts = Date.now().toString(36);
+  const sessionId = createSession('web', `agent-${id}-${ts}`, true);
+  const shortTask = task.length > 60 ? task.slice(0, 57) + '...' : task;
+  renameSession(sessionId, `Agent: ${shortTask}`);
+  appendSessionMessage(sessionId, { role: 'user', content: task });
+
   const agent = {
     id,
     task,
+    sessionId,
     status: 'running',
     startedAt: Date.now(),
     messages: [],
@@ -40,20 +50,23 @@ async function spawnAgent(args, cwd, onStatus, overrides) {
   };
   agents[id] = agent;
 
-  if (onStatus) onStatus({ type: 'agent_started', id, task });
+  if (onStatus) onStatus({ type: 'agent_started', id, task, sessionId });
 
   try {
     const result = await runAgent(agent, cwd, onStatus, overrides);
     agent.status = 'completed';
     agent.result = result;
     agent.completedAt = Date.now();
-    if (onStatus) onStatus({ type: 'agent_completed', id, duration: agent.completedAt - agent.startedAt });
+    // Save final result to agent session
+    appendSessionMessage(sessionId, { role: 'assistant', content: result });
+    if (onStatus) onStatus({ type: 'agent_completed', id, sessionId, duration: agent.completedAt - agent.startedAt });
     return result;
   } catch (err) {
     agent.status = 'failed';
     agent.result = `Error: ${err.message}`;
     agent.completedAt = Date.now();
-    if (onStatus) onStatus({ type: 'agent_failed', id, error: err.message });
+    appendSessionMessage(sessionId, { role: 'assistant', content: agent.result });
+    if (onStatus) onStatus({ type: 'agent_failed', id, sessionId, error: err.message });
     return agent.result;
   }
 }
@@ -139,6 +152,8 @@ RULES:
     const assistantMsg = { role: 'assistant', content: fullResponse };
     if (chatResult && chatResult.toolCalls) assistantMsg.tool_calls = chatResult.toolCalls;
     messages.push(assistantMsg);
+    // Save assistant turn to agent session
+    if (agent.sessionId) appendSessionMessage(agent.sessionId, assistantMsg);
 
     for (const tc of toolCalls) {
       if (onStatus) onStatus({ type: 'agent_tool', id: agent.id, tool: tc.name });
@@ -152,10 +167,13 @@ RULES:
         output = `Error: ${err.message}`;
       }
 
-      messages.push({
+      const toolMsg = {
         role: 'tool',
         content: typeof output === 'string' ? output : JSON.stringify(output),
-      });
+      };
+      messages.push(toolMsg);
+      // Save tool result to agent session
+      if (agent.sessionId) appendSessionMessage(agent.sessionId, toolMsg);
     }
   }
 
