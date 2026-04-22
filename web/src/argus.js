@@ -113,8 +113,12 @@ function shouldReact(event) {
   const cfg = getConfig();
   if (!cfg.enabled) return false;
   if (generating) return false;
-  if (Date.now() - lastReactionAt < cfg.cooldownMs) return false;
   if (!TRIGGER_TYPES.has(event.type)) return false;
+
+  // 'done' events get a reduced cooldown — they're the best trigger for
+  // content-level insight since the full response is available.
+  const cooldown = event.type === 'done' ? Math.min(cfg.cooldownMs, 10000) : cfg.cooldownMs;
+  if (Date.now() - lastReactionAt < cooldown) return false;
 
   // Always react to errors
   if (event.type === 'error') return true;
@@ -166,7 +170,7 @@ function buildReactionContext(trigger) {
   }
 
   if (recentResponseText && recentResponseText.length > 30) {
-    ctx += `Assistant: "${recentResponseText.slice(0, 500).trim()}"\n`;
+    ctx += `Assistant: "${recentResponseText.slice(0, 1000).trim()}"\n`;
   }
 
   // The triggering event
@@ -189,7 +193,7 @@ function buildReactionContext(trigger) {
  * Check whether a reaction is genuinely useful vs. narration/meta-text.
  */
 function isQualityReaction(text) {
-  if (!text || text.length < 10 || text.length > 300) return false;
+  if (!text || text.length < 10 || text.length > 400) return false;
 
   const lower = text.toLowerCase();
 
@@ -225,15 +229,19 @@ async function generateReaction(trigger) {
   console.log(`[argus] Generating reaction for ${trigger.type}${trigger.tool ? ':' + trigger.tool : ''}`);
 
   try {
+    // Choose prompt based on trigger type — 'done' events get the substantive
+    // commentary prompt since the full response is available for analysis.
+    const isContentTrigger = trigger.type === 'done' || trigger.type === 'artifact' || trigger.type === 'document';
+    const systemPrompt = isContentTrigger
+      ? 'You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. Speak to the substance, not the mechanics. No labels, no preamble.'
+      : 'You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. No labels, no preamble.';
+
     const result = await streamChat({
       messages: [
-        {
-          role: 'system',
-          content: 'You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. No labels, no preamble.',
-        },
+        { role: 'system', content: systemPrompt },
         { role: 'user', content: buildReactionContext(trigger) },
       ],
-      maxTokens: 80,
+      maxTokens: isContentTrigger ? 120 : 80,
       think: false,
       extraOptions: { temperature: 0.6 },
     });
@@ -290,9 +298,9 @@ function observeEvent(event) {
     return;
   }
 
-  // Accumulate response text (cap at 500 chars for context)
+  // Accumulate response text (cap at 1500 chars for substantive context)
   if (event.type === 'token' && event.content) {
-    if (recentResponseText.length < 500) {
+    if (recentResponseText.length < 1500) {
       recentResponseText += event.content;
     }
     return;
@@ -301,10 +309,8 @@ function observeEvent(event) {
   // Skip thinking events
   if (event.type === 'thinking') return;
 
-  // Reset response accumulator on done
-  if (event.type === 'done') {
-    recentResponseText = '';
-  }
+  // Don't reset response text on 'done' — the done-triggered reaction needs it.
+  // It resets on the next user_message instead (line 289-291).
 
   const summary = summarizeEvent(event);
   eventWindow.push(summary);
