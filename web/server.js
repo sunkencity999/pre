@@ -58,16 +58,74 @@ app.use(express.static(path.join(__dirname, 'public'), {
 }));
 app.use(express.json({ limit: '10mb' }));
 
-// Serve artifacts (for iframe viewing and document downloads)
-app.use('/artifacts', express.static(ARTIFACTS_DIR, {
-  setHeaders: (res, filePath) => {
-    // Force download for document types
-    const ext = path.extname(filePath).toLowerCase();
-    if (['.docx', '.xlsx', '.pdf', '.txt', '.xml'].includes(ext)) {
-      res.set('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+// Serve artifacts — inject base stylesheet into HTML files for consistent readability
+app.use('/artifacts', (req, res, next) => {
+  const filePath = path.join(ARTIFACTS_DIR, decodeURIComponent(req.path));
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Force download for document types
+  if (['.docx', '.xlsx', '.pdf', '.txt', '.xml'].includes(ext)) {
+    res.set('Content-Disposition', `attachment; filename="${path.basename(filePath)}"`);
+    return res.sendFile(filePath);
+  }
+
+  // Inject light-theme base stylesheet into HTML artifacts
+  if (ext === '.html' || ext === '.htm') {
+    try {
+      let html = fs.readFileSync(filePath, 'utf-8');
+      const baseCSS = `<style id="pre-artifact-base">
+  /* PRE artifact base — enforce readable light theme */
+  :root {
+    color-scheme: light only !important;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #fafafa !important;
+      --fg: #1a1a2e !important;
+      --text: #1a1a2e !important;
+      --muted: #555 !important;
+      --border: #e2e8f0 !important;
+      --surface: #ffffff !important;
+      --callout-bg: #f8fafc !important;
+      --table-stripe: #f8fafc !important;
+      --table-header: #334155 !important;
+      --code-bg: #f4f4f8 !important;
+      --shadow: rgba(0,0,0,0.06) !important;
     }
-  },
-}));
+    body {
+      background: #fafafa !important;
+      color: #1a1a2e !important;
+    }
+    table, th, td { color: inherit !important; }
+    thead, thead th { background: #334155 !important; color: #fff !important; }
+    tbody tr:nth-child(even) { background: #f8fafc !important; }
+    tbody tr:hover { background: #eef2ff !important; }
+    .callout, blockquote, .toc, nav { background: #f8fafc !important; color: inherit !important; }
+    pre, code { background: #f4f4f8 !important; color: #1a1a2e !important; }
+    a { color: #2563eb !important; }
+    h1, h2, h3, h4, h5, h6 { color: #111827 !important; }
+    .footnotes, .meta, .subtitle { color: #555 !important; }
+  }
+</style>`;
+      // Inject right after <head> or at the start of the document
+      if (html.includes('</head>')) {
+        html = html.replace('</head>', baseCSS + '\n</head>');
+      } else if (html.includes('<html')) {
+        html = html.replace(/<html[^>]*>/, '$&\n<head>' + baseCSS + '</head>');
+      } else {
+        html = baseCSS + '\n' + html;
+      }
+      res.type('html').send(html);
+    } catch (err) {
+      if (err.code === 'ENOENT') return res.status(404).send('Not found');
+      return next(err);
+    }
+    return;
+  }
+
+  // All other files — static serving
+  next();
+}, express.static(ARTIFACTS_DIR));
 
 // ── REST API ──
 

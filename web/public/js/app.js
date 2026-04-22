@@ -2318,12 +2318,46 @@
   // In-memory agent activity store (accumulates from WS events)
   const agentFeedEntries = [];
 
-  function openAgentFeedPanel() {
+  let agentFeedHistoryLoaded = false;
+
+  async function openAgentFeedPanel() {
     const panel = document.getElementById('right-panel');
     const title = document.getElementById('panel-title');
     const content = document.getElementById('panel-content');
     title.textContent = 'Agent Feed';
     panel.classList.remove('hidden');
+
+    // On first open, seed the feed with historical cron/agent sessions
+    if (!agentFeedHistoryLoaded) {
+      agentFeedHistoryLoaded = true;
+      content.innerHTML = '<div class="agent-feed-empty">Loading agent history...</div>';
+      try {
+        const res = await fetch('/api/sessions');
+        const sessions = await res.json();
+        // Find sessions in the scheduled-jobs project that aren't already in the feed
+        const existingIds = new Set(agentFeedEntries.map(e => e.id));
+        const cronSessions = sessions
+          .filter(s => s.projectSlug === 'scheduled-jobs' && !existingIds.has(s.id))
+          .slice(0, 50); // cap to avoid flooding
+
+        for (const s of cronSessions) {
+          agentFeedEntries.push({
+            id: s.id,
+            task: s.displayName || s.preview || s.channel || 'Scheduled job',
+            sessionId: s.id,
+            status: 'completed',
+            tools: [],
+            result: s.preview || null,
+            error: null,
+            duration: null,
+            startedAt: new Date(s.modified).getTime(),
+          });
+        }
+      } catch (err) {
+        console.warn('[agent-feed] Failed to load history:', err);
+      }
+    }
+
     renderAgentFeedPanel(content);
   }
 
@@ -2336,13 +2370,21 @@
     let html = '<div class="settings-section">';
     html += '<div class="settings-section-title" style="margin-bottom:12px">Agent Activity</div>';
 
-    // Render newest first
-    for (let i = agentFeedEntries.length - 1; i >= 0; i--) {
-      const entry = agentFeedEntries[i];
+    // Render newest first (sort by startedAt descending)
+    const sorted = [...agentFeedEntries].sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    for (const entry of sorted) {
       const statusClass = entry.status === 'running' ? 'running' : entry.status === 'failed' ? 'failed' : 'completed';
       const dur = entry.duration || '';
       const toolCount = entry.tools.length;
-      const time = entry.startedAt ? new Date(entry.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      let time = '';
+      if (entry.startedAt) {
+        const d = new Date(entry.startedAt);
+        const today = new Date();
+        const isToday = d.toDateString() === today.toDateString();
+        time = isToday
+          ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      }
       const sessionBtn = entry.sessionId
         ? `<button class="btn btn-ghost btn-sm agent-feed-session-btn" onclick="window.AgentFeed.openSession('${escapeHtml(entry.sessionId)}')">Open Session</button>`
         : '';

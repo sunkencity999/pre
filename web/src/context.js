@@ -180,7 +180,8 @@ function buildSystemPrompt(cwd) {
     + `- CHARTS must use REAL DATA from research, not placeholder numbers.\n`
     + `- Each section needs 2-3 substantive paragraphs minimum with specific facts.\n`
     + `- End with pdf_export if the user requested PDF output.\n`
-    + `- Validate your HTML: matching quotes, no duplicate CSS keywords.\n`;
+    + `- Validate your HTML: matching quotes, no duplicate CSS keywords.\n`
+    + `- STYLING: Use a clean, modern light theme. White/soft grey backgrounds (#fafafa, #ffffff), dark text (#1a1a2e), readable serif headings (Georgia), generous line-height (1.65+). NEVER use dark backgrounds or prefers-color-scheme:dark media queries. Tables: light header (#334155 or similar slate, white text), subtle striped rows (#f8fafc). Emphasize whitespace, typography, and readability.\n`;
 
   // Image embedding in artifacts
   prompt += `\nIMAGES IN ARTIFACTS:\n`
