@@ -299,6 +299,27 @@ function parseTextToolCalls(text) {
     }
   }
 
+  // Fallback: Claude-style <artifact> tags (model trained on Claude outputs)
+  // Convert <artifact title="..." type="html">...content...</artifact> into artifact tool calls
+  if (calls.length === 0 && text.includes('<artifact')) {
+    const artifactMatch = text.match(/<artifact\s+([^>]*)>([\s\S]*?)<\/artifact>/);
+    if (artifactMatch) {
+      const attrs = artifactMatch[1];
+      const content = artifactMatch[2].trim();
+      const titleMatch = attrs.match(/title\s*=\s*"([^"]*)"/);
+      const typeMatch = attrs.match(/type\s*=\s*"([^"]*)"/);
+      const title = titleMatch ? titleMatch[1] : 'Untitled';
+      const type = typeMatch ? typeMatch[1] : 'html';
+      console.log(`[tool-parse] Converted <artifact> tag → artifact tool call: "${title}"`);
+      calls.push({
+        function: {
+          name: 'artifact',
+          arguments: { title, content, type },
+        },
+      });
+    }
+  }
+
   return calls.length > 0 ? calls : null;
 }
 
@@ -314,6 +335,12 @@ function stripToolCallText(text) {
   const unclosedIdx = cleaned.indexOf('<tool_call>');
   if (unclosedIdx !== -1) {
     cleaned = cleaned.slice(0, unclosedIdx).trim();
+  }
+  // Remove Claude-style <artifact>...</artifact> blocks
+  cleaned = cleaned.replace(/<artifact\s[^>]*>[\s\S]*?<\/artifact>/g, '').trim();
+  const unclosedArt = cleaned.indexOf('<artifact');
+  if (unclosedArt !== -1) {
+    cleaned = cleaned.slice(0, unclosedArt).trim();
   }
   return cleaned;
 }

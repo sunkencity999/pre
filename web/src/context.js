@@ -108,6 +108,7 @@ function buildSystemPrompt(cwd) {
     + `   <tool_call>\n`
     + `   {"name": "artifact", "arguments": {"title": "...", "content": "...HTML...", "type": "html"}}\n`
     + `   </tool_call>\n`
+    + `   NEVER output raw HTML, <artifact> tags, or code blocks in chat. ALWAYS wrap artifact content in <tool_call> tags.\n`
     + `   All other tools (including file_write) are native function calls.\n`
     + `   NEVER use bash with printf/cat/echo to write files. Use the file_write tool.\n`
     + `3. One tool call per turn. STOP after each call and wait for the result.\n`
