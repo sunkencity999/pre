@@ -12,8 +12,8 @@ const { CONNECTIONS_FILE } = require('./constants');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
 
-// Max execution time per cron job (5 minutes)
-const CRON_TIMEOUT_MS = 5 * 60 * 1000;
+// Max execution time per cron job (10 minutes — generous for cold model starts)
+const CRON_TIMEOUT_MS = 10 * 60 * 1000;
 
 function loadConnections() {
   try {
@@ -84,8 +84,15 @@ async function executeCronJob(job, { broadcastWS } = {}) {
       },
     });
   } catch (err) {
-    finalResponse = collectedTokens.join('') || `Error: ${err.message}`;
-    console.error(`[cron-runner] Job ${job.id} error: ${err.message}`);
+    const partial = collectedTokens.join('');
+    if (abortController.signal.aborted && partial) {
+      // Timeout with partial response — use what we have
+      finalResponse = partial + '\n\n*(Morning briefing timed out — partial results shown)*';
+      console.log(`[cron-runner] Job ${job.id} timed out after ${CRON_TIMEOUT_MS / 1000}s with partial response (${partial.length} chars)`);
+    } else {
+      finalResponse = partial || `Error: ${err.message}`;
+      console.error(`[cron-runner] Job ${job.id} error: ${err.message}`);
+    }
   } finally {
     clearTimeout(timeout);
   }

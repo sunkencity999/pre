@@ -794,8 +794,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     // Start next iteration (model sees tool results and may call more tools)
   }
 
-  // Hit max tool turns
-  send({ type: 'error', message: `Tool loop reached maximum of ${turnLimit} turns` });
+  // Loop ended without a natural `done` — either max turns or signal abort
+  if (signal?.aborted) {
+    send({ type: 'done', stats: {}, context: { used: tokensIn + tokensOut, max: MODEL_CTX, pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX) }, aborted: true });
+  } else {
+    send({ type: 'error', message: `Tool loop reached maximum of ${turnLimit} turns` });
+  }
 }
 
 module.exports = { executeTool, runToolLoop, ALIASES, CONFIRM_TOOLS };
