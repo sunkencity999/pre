@@ -155,6 +155,10 @@ PRE is a local AI operating system with 63+ tools across six capability layers.
 
 **Spawn sub-agents** — Delegate research tasks to autonomous sub-agents that run in parallel, each with restricted tool access and up to 10 tool calls.
 
+**Monitor background processes** — Start long-running commands (builds, servers, log tails), check their output periodically, and stop them when done — without blocking the conversation.
+
+**Live dashboards** — Create HTML artifacts that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints.
+
 ### Enterprise Integrations
 
 **15 services in one interface** — Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Gmail, Google Drive, Google Docs, GitHub, Telegram, Brave Search, and Wolfram Alpha. Search Jira, cross-reference Confluence, pull a file from SharePoint, and post a summary to Slack — in one conversation.
@@ -435,10 +439,11 @@ The browser tool returns screenshots as base64 images after each action, enablin
 | Tool | Args | Description |
 |------|------|-------------|
 | `spawn_agent` | `task` | Spawn an autonomous research agent with restricted tool access |
-| `spawn_multi` | `tasks` (JSON array) | Run up to 5 research agents sequentially with progress streaming |
+| `spawn_multi` | `tasks` (JSON array) | Run up to 5 research agents in parallel with progress streaming |
 | `list_agents` | *(none)* | List all spawned agents and their status |
+| `monitor` | `action`, `command`?, `name`?, `id`?, `tail`? | Background process monitor: start, read, stop, or list long-running commands |
 
-Sub-agents run independently with access to read-only tools (bash, files, web, memory, system info) plus any connected MCP tools. Each agent gets up to 10 tool turns and returns a concise summary.
+Sub-agents run independently with access to read-only tools (bash, files, web, memory, system info) plus any connected MCP tools. Each agent gets up to 10 tool turns and returns a concise summary. `spawn_multi` launches all agents concurrently via `Promise.all` — tool I/O runs in parallel even though Ollama serializes model inference.
 
 #### Scheduling
 
@@ -1366,6 +1371,7 @@ pre/
 │   │       ├── asana.js     # Asana API
 │   │       ├── sharepoint.js # Microsoft 365 / SharePoint
 │   │       ├── agents.js    # Sub-agent spawning + parallel execution
+│   │       ├── monitor.js   # Background process monitor (start, read, stop, list)
 │   │       ├── delegate.js  # Frontier AI delegation (Claude/Codex/Gemini)
 │   │       ├── rag.js       # Local RAG (directory indexing + semantic search)
 │   │       ├── voice.js     # Voice interface (Whisper STT + macOS say TTS)

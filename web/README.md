@@ -18,6 +18,9 @@ PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated
 | **Enterprise integrations** | 15 services (Jira, Confluence, SharePoint, Slack, Linear, Zoom, Figma, Asana, Gmail, Drive, GitHub, Smartsheet, Telegram, Brave, Wolfram) in one interface. |
 | **Autonomous scheduling** | Cron jobs run server-side — daily briefings, monitoring, reports — even when you're not at the computer. |
 | **Persistent memory** | Auto-extracted from conversations, age-tracked, semantically searchable. PRE gets smarter over weeks and months. |
+| **Live artifacts** | HTML dashboards that auto-refresh with real-time data from your Mac — calendar, email, system stats, reminders — no manual updates. |
+| **Parallel sub-agents** | Spawn multiple research agents that run concurrently, each with their own session and tools. Results collected and synthesized automatically. |
+| **Background process monitor** | Start long-running commands (builds, servers, watchers), check their output periodically, and stop them when done — without blocking the conversation. |
 | **Zero marginal cost** | No API pricing, no rate limits, no seat fees. Every prompt, every scheduled job, every sub-agent loop — free. |
 | **MCP server** | Frontier models (Claude, Codex, Gemini) can delegate execution-heavy tasks to PRE, saving thousands in API tokens. |
 | **Full GUI management** | Sidebar panels for triggers, RAG indexes, workflows, memory, cron jobs, and settings — everything is visual, not just CLI. |
@@ -53,6 +56,9 @@ The `pre-launch` command also starts the web GUI automatically in the background
 - **Event-driven triggers** — file watchers and webhooks that fire prompts automatically when things change
 - **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say`; all audio stays on your machine
 - **Workflow capture and replay** — record Computer Use action sequences and replay them at configurable speed
+- **Live artifacts** — HTML dashboards that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints
+- **Parallel sub-agents** — spawn multiple research agents that run concurrently via `Promise.all`; tool execution (web fetches, file reads) runs in parallel
+- **Background process monitor** — start, read output from, and stop long-running commands without blocking the conversation
 - **Argus companion** — a real-time session observer that watches PRE work and adds brief, contextual reactions (tips, warnings, insights) via a floating widget
 - **Auto-sized context window** — the installer detects your Mac's RAM and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
@@ -592,6 +598,84 @@ The CLI (`/argus` command) toggles Argus on/off. When enabled, reactions appear 
 | `/api/argus` | `GET` | Get current Argus config |
 | `/api/argus` | `POST` | Update Argus config |
 | `/api/argus/status` | `GET` | Get Argus status (enabled, generating, window size) |
+
+---
+
+## Live Artifacts (Auto-Refreshing Dashboards)
+
+PRE can create HTML artifacts that fetch **real-time data** from your Mac and auto-refresh on an interval. Unlike static reports, live artifacts stay current — showing your latest calendar events, emails, system stats, and reminders without regenerating the entire document.
+
+### How It Works
+
+PRE exposes six live data endpoints on the same server (localhost:7749). HTML artifacts use `fetch()` to pull current data and re-render on a timer:
+
+| Endpoint | Returns |
+|----------|---------|
+| `/api/live/calendar` | Today's calendar events (all accounts) |
+| `/api/live/calendar/week` | This week's events |
+| `/api/live/mail?count=N` | Recent emails (default 10) |
+| `/api/live/reminders` | Pending reminders across all lists |
+| `/api/live/system` | CPU, memory, disk usage, uptime |
+| `/api/live/sessions` | Recent PRE sessions with names and turn counts |
+
+Each endpoint returns `{ data: string, timestamp: ISO8601 }`. Artifacts served from the same origin have no CORS issues.
+
+### Example Uses
+
+> Create a live dashboard showing my calendar for today, my 5 most recent emails, and system stats. Auto-refresh every 60 seconds.
+
+> Build a live status board with my pending reminders and this week's calendar. Include a refresh button and "last updated" timestamp.
+
+> Create a live artifact that shows my recent PRE sessions and system resource usage, updating every 2 minutes.
+
+### How It Differs from Static Artifacts
+
+| | Static Artifact | Live Artifact |
+|---|---|---|
+| **Data** | Snapshot at creation time | Fetches current data on every refresh |
+| **Refresh** | Must regenerate the entire artifact | Auto-refreshes via JavaScript `fetch()` |
+| **Use case** | Reports, documents, visualizations | Dashboards, status boards, monitoring |
+
+---
+
+## Background Process Monitor
+
+PRE can start long-running commands (builds, servers, log tails, watchers) in the background, capture their output, and let you check on them periodically — without blocking the conversation.
+
+### Available Actions
+
+| Action | Parameters | Description |
+|--------|------------|-------------|
+| `start` | `command`, `name` (optional) | Launch a background process and begin capturing output |
+| `read` | `id`, `tail` (optional, default 30) | Read recent output lines from a monitor |
+| `stop` | `id` | Send SIGTERM to stop a running process |
+| `list` | — | List all monitors with status, duration, and line counts |
+
+### How It Works
+
+1. The `monitor` tool spawns a child process via `sh -c` and captures both stdout and stderr
+2. Output is stored in a rolling buffer (up to 500 lines per monitor)
+3. Each monitor tracks its PID, start time, exit code, and running state
+4. A subscriber pattern allows Argus to observe monitor output in real time
+
+### Example Uses
+
+> Start monitoring `tail -f /var/log/system.log` and call it "system-log".
+
+> Start a background build: `cd ~/projects/api && npm run build` — I'll check on it in a minute.
+
+> Read the latest output from monitor mon_1.
+
+> List all my active monitors.
+
+> Stop the system-log monitor, I've seen enough.
+
+### Use Cases
+
+- **Build monitoring** — start a long build, continue chatting, check output when ready
+- **Log tailing** — watch logs for specific patterns without dedicating the conversation to it
+- **Server testing** — start a dev server in the background, test endpoints, then stop it
+- **Process supervision** — keep an eye on batch jobs or data pipelines while doing other work
 
 ---
 
@@ -1186,9 +1270,11 @@ This tutorial walks you through every major feature of PRE using real example pr
 9. [Sub-Agents — Parallel Research](#9-sub-agents--parallel-research)
 10. [Cloud Integrations](#10-cloud-integrations)
 11. [Artifacts — Interactive Documents](#11-artifacts--interactive-documents)
-12. [Voice Interface](#12-voice-interface)
-13. [Deep Research Mode](#13-deep-research-mode)
-14. [Power User Workflows](#14-power-user-workflows)
+12. [Live Dashboards — Real-Time Artifacts](#12-live-dashboards--real-time-artifacts)
+13. [Background Process Monitor](#13-background-process-monitor)
+14. [Voice Interface](#14-voice-interface)
+15. [Deep Research Mode](#15-deep-research-mode)
+16. [Power User Workflows](#16-power-user-workflows)
 
 ---
 
@@ -1519,20 +1605,21 @@ PRE can run tasks on a schedule (cron) or react to file changes and webhooks (tr
 
 ### 9. Sub-Agents — Parallel Research
 
-When a task requires deep research, PRE can spawn sub-agents that work autonomously — reading files, searching the web, and gathering data without cluttering your main conversation.
+When a task requires deep research, PRE can spawn sub-agents that work autonomously — reading files, searching the web, and gathering data without cluttering your main conversation. Multiple agents run **in parallel** via `spawn_multi` — while Ollama serializes model inference, tool execution (web fetches, file reads, bash commands) runs concurrently, yielding real speedups for research-heavy workflows.
 
 ```
   ┌──────────────────────────────────────────────────┐
-  │                 AGENT ARCHITECTURE                │
+  │            PARALLEL AGENT ARCHITECTURE             │
   │                                                    │
   │  YOU ──> PRE (Main) ──┬──> Agent 1: "Research X" │
-  │                       │                           │
+  │                       │    (tools run in parallel) │
   │                       ├──> Agent 2: "Research Y" │
-  │                       │                           │
+  │                       │    (tools run in parallel) │
   │                       └──> Agent 3: "Research Z" │
+  │                            (tools run in parallel) │
   │                                                    │
-  │  Each agent gets its own session, tools, and      │
-  │  context. Results feed back to the main model.    │
+  │  All agents launched via Promise.all — tool I/O   │
+  │  runs concurrently. Results sorted by task order. │
   │                                                    │
   │  ┌─ Agent Feed (sidebar) ────────────────────┐   │
   │  │ ◉ Agent 1: Research X — 4 tools — 12.3s  │   │
@@ -1619,7 +1706,7 @@ PRE connects to 15 enterprise services. Configure them in **Settings** (gear ico
 
 ### 11. Artifacts — Interactive Documents
 
-PRE can create rich, interactive HTML documents — dashboards, visualizations, games, and reports — that open directly in your browser.
+PRE can create rich, interactive HTML documents — dashboards, visualizations, games, and reports — that open directly in your browser. For dashboards that need **live data**, see the next section on Live Dashboards.
 
 **Try these prompts:**
 
@@ -1645,7 +1732,129 @@ PRE can create rich, interactive HTML documents — dashboards, visualizations, 
 
 ---
 
-### 12. Voice Interface
+### 12. Live Dashboards — Real-Time Artifacts
+
+Static artifacts are great for reports, but sometimes you want a dashboard that stays current. Live artifacts use PRE's built-in data endpoints to fetch real-time information from your Mac and auto-refresh on an interval.
+
+```
+  ┌───────────────────────────────────────────────────────┐
+  │              LIVE ARTIFACT ARCHITECTURE                 │
+  │                                                         │
+  │  ┌─────────────┐     ┌──────────────┐                 │
+  │  │ HTML        │     │ PRE Server   │                 │
+  │  │ Artifact    │────>│ /api/live/*  │                 │
+  │  │ (in iframe) │     └──────┬───────┘                 │
+  │  └──────┬──────┘            │                          │
+  │         │             ┌─────▼──────┐                   │
+  │         │             │ macOS Apps │                   │
+  │   Auto-refresh        │ Calendar   │                   │
+  │   every 60s           │ Mail       │                   │
+  │                       │ Reminders  │                   │
+  │                       │ System     │                   │
+  │                       └────────────┘                   │
+  └───────────────────────────────────────────────────────┘
+```
+
+**Available live data endpoints:**
+
+| Endpoint | What It Returns |
+|----------|-----------------|
+| `/api/live/calendar` | Today's events from all calendar accounts |
+| `/api/live/calendar/week` | This week's events |
+| `/api/live/mail?count=N` | Recent emails (default 10) |
+| `/api/live/reminders` | All pending reminders |
+| `/api/live/system` | CPU, memory, disk, uptime |
+| `/api/live/sessions` | Recent PRE sessions |
+
+**Try these prompts:**
+
+> Create a live morning dashboard that shows my calendar for today, my 5 most recent emails, and pending reminders. Auto-refresh every 60 seconds. Include a manual refresh button and a "last updated" timestamp.
+
+> Build a live system health board showing CPU, memory, and disk usage. Update every 30 seconds. Use color-coded indicators: green for healthy, yellow for warning, red for critical.
+
+> Create a live work dashboard with this week's calendar events in a table, my recent PRE sessions, and system stats. Style it with a clean white background and serif headings. Refresh every 2 minutes.
+
+**Example: What PRE generates for a live dashboard request**
+
+When you ask for a live dashboard, PRE creates an HTML artifact with JavaScript that calls the live endpoints:
+
+```
+  ┌─────────────────────────────────────────────────────┐
+  │  📅  Today — Tuesday, April 22                        │
+  │ ┌─────────────────────────────────────────────────┐ │
+  │ │ 9:00  Team standup          (Zoom)              │ │
+  │ │ 11:30 Lunch with Sarah      (Main St Cafe)      │ │
+  │ │ 2:00  Sprint review         (Conference Room B)  │ │
+  │ └─────────────────────────────────────────────────┘ │
+  │                                                       │
+  │  ✉️  Recent Email                                      │
+  │ ┌─────────────────────────────────────────────────┐ │
+  │ │ From: boss@company.com — Q3 Planning Docs       │ │
+  │ │ From: hr@company.com — Benefits Enrollment      │ │
+  │ │ From: jira@atlassian.net — PROJ-1234 updated   │ │
+  │ └─────────────────────────────────────────────────┘ │
+  │                                                       │
+  │  ☑️  Reminders                                         │
+  │ ┌─────────────────────────────────────────────────┐ │
+  │ │ □ Submit expense report (due Friday)            │ │
+  │ │ □ Review PR #42                                  │ │
+  │ └─────────────────────────────────────────────────┘ │
+  │                                                       │
+  │  Last updated: 2:34 PM     [🔄 Refresh]              │
+  └─────────────────────────────────────────────────────┘
+```
+
+The artifact fetches live data from each endpoint, parses the response, and renders styled HTML. Because it's served from the same origin (localhost:7749), there are no CORS issues. The auto-refresh interval keeps it current — leave it open in a browser tab and it becomes a persistent status display.
+
+**Pro tip:** Combine live dashboards with cron jobs for a complete monitoring setup. Schedule a cron job to check for critical conditions, and use a live dashboard for at-a-glance status throughout the day.
+
+---
+
+### 13. Background Process Monitor
+
+Sometimes you need to run a long command — a build, a log tail, a dev server — but you don't want it to block the conversation. The Background Process Monitor lets you start processes, continue chatting, and check their output whenever you want.
+
+```
+  ┌──────────────────────────────────────────────────┐
+  │           BACKGROUND PROCESS MONITOR               │
+  │                                                    │
+  │  YOU: "Start monitoring npm run build"             │
+  │       ──> mon_1 started (PID 12345)               │
+  │                                                    │
+  │  YOU: "Meanwhile, search for auth middleware..."    │
+  │       ──> PRE works on your question               │
+  │                                                    │
+  │  YOU: "How's the build going?"                     │
+  │       ──> monitor read mon_1                       │
+  │       ┌──────────────────────────────────────┐    │
+  │       │ [stdout] Compiling 47 modules...     │    │
+  │       │ [stdout] Build complete in 23.4s     │    │
+  │       │ Monitor: exited (code 0)             │    │
+  │       └──────────────────────────────────────┘    │
+  └──────────────────────────────────────────────────┘
+```
+
+**Try these prompts:**
+
+> Start a monitor running `tail -f /var/log/system.log` and call it "system-log". I'll check it in a minute.
+
+> Start monitoring `cd ~/projects/api && npm run build` — name it "api-build".
+
+> Read the latest output from monitor mon_1.
+
+> How many lines has mon_1 captured? Show me the last 50 lines.
+
+> List all my active monitors.
+
+> Stop the system-log monitor.
+
+**Real-world workflow:**
+
+> Start a monitor for `cd ~/projects/web && npm run dev` — call it "dev-server". Then, in a separate conversation, help me debug the login page. I'll check the server logs if I hit any errors.
+
+---
+
+### 14. Voice Interface
 
 If Whisper is installed, PRE can listen to you speak and respond with voice. The microphone button appears in the chat input area.
 
@@ -1678,7 +1887,7 @@ If Whisper is installed, PRE can listen to you speak and respond with voice. The
 
 ---
 
-### 13. Deep Research Mode
+### 15. Deep Research Mode
 
 For complex questions that need multi-step investigation, toggle **Deep Research** mode (beaker icon next to the send button). PRE will perform multiple rounds of tool use, searching, reading, and synthesizing before delivering a comprehensive answer.
 
@@ -1700,7 +1909,7 @@ If you have Claude, Codex, or Gemini CLI installed, PRE can delegate complex rea
 
 ---
 
-### 14. Power User Workflows
+### 16. Power User Workflows
 
 These prompts combine multiple features into real-world workflows.
 
@@ -1802,6 +2011,8 @@ src/
     zoom.js                Zoom REST API (S2S OAuth)
     figma.js               Figma REST API
     asana.js               Asana REST API
+    agents.js              Sub-agent spawning (parallel via Promise.all)
+    monitor.js             Background process monitor (start, read, stop, list)
     rag.js                 Local RAG (directory indexing + semantic search)
     voice.js               Voice interface (Whisper STT + macOS say TTS)
     workflow.js            Workflow capture and replay (Computer Use sequences)
