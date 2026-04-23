@@ -24,6 +24,8 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       options: {
         num_predict: maxTokens,
         num_ctx: MODEL_CTX,
+        repeat_penalty: 1.1,
+        repeat_last_n: 256,
         ...(extraOptions || {}),
       },
       messages,
@@ -45,8 +47,38 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       let toolCalls = null;
       let stats = {};
       let buffer = '';
+      let aborted = false;
+
+      // Repetition loop detector — watches the last N characters for
+      // repeating patterns.  If a short phrase (8-60 chars) repeats
+      // 6+ times consecutively we abort the request early.
+      const REPEAT_WINDOW = 600; // chars to scan
+      const REPEAT_THRESHOLD = 6; // how many repeats trigger abort
+      let repeatCheckCounter = 0;
+
+      function detectRepetition(text) {
+        if (text.length < REPEAT_WINDOW) return false;
+        const tail = text.slice(-REPEAT_WINDOW);
+        // Try pattern lengths from 8 to 60 characters
+        for (let pLen = 8; pLen <= 60; pLen++) {
+          const pattern = tail.slice(-pLen);
+          let count = 0;
+          let pos = tail.length - pLen;
+          while (pos >= 0) {
+            if (tail.slice(pos, pos + pLen) === pattern) {
+              count++;
+              pos -= pLen;
+            } else {
+              break;
+            }
+          }
+          if (count >= REPEAT_THRESHOLD) return pattern;
+        }
+        return false;
+      }
 
       res.on('data', (chunk) => {
+        if (aborted) return;
         buffer += chunk.toString();
         // Process complete NDJSON lines
         let nlIdx;
@@ -71,6 +103,32 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
           if (msg.content) {
             response += msg.content;
             if (onToken) onToken({ type: 'token', content: msg.content });
+
+            // Check for repetition every ~50 tokens (don't scan every token)
+            repeatCheckCounter++;
+            if (repeatCheckCounter >= 50) {
+              repeatCheckCounter = 0;
+              const repeatedPattern = detectRepetition(response);
+              if (repeatedPattern) {
+                console.warn(`[ollama] Repetition loop detected: "${repeatedPattern.slice(0, 40)}..." — aborting generation`);
+                aborted = true;
+                req.destroy();
+                // Trim the repeated tail from the response
+                const cleanIdx = response.lastIndexOf(repeatedPattern);
+                if (cleanIdx > 100) {
+                  // Find where the repetition started by walking backwards
+                  let trimPos = cleanIdx;
+                  while (trimPos > 0 && response.slice(trimPos - repeatedPattern.length, trimPos) === repeatedPattern) {
+                    trimPos -= repeatedPattern.length;
+                  }
+                  response = response.slice(0, trimPos).trimEnd();
+                  response += '\n\n*(Generation stopped — repetitive output detected)*';
+                }
+                if (onToken) onToken({ type: 'token', content: '\n\n*(Generation stopped — repetitive output detected)*' });
+                resolve({ response, thinking, toolCalls, stats });
+                return;
+              }
+            }
           }
 
           // Native tool calls
@@ -100,13 +158,13 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       });
 
       res.on('end', () => {
-        resolve({ response, thinking, toolCalls, stats });
+        if (!aborted) resolve({ response, thinking, toolCalls, stats });
       });
 
-      res.on('error', reject);
+      res.on('error', (err) => { if (!aborted) reject(err); });
     });
 
-    req.on('error', reject);
+    req.on('error', (err) => { if (!aborted) reject(err); });
 
     // Handle abort
     if (signal) {
