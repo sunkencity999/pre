@@ -1,0 +1,893 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRE — Interactive Tutorial</title>
+<style>
+  :root {
+    color-scheme: light only;
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --surface-alt: #f8f9fb;
+    --border: #e2e5e9;
+    --text: #1a1a2e;
+    --text-sec: #555e6e;
+    --text-muted: #8891a0;
+    --primary: #2563eb;
+    --primary-light: #dbeafe;
+    --accent: #7c3aed;
+    --accent-light: #ede9fe;
+    --success: #16a34a;
+    --success-light: #dcfce7;
+    --warning: #d97706;
+    --warning-light: #fef3c7;
+    --gold: #eab308;
+    --gold-light: #fef9c3;
+    --danger: #dc2626;
+    --radius: 12px;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.65;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    color: #fff;
+    padding: 48px 24px 36px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle at 30% 70%, rgba(37,99,235,0.15) 0%, transparent 50%),
+                radial-gradient(circle at 70% 30%, rgba(124,58,237,0.1) 0%, transparent 50%);
+    animation: headerShimmer 15s ease-in-out infinite;
+  }
+  @keyframes headerShimmer {
+    0%, 100% { transform: translate(0, 0); }
+    50% { transform: translate(-3%, 2%); }
+  }
+  .header-content { position: relative; z-index: 1; max-width: 700px; margin: 0 auto; }
+  .header h1 {
+    font-family: Georgia, 'Calendas Plus', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  .header p { color: #cbd5e1; font-size: 0.95rem; }
+
+  /* ── Progress bar ── */
+  .progress-bar-wrap {
+    max-width: 700px;
+    margin: -20px auto 0;
+    padding: 0 24px;
+    position: relative;
+    z-index: 2;
+  }
+  .progress-bar-container {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    box-shadow: var(--shadow-md);
+  }
+  .progress-bar-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+    color: var(--text-sec);
+  }
+  .progress-bar-top .xp { font-weight: 600; color: var(--accent); }
+  .progress-track {
+    height: 8px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary), var(--accent));
+    border-radius: 4px;
+    transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+    width: 0%;
+  }
+  .progress-badges {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .badge {
+    font-size: 0.75rem;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: var(--surface-alt);
+    color: var(--text-muted);
+    transition: all 0.3s;
+  }
+  .badge.earned {
+    background: var(--gold-light);
+    border-color: var(--gold);
+    color: #92400e;
+  }
+
+  /* ── Main layout ── */
+  .main { max-width: 700px; margin: 0 auto; padding: 32px 24px 60px; }
+
+  /* ── Module cards ── */
+  .module {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.2s, border-color 0.2s;
+  }
+  .module:hover { box-shadow: var(--shadow-md); }
+  .module.completed { border-color: var(--success); }
+  .module.completed .module-header { background: var(--success-light); }
+
+  .module-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 20px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .module-header:hover { background: var(--surface-alt); }
+  .module.completed .module-header:hover { background: var(--success-light); }
+
+  .module-number {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: var(--primary-light);
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .module.completed .module-number {
+    background: var(--success);
+    color: #fff;
+  }
+  .module.completed .module-number::after { content: '\2713'; }
+  .module.completed .module-number span { display: none; }
+
+  .module-info { flex: 1; min-width: 0; }
+  .module-title {
+    font-family: Georgia, 'Calendas Plus', serif;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .module-desc {
+    font-size: 0.82rem;
+    color: var(--text-sec);
+    margin-top: 2px;
+  }
+  .module-xp {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 3px 10px;
+    background: var(--accent-light);
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+  .module.completed .module-xp { background: var(--success-light); color: var(--success); }
+
+  .module-chevron {
+    color: var(--text-muted);
+    transition: transform 0.2s;
+    flex-shrink: 0;
+  }
+  .module.open .module-chevron { transform: rotate(180deg); }
+
+  /* ── Module body (expandable) ── */
+  .module-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .module.open .module-body { max-height: 3000px; }
+  .module-body-inner { padding: 0 20px 20px; }
+
+  /* ── Lessons inside modules ── */
+  .lesson {
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+  }
+  .lesson-title {
+    font-weight: 600;
+    font-size: 0.88rem;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .lesson-title .icon { font-size: 1rem; }
+  .lesson p { font-size: 0.85rem; color: var(--text-sec); margin-bottom: 10px; }
+
+  /* ── Try-it prompt boxes ── */
+  .try-prompt {
+    background: #fff;
+    border: 1px dashed var(--primary);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 8px 0;
+    font-size: 0.83rem;
+    color: var(--text);
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .try-prompt:hover { background: var(--primary-light); border-color: var(--primary); }
+  .try-prompt .tag {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--primary);
+    padding: 2px 8px;
+    background: var(--primary-light);
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .try-prompt code {
+    font-family: 'SF Mono', Menlo, monospace;
+    font-size: 0.82rem;
+    word-break: break-word;
+  }
+
+  /* ── Challenge boxes ── */
+  .challenge {
+    background: var(--warning-light);
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 12px 0;
+  }
+  .challenge-title {
+    font-weight: 700;
+    font-size: 0.85rem;
+    color: #92400e;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .challenge p { font-size: 0.83rem; color: #78350f; }
+
+  /* ── Completion button ── */
+  .complete-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 18px;
+    border: none;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 8px;
+  }
+  .complete-btn.ready {
+    background: var(--primary);
+    color: #fff;
+  }
+  .complete-btn.ready:hover { background: var(--accent); transform: translateY(-1px); }
+  .complete-btn.done {
+    background: var(--success-light);
+    color: var(--success);
+    cursor: default;
+  }
+
+  /* ── Reset link ── */
+  .reset-wrap {
+    text-align: center;
+    padding: 24px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 16px;
+  }
+  .reset-link {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-decoration: underline;
+    cursor: pointer;
+    border: none;
+    background: none;
+  }
+  .reset-link:hover { color: var(--danger); }
+
+  /* ── Confetti canvas ── */
+  #confetti { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; }
+
+  /* ── Responsive ── */
+  @media (max-width: 600px) {
+    .header { padding: 32px 16px 24px; }
+    .header h1 { font-size: 1.5rem; }
+    .main { padding: 20px 16px 40px; }
+    .progress-bar-wrap { padding: 0 16px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="confetti"></canvas>
+
+<div class="header">
+  <div class="header-content">
+    <h1>PRE Academy</h1>
+    <p>Master your Personal Reasoning Engine — one module at a time</p>
+  </div>
+</div>
+
+<div class="progress-bar-wrap">
+  <div class="progress-bar-container">
+    <div class="progress-bar-top">
+      <span id="progress-label">0 / 12 modules completed</span>
+      <span class="xp" id="xp-label">0 XP</span>
+    </div>
+    <div class="progress-track">
+      <div class="progress-fill" id="progress-fill"></div>
+    </div>
+    <div class="progress-badges" id="badges"></div>
+  </div>
+</div>
+
+<div class="main" id="modules"></div>
+
+<script>
+const MODULES = [
+  {
+    id: 'first-chat',
+    title: 'Your First Conversation',
+    desc: 'Talk to PRE and discover what it can do',
+    xp: 10,
+    badge: 'Hello World',
+    lessons: [
+      {
+        icon: '\u{1F44B}',
+        title: 'Say Hello',
+        text: 'PRE is a conversational AI running entirely on your Mac. Type anything to start.',
+        prompts: ['What can you help me with?', 'Summarize what\'s in my Downloads folder.']
+      },
+      {
+        icon: '\u{1F50D}',
+        title: 'Ask About Your System',
+        text: 'PRE can inspect your system, search the web, and answer questions — all locally.',
+        prompts: ['What\'s running on my Mac right now? Show me the top 10 processes by CPU.', 'What day of the week was July 4, 1776?']
+      }
+    ],
+    challenge: 'Ask PRE something about your own Mac — disk space, running processes, or what\'s in a folder. Did it use a tool to answer?'
+  },
+  {
+    id: 'files',
+    title: 'Working with Files',
+    desc: 'Read, write, search, and edit files across your system',
+    xp: 15,
+    badge: 'File Wizard',
+    lessons: [
+      {
+        icon: '\u{1F4C4}',
+        title: 'Read & Search',
+        text: 'PRE can read any file, search contents with regex, and find files by pattern.',
+        prompts: ['Find all Python files in my home directory that import pandas.', 'Read my ~/.zshrc and suggest improvements.']
+      },
+      {
+        icon: '\u{270F}\u{FE0F}',
+        title: 'Create & Edit',
+        text: 'Create new files or surgically edit existing ones — no copy-paste needed.',
+        prompts: ['Create a shell script at ~/Desktop/cleanup.sh that lists files larger than 100MB.', 'Find every TODO comment in ~/projects and create a summary report.']
+      }
+    ],
+    challenge: 'Ask PRE to find a specific type of file on your Mac and read its contents. Then ask it to create a new file based on what it found.'
+  },
+  {
+    id: 'native-apps',
+    title: 'Native macOS Apps',
+    desc: 'Control Mail, Calendar, Contacts, Reminders, Notes, and Spotlight',
+    xp: 20,
+    badge: 'Mac Native',
+    lessons: [
+      {
+        icon: '\u{2709}\u{FE0F}',
+        title: 'Email & Calendar',
+        text: 'PRE controls your Mac\'s native apps directly. No API keys, no OAuth — it just works with whatever accounts you have configured.',
+        prompts: ['What\'s on my calendar today?', 'Check my email for anything important in the last 3 days.']
+      },
+      {
+        icon: '\u{2705}',
+        title: 'Reminders & Notes',
+        text: 'Create reminders with due dates, search your notes, and find anything with Spotlight.',
+        prompts: ['Remind me to review the Q3 report on Friday with high priority.', 'Search my notes for anything about API migration.']
+      }
+    ],
+    challenge: 'Ask PRE to check your calendar and email together, then create a reminder based on something it finds. This is multi-tool chaining in action!'
+  },
+  {
+    id: 'computer-use',
+    title: 'Desktop Automation',
+    desc: 'Computer Use: PRE sees your screen and controls any app',
+    xp: 25,
+    badge: 'Desktop Pilot',
+    lessons: [
+      {
+        icon: '\u{1F5A5}\u{FE0F}',
+        title: 'The Vision Loop',
+        text: 'PRE takes a screenshot, analyzes what\'s on screen, then clicks/types/scrolls. Each action returns a fresh screenshot so it can verify and self-correct.',
+        prompts: ['Take a screenshot and describe what\'s on my screen.', 'Open System Settings and navigate to the Wi-Fi section.']
+      },
+      {
+        icon: '\u{2328}\u{FE0F}',
+        title: 'Keyboard & Multi-Step',
+        text: 'PRE can press key combos (Cmd+C, Cmd+Space) and chain multiple steps together.',
+        prompts: ['Open TextEdit, create a new document, and type "Meeting notes for today".', 'Press Cmd+Space to open Spotlight, type "Activity Monitor", and launch it.']
+      }
+    ],
+    challenge: 'Ask PRE to open an app you use daily and perform a real task in it — like looking up information, filling in a field, or navigating a menu. Computer Use works with ANY app!'
+  },
+  {
+    id: 'memory',
+    title: 'Persistent Memory',
+    desc: 'PRE remembers across sessions and gets smarter over time',
+    xp: 15,
+    badge: 'Elephant Brain',
+    lessons: [
+      {
+        icon: '\u{1F9E0}',
+        title: 'Teaching PRE About You',
+        text: 'Tell PRE your preferences, role, and working style. It saves them as memories and uses them in future conversations.',
+        prompts: ['Remember that I prefer TypeScript over JavaScript and always use strict mode.', 'Remember that our team standup is at 9:15 AM Pacific every weekday.']
+      },
+      {
+        icon: '\u{1F50E}',
+        title: 'Searching Memory',
+        text: 'PRE auto-extracts memories from conversations every ~3 turns. You can also search and browse them.',
+        prompts: ['Search my memories for anything about deployment procedures.', 'List all my saved memories.']
+      }
+    ],
+    challenge: 'Tell PRE something about your work preferences. Then start a NEW session and ask it what it remembers about you. The memory persists!'
+  },
+  {
+    id: 'rag',
+    title: 'Document Intelligence (RAG)',
+    desc: 'Index directories and search by meaning, not keywords',
+    xp: 20,
+    badge: 'Knowledge Miner',
+    lessons: [
+      {
+        icon: '\u{1F4DA}',
+        title: 'Index & Search',
+        text: 'RAG reads files, splits them into chunks, generates embeddings, and lets you ask questions in natural language. Everything runs locally with nomic-embed-text.',
+        prompts: ['Index my ~/Documents/notes folder and call the index "my-notes".', 'Search "my-notes" for anything about project deadlines or milestones.']
+      },
+      {
+        icon: '\u{26A1}',
+        title: 'Manage Indexes',
+        text: 'Re-indexing skips unchanged files. You can list, inspect, and delete indexes from the GUI panel (magnifying glass icon).',
+        prompts: ['List all my RAG indexes and their stats.']
+      }
+    ],
+    challenge: 'Index a project folder you work on, then ask a conceptual question about it — like "how does authentication work?" RAG finds relevant content even without exact keyword matches.'
+  },
+  {
+    id: 'scheduling',
+    title: 'Scheduling & Triggers',
+    desc: 'Automate tasks with cron jobs and event-driven triggers',
+    xp: 20,
+    badge: 'Automator',
+    lessons: [
+      {
+        icon: '\u{23F0}',
+        title: 'Cron Jobs',
+        text: 'Schedule recurring tasks with natural language. They run server-side even when you\'re not at the computer. Results arrive via notification and Telegram.',
+        prompts: ['Schedule a daily morning briefing at 8am that checks my calendar and unread emails. Run Monday through Friday.', 'List all my scheduled jobs and their next run times.']
+      },
+      {
+        icon: '\u{26A1}',
+        title: 'File Watchers & Webhooks',
+        text: 'Triggers fire prompts automatically when files change or webhooks arrive. Great for automated workflows.',
+        prompts: ['Create a trigger that watches ~/Downloads for new PDFs and summarizes them.', 'List all my active triggers.']
+      }
+    ],
+    challenge: 'Create a cron job that runs something useful for your daily workflow — a morning briefing, a system health check, or an inbox scan. Check the Cron panel (clock icon) to see it scheduled.'
+  },
+  {
+    id: 'sub-agents',
+    title: 'Parallel Sub-Agents',
+    desc: 'Spawn concurrent research agents for multi-topic investigation',
+    xp: 25,
+    badge: 'Swarm Master',
+    lessons: [
+      {
+        icon: '\u{1F916}',
+        title: 'Single Agent',
+        text: 'spawn_agent delegates a research task to an autonomous agent with its own session and tools. Great for deep research that would clutter the main conversation.',
+        prompts: ['Spawn an agent to read all README files in my ~/projects directory and summarize what each project does.']
+      },
+      {
+        icon: '\u{1F680}',
+        title: 'Parallel Multi-Agent',
+        text: 'spawn_multi launches up to 5 agents concurrently. Tool execution (web fetches, file reads) runs in parallel. Results are collected and sorted.',
+        prompts: ['Compare PostgreSQL vs MySQL vs SQLite for a high-write workload. Spawn agents to research each independently, then synthesize.', 'Research Notion, Obsidian, and Logseq — features, pricing, and user sentiment — then give me a comparison table.']
+      }
+    ],
+    challenge: 'Use spawn_multi to compare three tools, frameworks, or topics you\'re genuinely interested in. Watch the Agent Feed (robot icon) for real-time progress.'
+  },
+  {
+    id: 'live-dashboards',
+    title: 'Live Dashboards',
+    desc: 'Auto-refreshing artifacts with real-time data from your Mac',
+    xp: 25,
+    badge: 'Dashboard Pro',
+    lessons: [
+      {
+        icon: '\u{1F4CA}',
+        title: 'How Live Artifacts Work',
+        text: 'Unlike static reports, live artifacts use JavaScript fetch() to pull current data from PRE\'s /api/live/* endpoints and auto-refresh on a timer. Calendar, mail, reminders, system stats, and sessions are all available.',
+        prompts: []
+      },
+      {
+        icon: '\u{1F4C8}',
+        title: 'Build Your First Live Dashboard',
+        text: 'Ask PRE to create a dashboard and it will generate an HTML artifact with built-in auto-refresh. Leave it open in a browser tab for a persistent status display.',
+        prompts: [
+          'Create a live morning dashboard showing my calendar for today, my 5 most recent emails, and pending reminders. Auto-refresh every 60 seconds with a manual refresh button.',
+          'Build a live system health board showing CPU, memory, and disk usage. Update every 30 seconds with color-coded indicators.',
+          'Create a live work dashboard with this week\'s calendar, recent PRE sessions, and system stats. Refresh every 2 minutes.'
+        ]
+      }
+    ],
+    challenge: 'Create a live dashboard tailored to YOUR workflow — your real calendar, your real email. Leave it open in a tab and watch it refresh. This is your personal command center!'
+  },
+  {
+    id: 'monitor',
+    title: 'Background Process Monitor',
+    desc: 'Run builds, servers, and watchers without blocking the conversation',
+    xp: 15,
+    badge: 'Process Warden',
+    lessons: [
+      {
+        icon: '\u{1F4BB}',
+        title: 'Start & Check',
+        text: 'Start long-running commands in the background, continue chatting, then check output whenever you want. Each monitor captures up to 500 lines of stdout/stderr.',
+        prompts: ['Start monitoring tail -f /var/log/system.log and call it "system-log".', 'Read the latest output from mon_1.']
+      },
+      {
+        icon: '\u{1F6D1}',
+        title: 'List & Stop',
+        text: 'List all active monitors to see what\'s running, or stop a monitor when you\'re done.',
+        prompts: ['List all my active monitors.', 'Stop the system-log monitor.']
+      }
+    ],
+    challenge: 'Start a monitor on a real process (a log tail, a build command, or a dev server), do something else in the conversation, then come back and read the output. Multi-tasking!'
+  },
+  {
+    id: 'artifacts',
+    title: 'Artifacts & Reports',
+    desc: 'Interactive HTML documents, visualizations, and exports',
+    xp: 20,
+    badge: 'Artisan',
+    lessons: [
+      {
+        icon: '\u{1F3A8}',
+        title: 'HTML Artifacts',
+        text: 'PRE creates rich, interactive HTML documents — dashboards, games, visualizations — that open in your browser.',
+        prompts: ['Create an interactive project timeline with milestones, progress bars, and status indicators.', 'Build a Pomodoro timer with start/pause/reset buttons and a circular progress indicator.']
+      },
+      {
+        icon: '\u{1F4E4}',
+        title: 'Document Export',
+        text: 'Export to PDF, PNG, standalone HTML, Word, and Excel. Share artifacts via the buttons on each artifact card.',
+        prompts: ['Create a Word document summarizing meeting notes with action items and owners.', 'Export the current conversation as a PDF.']
+      }
+    ],
+    challenge: 'Ask PRE to create something genuinely useful — a report you\'d actually share, a tool you\'d actually use, or a visualization of real data.'
+  },
+  {
+    id: 'power-workflows',
+    title: 'Power User Workflows',
+    desc: 'Combine everything into real-world multi-feature workflows',
+    xp: 30,
+    badge: 'PRE Master',
+    lessons: [
+      {
+        icon: '\u{1F525}',
+        title: 'Morning Startup',
+        text: 'Chain multiple capabilities in a single prompt for comprehensive results.',
+        prompts: ['Check my calendar for today, summarize unread emails flagged as important, list my top-priority tasks, and check if any cron jobs ran overnight. Give me a concise briefing.']
+      },
+      {
+        icon: '\u{1F3AF}',
+        title: 'Deep Research + Report',
+        text: 'Combine sub-agents, web search, RAG, and artifact generation for production-quality outputs.',
+        prompts: ['Research the top 3 trends in AI engineering for 2026. Use sub-agents for each topic, then create a professional HTML report with charts and key statistics.', 'Index this repo with RAG, search for the auth flow and DB schema, then create a developer onboarding document.']
+      }
+    ],
+    challenge: 'Design your own multi-feature workflow for something in your actual daily work. The best PRE users chain 3-5 capabilities in a single prompt. What\'s YOUR power workflow?'
+  }
+];
+
+const BADGES_DEF = MODULES.map(m => ({ id: m.id, name: m.badge }));
+const TOTAL_XP = MODULES.reduce((s, m) => s + m.xp, 0);
+const STORAGE_KEY = 'pre-tutorial-progress';
+
+function loadProgress() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+}
+function saveProgress(p) { localStorage.setItem(STORAGE_KEY, JSON.stringify(p)); }
+
+function getCompletedSet() {
+  const p = loadProgress();
+  return new Set(p.completed || []);
+}
+
+function markCompleted(moduleId) {
+  const p = loadProgress();
+  if (!p.completed) p.completed = [];
+  if (!p.completed.includes(moduleId)) {
+    p.completed.push(moduleId);
+    saveProgress(p);
+  }
+}
+
+function resetProgress() {
+  localStorage.removeItem(STORAGE_KEY);
+  render();
+}
+
+function render() {
+  const completed = getCompletedSet();
+  const completedCount = completed.size;
+  const earnedXP = MODULES.filter(m => completed.has(m.id)).reduce((s, m) => s + m.xp, 0);
+
+  // Progress bar
+  document.getElementById('progress-label').textContent = `${completedCount} / ${MODULES.length} modules completed`;
+  document.getElementById('xp-label').textContent = `${earnedXP} XP`;
+  document.getElementById('progress-fill').style.width = `${(completedCount / MODULES.length) * 100}%`;
+
+  // Badges
+  const badgesEl = document.getElementById('badges');
+  badgesEl.innerHTML = BADGES_DEF.map(b =>
+    `<span class="badge ${completed.has(b.id) ? 'earned' : ''}">${completed.has(b.id) ? '\u2B50 ' : ''}${b.name}</span>`
+  ).join('');
+
+  // Modules
+  const container = document.getElementById('modules');
+  container.innerHTML = MODULES.map((m, i) => {
+    const done = completed.has(m.id);
+    return `
+      <div class="module ${done ? 'completed' : ''}" id="mod-${m.id}">
+        <div class="module-header" onclick="toggleModule('${m.id}')">
+          <div class="module-number"><span>${i + 1}</span></div>
+          <div class="module-info">
+            <div class="module-title">${m.title}</div>
+            <div class="module-desc">${m.desc}</div>
+          </div>
+          <span class="module-xp">${done ? '\u2713' : '+'} ${m.xp} XP</span>
+          <svg class="module-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="module-body">
+          <div class="module-body-inner">
+            ${m.lessons.map(l => `
+              <div class="lesson">
+                <div class="lesson-title"><span class="icon">${l.icon}</span> ${l.title}</div>
+                <p>${l.text}</p>
+                ${l.prompts.map(p => `
+                  <div class="try-prompt" onclick="copyPrompt(this)" title="Click to copy">
+                    <span class="tag">Try it</span>
+                    <code>${escapeHtml(p)}</code>
+                  </div>
+                `).join('')}
+              </div>
+            `).join('')}
+            ${m.challenge ? `
+              <div class="challenge">
+                <div class="challenge-title">\u{1F3C6} Challenge</div>
+                <p>${m.challenge}</p>
+              </div>
+            ` : ''}
+            <button class="complete-btn ${done ? 'done' : 'ready'}" onclick="${done ? '' : `completeModule('${m.id}')`}">
+              ${done ? '\u2713 Completed' : '\u{1F3AF} Mark as Complete'}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Reset
+  if (!document.getElementById('reset-wrap')) {
+    const reset = document.createElement('div');
+    reset.id = 'reset-wrap';
+    reset.className = 'reset-wrap';
+    reset.innerHTML = `<button class="reset-link" onclick="resetProgress()">Reset all progress</button>`;
+    container.appendChild(reset);
+  }
+
+  // Confetti if all complete
+  if (completedCount === MODULES.length) {
+    launchConfetti();
+  }
+}
+
+function toggleModule(id) {
+  const el = document.getElementById('mod-' + id);
+  if (el.classList.contains('open')) {
+    el.classList.remove('open');
+  } else {
+    // Close others
+    document.querySelectorAll('.module.open').forEach(m => m.classList.remove('open'));
+    el.classList.add('open');
+    setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
+  }
+}
+
+function completeModule(id) {
+  markCompleted(id);
+  render();
+  // Re-open the module to show completed state
+  setTimeout(() => {
+    const el = document.getElementById('mod-' + id);
+    if (el) el.classList.add('open');
+  }, 50);
+  // Mini confetti burst
+  miniConfetti();
+}
+
+function copyPrompt(el) {
+  const code = el.querySelector('code');
+  if (code) {
+    navigator.clipboard.writeText(code.textContent).then(() => {
+      const tag = el.querySelector('.tag');
+      const orig = tag.textContent;
+      tag.textContent = 'Copied!';
+      tag.style.background = '#dcfce7';
+      tag.style.color = '#16a34a';
+      setTimeout(() => {
+        tag.textContent = orig;
+        tag.style.background = '';
+        tag.style.color = '';
+      }, 1500);
+    });
+  }
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ── Confetti ──
+function launchConfetti() {
+  const canvas = document.getElementById('confetti');
+  const ctx = canvas.getContext('2d');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const particles = [];
+  const colors = ['#2563eb', '#7c3aed', '#16a34a', '#eab308', '#dc2626', '#f97316'];
+  for (let i = 0; i < 120; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height - canvas.height,
+      w: Math.random() * 8 + 4,
+      h: Math.random() * 6 + 3,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      vx: (Math.random() - 0.5) * 3,
+      vy: Math.random() * 4 + 2,
+      rot: Math.random() * 360,
+      rotV: (Math.random() - 0.5) * 10,
+    });
+  }
+  let frame = 0;
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.rotV;
+      p.vy += 0.05;
+      if (p.y < canvas.height + 20) alive = true;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.rot * Math.PI) / 180);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    frame++;
+    if (alive && frame < 300) requestAnimationFrame(draw);
+    else ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  draw();
+}
+
+function miniConfetti() {
+  const canvas = document.getElementById('confetti');
+  const ctx = canvas.getContext('2d');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  const particles = [];
+  const colors = ['#2563eb', '#7c3aed', '#eab308', '#16a34a'];
+  const cx = canvas.width / 2;
+  for (let i = 0; i < 30; i++) {
+    particles.push({
+      x: cx + (Math.random() - 0.5) * 200,
+      y: 120,
+      w: Math.random() * 6 + 3,
+      h: Math.random() * 4 + 2,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      vx: (Math.random() - 0.5) * 6,
+      vy: -(Math.random() * 6 + 2),
+      rot: Math.random() * 360,
+      rotV: (Math.random() - 0.5) * 15,
+    });
+  }
+  let frame = 0;
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+    for (const p of particles) {
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.2;
+      p.rot += p.rotV;
+      if (p.y < canvas.height + 20) alive = true;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((p.rot * Math.PI) / 180);
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = Math.max(0, 1 - frame / 60);
+      ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h);
+      ctx.restore();
+    }
+    frame++;
+    if (alive && frame < 80) requestAnimationFrame(draw);
+    else ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  draw();
+}
+
+render();
+</script>
+</body>
+</html>

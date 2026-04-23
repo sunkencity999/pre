@@ -2796,7 +2796,19 @@
   }
 
   function renderConnectionsPanel(container, connections, mcpStatus, autostart) {
-    let html = '<div class="settings-section">';
+    let html = '';
+
+    // Tutorial banner at top
+    html += '<div style="margin-bottom:20px;background:linear-gradient(135deg,#1e293b,#0f172a);border-radius:10px;padding:16px 20px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:transform 0.15s,box-shadow 0.15s" onclick="window.open(\'/tutorial.html\',\'_blank\')" onmouseenter="this.style.transform=\'translateY(-1px)\';this.style.boxShadow=\'0 4px 12px rgba(0,0,0,0.15)\'" onmouseleave="this.style.transform=\'\';this.style.boxShadow=\'\'">';
+    html += '<div style="width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#2563eb,#7c3aed);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">\uD83C\uDF93</div>';
+    html += '<div style="flex:1;min-width:0">';
+    html += '<div style="font-family:Georgia,serif;font-weight:700;font-size:0.95rem;color:#fff">PRE Academy</div>';
+    html += '<div style="font-size:0.78rem;color:#94a3b8">Interactive tutorial — learn every feature step by step</div>';
+    html += '</div>';
+    html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
+    html += '</div>';
+
+    html += '<div class="settings-section">';
     html += '<div class="settings-section-title">Connections</div>';
 
     for (const conn of connections) {
