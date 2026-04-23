@@ -135,11 +135,19 @@ function buildToolDefs() {
       task: { type: 'string', description: 'Detailed task description — be specific about what to find and return' },
     }, ['task']),
 
-    tool('spawn_multi', 'Run multiple research sub-agents sequentially, collecting results from each. Use when the user asks to compare, contrast, or investigate multiple independent topics. Each agent runs to completion before the next starts. Maximum 5 tasks. Progress is streamed to the user.', {
+    tool('spawn_multi', 'Run multiple research sub-agents in PARALLEL, collecting results from all. Use when the user asks to compare, contrast, or investigate multiple independent topics. All agents run concurrently for faster results. Maximum 5 tasks. Progress is streamed to the user.', {
       tasks: { type: 'string', description: 'JSON array of task description strings, e.g. ["research X", "analyze Y"]' },
     }, ['tasks']),
 
     tool('list_agents', 'List all spawned sub-agents and their status (running, completed, failed)', {}),
+
+    tool('monitor', 'Start, read, stop, or list background processes. Use this for long-running commands (servers, builds, watchers, tails) whose output you want to check periodically without blocking the conversation.', {
+      action: { type: 'string', description: 'Action: start|read|stop|list' },
+      command: { type: 'string', description: 'Shell command to run (for start)' },
+      name: { type: 'string', description: 'Human-readable label for the monitor (for start)' },
+      id: { type: 'string', description: 'Monitor ID (for read/stop)' },
+      tail: { type: 'string', description: 'Number of recent output lines to return (for read, default 30)' },
+    }, ['action']),
 
     tool('experience_search', 'Search the experience ledger for lessons learned from past tasks. Use this before attempting complex tasks to check if you have relevant prior experience.', {
       query: { type: 'string', description: 'Search query describing the task or problem' },

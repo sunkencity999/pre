@@ -193,6 +193,23 @@ function buildSystemPrompt(cwd) {
     + `- NEVER use placeholder gradient divs, broken external URLs, or "image not available" fallbacks when you have an actual local image path.\n`
     + `- ALWAYS use relative paths starting with /artifacts/ for locally stored images.\n`;
 
+  // Live artifacts
+  prompt += `\nLIVE ARTIFACTS (auto-refreshing dashboards):\n`
+    + `When the user asks for a dashboard, status board, or any artifact that should show CURRENT data:\n`
+    + `- Create an HTML artifact with JavaScript that fetches from PRE's live data API endpoints:\n`
+    + `  /api/live/calendar — today's events\n`
+    + `  /api/live/calendar/week — this week's events\n`
+    + `  /api/live/mail?count=N — recent emails (default 10)\n`
+    + `  /api/live/reminders — pending reminders\n`
+    + `  /api/live/system — system info (CPU, memory, disk, uptime)\n`
+    + `  /api/live/sessions — recent PRE sessions\n`
+    + `- Each endpoint returns { data: string, timestamp: ISO8601 }.\n`
+    + `- Include a refresh button AND an auto-refresh interval (e.g. every 60s).\n`
+    + `- Show a "Last updated: <timestamp>" indicator.\n`
+    + `- Parse the text data from each endpoint and render it in styled HTML (tables, cards, lists).\n`
+    + `- Example fetch: fetch("/api/live/calendar").then(r=>r.json()).then(d=> /* render d.data */)\n`
+    + `- The artifact is served from the same origin (localhost:7749), so no CORS issues.\n`;
+
   // Connection status
   const hasAny = connections.brave || connections.github || connections.google || connections.wolfram;
   if (!hasAny) {

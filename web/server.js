@@ -651,6 +651,71 @@ app.get('/api/argus/status', (_req, res) => {
   res.json(argusSystem.getStatus());
 });
 
+// ── Live Data endpoints (for auto-refreshing artifacts) ──
+const calendarTool = require('./src/tools/calendar');
+const mailTool = require('./src/tools/mail');
+const remindersTool = require('./src/tools/reminders');
+const systemTool = require('./src/tools/system');
+
+app.get('/api/live/calendar', async (_req, res) => {
+  try {
+    const result = await calendarTool.calendar({ action: 'today' });
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: 'Calendar unavailable', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
+app.get('/api/live/calendar/week', async (_req, res) => {
+  try {
+    const result = await calendarTool.calendar({ action: 'week' });
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: 'Calendar unavailable', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
+app.get('/api/live/mail', async (req, res) => {
+  try {
+    const count = parseInt(req.query.count) || 10;
+    const result = await mailTool.mail({ action: 'list_recent', count });
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: 'Mail unavailable', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
+app.get('/api/live/reminders', async (_req, res) => {
+  try {
+    const result = await remindersTool.reminders({ action: 'list' });
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: 'Reminders unavailable', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
+app.get('/api/live/system', async (_req, res) => {
+  try {
+    const result = await systemTool.systemInfo();
+    res.json({ data: result, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: 'System info unavailable', error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
+app.get('/api/live/sessions', async (_req, res) => {
+  try {
+    const sessions = listSessions();
+    const recent = sessions.slice(0, 10).map(s => ({
+      id: s.id, name: s.displayName || s.preview || s.channel,
+      modified: s.modified, turns: s.turnCount,
+    }));
+    res.json({ data: recent, timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.json({ data: [], error: err.message, timestamp: new Date().toISOString() });
+  }
+});
+
 // Broadcast a WS event to all connected clients
 function broadcastWS(event) {
   const msg = JSON.stringify(event);

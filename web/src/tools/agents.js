@@ -213,9 +213,10 @@ RULES:
 }
 
 /**
- * Spawn multiple agents sequentially and collect results.
- * Runs one at a time because Ollama processes requests serially per model.
- * Streams status updates so the user sees progress.
+ * Spawn multiple agents in parallel and collect results.
+ * Although Ollama serializes model requests, agents spend significant time
+ * on tool execution (web_fetch, bash, file reads) which runs concurrently.
+ * This yields real speedups for research-heavy multi-agent workflows.
  */
 async function spawnMulti(args, cwd, onStatus) {
   const { tasks } = args;
@@ -227,16 +228,26 @@ async function spawnMulti(args, cwd, onStatus) {
     return 'Error: maximum 5 tasks allowed';
   }
 
-  const results = [];
-  for (let i = 0; i < tasks.length; i++) {
-    const task = tasks[i];
-    if (onStatus) onStatus({ type: 'agent_progress', current: i + 1, total: tasks.length, task });
+  if (onStatus) onStatus({ type: 'agent_progress', current: 0, total: tasks.length, task: `Launching ${tasks.length} parallel agents` });
 
-    const result = await spawnAgent({ task }, cwd, onStatus);
-    results.push({ task, result, index: i });
+  let completed = 0;
+  const promises = tasks.map((task, i) => {
+    return spawnAgent({ task }, cwd, (event) => {
+      // Forward all status events with the task index
+      if (onStatus) onStatus({ ...event, taskIndex: i, taskTotal: tasks.length });
+      // Track completion for progress updates
+      if (event.type === 'agent_completed' || event.type === 'agent_failed') {
+        completed++;
+        if (onStatus) onStatus({ type: 'agent_task_done', current: completed, total: tasks.length, task, preview: (event.type === 'agent_completed' ? 'Completed' : 'Failed') });
+      }
+    }).then(result => ({ task, result, index: i, status: 'fulfilled' }))
+      .catch(err => ({ task, result: `Error: ${err.message}`, index: i, status: 'rejected' }));
+  });
 
-    if (onStatus) onStatus({ type: 'agent_task_done', current: i + 1, total: tasks.length, task, preview: result.slice(0, 200) });
-  }
+  const results = await Promise.all(promises);
+
+  // Sort by original index for consistent output order
+  results.sort((a, b) => a.index - b.index);
 
   return results.map(r =>
     `## Task ${r.index + 1}: ${r.task}\n${r.result}`

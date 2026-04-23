@@ -118,6 +118,7 @@ const remindersTool = require('./tools/reminders');
 const notesTool = require('./tools/notes');
 const cronTool = require('./tools/cron');
 const agentsTool = require('./tools/agents');
+const monitorTool = require('./tools/monitor');
 const browserTool = require('./tools/browser');
 const computerTool = require('./tools/computer');
 const linearTool = require('./tools/linear');
@@ -357,6 +358,9 @@ async function executeTool(name, args, cwd, opts) {
       return agentsTool.spawnMulti(args, cwd, opts?.onStatus);
     }
     case 'list_agents': return agentsTool.listAgents();
+
+    // Background process monitor
+    case 'monitor': return monitorTool.monitor(args);
 
     // Experience ledger
     case 'experience_search': {
