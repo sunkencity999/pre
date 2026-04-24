@@ -535,7 +535,13 @@ app.post('/api/cron/:id/run', (req, res) => {
 // ── Trigger REST API ──
 
 app.get('/api/triggers', (_req, res) => {
-  res.json(triggerSystem.loadTriggers());
+  const triggers = triggerSystem.loadTriggers();
+  // Enrich with live watcher status
+  const enriched = triggers.map(t => ({
+    ...t,
+    watching: triggerSystem.isWatching ? triggerSystem.isWatching(t.id) : false,
+  }));
+  res.json(enriched);
 });
 
 app.post('/api/triggers', (req, res) => {

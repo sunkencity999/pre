@@ -393,6 +393,13 @@ function trigger(args) {
   }
 }
 
+/**
+ * Check if a watcher is actively running for a given trigger ID.
+ */
+function isWatching(triggerId) {
+  return activeWatchers.has(triggerId);
+}
+
 module.exports = {
   trigger,
   init,
@@ -400,4 +407,5 @@ module.exports = {
   handleWebhook,
   loadTriggers,
   saveTriggers,
+  isWatching,
 };

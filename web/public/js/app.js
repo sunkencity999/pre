@@ -2021,20 +2021,49 @@
         const typeLabel = t.type === 'file_watch' ? 'File Watch' : 'Webhook';
         const typeBadge = `<span style="font-size:0.7rem;padding:1px 6px;border-radius:4px;background:var(--surface-hover);color:var(--text-secondary)">${typeLabel}</span>`;
         const lastFired = t.last_fired_at ? new Date(t.last_fired_at).toLocaleString() : 'Never';
-        const detail = t.type === 'file_watch' && t.config?.path
-          ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">Path: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(t.config.path)}</code>${t.config.glob ? ` &middot; Glob: ${Markdown.escapeHtml(t.config.glob)}` : ''}</div>`
-          : t.type === 'webhook'
-            ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">Endpoint: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">/api/triggers/webhook/${Markdown.escapeHtml(t.id)}</code></div>`
-            : '';
+        const created = t.created_at ? new Date(t.created_at).toLocaleDateString() : '';
+
+        // Watcher/webhook status indicator
+        let liveStatus = '';
+        if (t.type === 'file_watch') {
+          if (t.enabled && t.watching) {
+            liveStatus = '<span style="font-size:0.7rem;padding:1px 6px;border-radius:4px;background:rgba(74,222,128,0.15);color:var(--success)">Watching</span>';
+          } else if (t.enabled) {
+            liveStatus = '<span style="font-size:0.7rem;padding:1px 6px;border-radius:4px;background:rgba(251,191,36,0.15);color:var(--warning)">Not watching</span>';
+          }
+        } else if (t.type === 'webhook') {
+          if (t.enabled) {
+            liveStatus = '<span style="font-size:0.7rem;padding:1px 6px;border-radius:4px;background:rgba(74,222,128,0.15);color:var(--success)">Listening</span>';
+          }
+        }
+
+        // Build detail lines based on trigger type
+        let detail = '';
+        if (t.type === 'file_watch' && t.config?.path) {
+          detail += `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:3px">`;
+          detail += `Path: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(t.config.path)}</code>`;
+          if (t.config.glob) detail += ` &middot; Filter: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(t.config.glob)}</code>`;
+          detail += `</div>`;
+          detail += `<div style="font-size:0.73rem;color:var(--text-muted);margin-top:1px">`;
+          detail += `Recursive: ${t.config.recursive !== false ? 'Yes' : 'No'}`;
+          detail += ` &middot; Debounce: ${((t.config.debounce || 3000) / 1000).toFixed(0)}s`;
+          detail += ` &middot; Fires on: file create/modify/delete`;
+          detail += `</div>`;
+        } else if (t.type === 'webhook') {
+          detail += `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:3px">`;
+          detail += `Endpoint: <code style="font-family:'SF Mono',monospace;font-size:0.7rem">POST /api/triggers/webhook/${Markdown.escapeHtml(t.id)}</code>`;
+          if (t.config?.secret) detail += ` &middot; Secret: configured`;
+          detail += `</div>`;
+        }
 
         html += `<div class="connection-card" style="margin-bottom:10px">
           <div class="connection-card-header" style="padding:12px 14px">
             <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
               ${statusDot}
               <div style="flex:1;min-width:0">
-                <div style="font-weight:600;font-size:0.9rem;display:flex;align-items:center;gap:8px">${Markdown.escapeHtml(t.name)} ${typeBadge}</div>
+                <div style="font-weight:600;font-size:0.9rem;display:flex;align-items:center;gap:8px">${Markdown.escapeHtml(t.name)} ${typeBadge} ${liveStatus}</div>
                 ${detail}
-                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">Fires: ${t.fire_count || 0} &middot; Last: ${lastFired}</div>
+                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:2px">Fires: ${t.fire_count || 0} &middot; Last fired: ${lastFired}${created ? ` &middot; Created: ${created}` : ''}</div>
               </div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
