@@ -495,6 +495,22 @@ function buildToolDefs() {
     }, ['action']));
   }
 
+  if (conns.dynamics365) {
+    tools.push(tool('dynamics365', 'Interact with Dynamics 365 / Dataverse. Actions: search, get_record, create_record, update_record, delete_record, list_records, get_entity_metadata, list_entities, whoami', {
+      action: { type: 'string', description: 'Action to perform' },
+      entity: { type: 'string', description: 'Entity set name (e.g. accounts, contacts, incidents, leads, opportunities)' },
+      id: { type: 'string', description: 'Record GUID' },
+      query: { type: 'string', description: 'Search text' },
+      field: { type: 'string', description: 'Field name to search in (default: name)' },
+      select: { type: 'string', description: 'OData $select — comma-separated fields to return' },
+      filter: { type: 'string', description: 'OData $filter expression' },
+      orderby: { type: 'string', description: 'OData $orderby expression' },
+      expand: { type: 'string', description: 'OData $expand for related entities' },
+      data: { type: 'string', description: 'JSON object of field values for create/update' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['action']));
+  }
+
   // Workflow capture and replay
   tools.push(tool('workflow', 'Record, replay, and manage desktop automation workflows. Record a sequence of Computer Use actions, save as a replayable workflow, and replay on demand or schedule via cron. Actions: record (start capturing), stop (save recording), status, list, replay (re-execute), show (view steps), delete, export', {
     action: { type: 'string', description: 'Action: record, stop, status, list, replay, show, delete, export' },

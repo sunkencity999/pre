@@ -24,6 +24,10 @@ const {
   setTelegramChatId, testTelegramToken,
   setJiraConfig,
   setConfluenceConfig,
+  setD365Config,
+  setD365Credentials,
+  getD365AuthUrl,
+  exchangeD365Code,
   setZoomConfig,
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
@@ -252,6 +256,46 @@ app.post('/api/connections/confluence/config', (req, res) => {
   if (!url || !token) return res.status(400).json({ error: 'url and token required' });
   setConfluenceConfig(url, token);
   res.json({ success: true });
+});
+
+app.post('/api/connections/dynamics365/config', (req, res) => {
+  const { url, tenantId, clientId, clientSecret } = req.body || {};
+  if (!url || !tenantId || !clientId || !clientSecret) {
+    return res.status(400).json({ error: 'url, tenantId, clientId, and clientSecret required' });
+  }
+  setD365Config(url, tenantId, clientId, clientSecret);
+  res.json({ success: true });
+});
+
+app.post('/api/connections/dynamics365/credentials', (req, res) => {
+  const { url, tenantId, clientId, clientSecret } = req.body || {};
+  if (!url || !tenantId || !clientId || !clientSecret) {
+    return res.status(400).json({ error: 'url, tenantId, clientId, and clientSecret required' });
+  }
+  setD365Credentials(url, tenantId, clientId, clientSecret);
+  res.json({ success: true });
+});
+
+app.get('/api/connections/dynamics365/auth-url', (req, res) => {
+  const url = getD365AuthUrl(PORT);
+  if (!url) return res.status(400).json({ error: 'D365 credentials not configured' });
+  res.json({ url });
+});
+
+app.get('/oauth/dynamics365/callback', async (req, res) => {
+  const { code, error, error_description } = req.query;
+  if (error) {
+    return res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Authorization Failed</h2><p>${error_description || error}</p><p>You can close this tab.</p></div></body></html>`);
+  }
+  if (!code) {
+    return res.status(400).send('Missing authorization code');
+  }
+  try {
+    await exchangeD365Code(code, PORT);
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#4ade80">Dynamics 365 Connected!</h2><p>Accounts, contacts, cases, and all Dataverse entities are now available.</p><p>You can close this tab and return to PRE.</p><script>setTimeout(()=>window.close(),3000)</script></div></body></html>`);
+  } catch (err) {
+    res.send(`<html><body style="font-family:system-ui;background:#0a0a0a;color:#fff;display:flex;align-items:center;justify-content:center;height:100vh"><div style="text-align:center"><h2 style="color:#f87171">Token Exchange Failed</h2><p>${err.message}</p><p>You can close this tab.</p></div></body></html>`);
+  }
 });
 
 app.post('/api/connections/zoom/config', (req, res) => {

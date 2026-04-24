@@ -30,9 +30,10 @@ function getActiveConnections() {
       zoom: !!data.zoom_account_id && !!data.zoom_client_id && !!data.zoom_client_secret,
       figma: !!data.figma_token,
       asana: !!data.asana_token,
+      dynamics365: !!data.d365_url && !!data.d365_client_id && !!data.d365_tenant_id && (!!data.d365_client_secret || !!data.d365_refresh_token),
     };
   } catch {
-    return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false, linear: false, zoom: false, figma: false, asana: false };
+    return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false, linear: false, zoom: false, figma: false, asana: false, dynamics365: false };
   }
 }
 

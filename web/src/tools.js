@@ -125,6 +125,7 @@ const linearTool = require('./tools/linear');
 const zoomTool = require('./tools/zoom');
 const figmaTool = require('./tools/figma');
 const asanaTool = require('./tools/asana');
+const dynamics365Tool = require('./tools/dynamics365');
 const ragTool = require('./tools/rag');
 const voiceTool = require('./tools/voice');
 const workflowTool = require('./tools/workflow');
@@ -175,6 +176,8 @@ const ALIASES = {
   zoom_meeting: 'zoom', meeting: 'zoom', zoom_create: 'zoom',
   figma_file: 'figma', design: 'figma', figma_comments: 'figma',
   asana_task: 'asana', task_manager: 'asana', asana_search: 'asana',
+  d365: 'dynamics365', dynamics: 'dynamics365', dataverse: 'dynamics365', crm: 'dynamics365',
+  dynamics_365: 'dynamics365', d365_search: 'dynamics365', d365_record: 'dynamics365',
   rag_search: 'rag', rag_index: 'rag', vector_search: 'rag', semantic_search: 'rag',
   document_search: 'rag', knowledge_base: 'rag', kb: 'rag',
   triggers: 'trigger', watch: 'trigger', file_watch: 'trigger', webhook: 'trigger',
@@ -214,6 +217,7 @@ const CONFIRM_ACTIONS = {
   rag: new Set(['delete']),
   trigger: new Set(['delete']),
   workflow: new Set(['delete']),
+  dynamics365: new Set(['delete_record']),
 };
 
 // Dispatch a tool call to its handler
@@ -328,6 +332,9 @@ async function executeTool(name, args, cwd, opts) {
 
     // Asana
     case 'asana': return asanaTool.asana(args);
+
+    // Dynamics 365
+    case 'dynamics365': return dynamics365Tool.dynamics365(args);
 
     // Image generation
     case 'image_generate': return imageTool.imageGenerate(args);

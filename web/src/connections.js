@@ -24,6 +24,9 @@ const GOOGLE_SCOPES = [
 // Microsoft / SharePoint OAuth 2.0
 const MICROSOFT_SCOPES = 'https://graph.microsoft.com/Sites.Read.All https://graph.microsoft.com/Files.ReadWrite.All https://graph.microsoft.com/User.Read offline_access';
 
+// Dynamics 365 / Dataverse OAuth 2.0 (delegated)
+// Scope is built dynamically: `${d365_url}/.default offline_access`
+
 function microsoftAuthUrl(tenantId) {
   return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`;
 }
@@ -209,6 +212,17 @@ function listConnections() {
       type: 'api_key',
       active: !!data.asana_token,
       masked: data.asana_token ? maskKey(data.asana_token) : null,
+    },
+    {
+      service: 'dynamics365',
+      label: 'Dynamics 365',
+      type: 'dynamics365',
+      active: !!data.d365_url && !!data.d365_client_id && !!data.d365_client_secret && !!data.d365_tenant_id,
+      url: data.d365_url || null,
+      masked: data.d365_client_id ? maskKey(data.d365_client_id) : null,
+      hasCredentials: !!data.d365_client_id && !!data.d365_tenant_id,
+      hasTokens: !!data.d365_refresh_token,
+      authMode: data.d365_refresh_token ? 'delegated' : 'client_credentials',
     },
   ];
 }
@@ -556,6 +570,156 @@ function setConfluenceConfig(url, token) {
 }
 
 /**
+ * Set Dynamics 365 environment URL and Azure AD app credentials
+ */
+function setD365Config(url, tenantId, clientId, clientSecret) {
+  const data = loadConnections();
+  data.d365_url = url.replace(/\/+$/, '');
+  data.d365_tenant_id = tenantId;
+  data.d365_client_id = clientId;
+  data.d365_client_secret = clientSecret;
+  saveConnections(data);
+  return true;
+}
+
+/**
+ * Set D365 delegated OAuth credentials (for the Authorize flow)
+ */
+function setD365Credentials(url, tenantId, clientId, clientSecret) {
+  const data = loadConnections();
+  data.d365_url = url.replace(/\/+$/, '');
+  data.d365_tenant_id = tenantId;
+  data.d365_client_id = clientId;
+  data.d365_client_secret = clientSecret;
+  // Clear any existing client-credentials-only token so delegated flow takes over
+  delete data.d365_access_token;
+  delete data.d365_token_expiry;
+  saveConnections(data);
+  return true;
+}
+
+/**
+ * Get D365 OAuth authorization URL (delegated flow)
+ */
+function getD365AuthUrl(redirectPort) {
+  const data = loadConnections();
+  if (!data.d365_client_id || !data.d365_tenant_id || !data.d365_url) return null;
+  const redirectUri = `http://localhost:${redirectPort}/oauth/dynamics365/callback`;
+  const scope = `${data.d365_url}/.default offline_access`;
+  const params = new URLSearchParams({
+    client_id: data.d365_client_id,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope,
+    response_mode: 'query',
+  });
+  return `${microsoftAuthUrl(data.d365_tenant_id)}?${params.toString()}`;
+}
+
+/**
+ * Exchange D365 authorization code for tokens (delegated flow)
+ */
+function exchangeD365Code(code, redirectPort) {
+  return new Promise((resolve, reject) => {
+    const data = loadConnections();
+    if (!data.d365_client_id || !data.d365_client_secret || !data.d365_tenant_id || !data.d365_url) {
+      return reject(new Error('D365 credentials not configured'));
+    }
+    const redirectUri = `http://localhost:${redirectPort}/oauth/dynamics365/callback`;
+    const scope = `${data.d365_url}/.default offline_access`;
+    const postData = new URLSearchParams({
+      code,
+      client_id: data.d365_client_id,
+      client_secret: data.d365_client_secret,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+      scope,
+    }).toString();
+
+    const tokenUrl = new URL(microsoftTokenUrl(data.d365_tenant_id));
+    const req = https.request({
+      hostname: tokenUrl.hostname,
+      path: tokenUrl.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const tokens = JSON.parse(body);
+          if (tokens.error) return reject(new Error(tokens.error_description || tokens.error));
+          const connData = loadConnections();
+          connData.d365_access_token = tokens.access_token;
+          if (tokens.refresh_token) connData.d365_refresh_token = tokens.refresh_token;
+          connData.d365_token_expiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 3600);
+          saveConnections(connData);
+          resolve({ success: true });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Refresh D365 access token using refresh token (delegated flow)
+ */
+function refreshD365Token() {
+  return new Promise((resolve, reject) => {
+    const data = loadConnections();
+    if (!data.d365_refresh_token || !data.d365_client_id || !data.d365_client_secret || !data.d365_tenant_id || !data.d365_url) {
+      return reject(new Error('No D365 refresh token available'));
+    }
+    const scope = `${data.d365_url}/.default offline_access`;
+    const postData = new URLSearchParams({
+      refresh_token: data.d365_refresh_token,
+      client_id: data.d365_client_id,
+      client_secret: data.d365_client_secret,
+      grant_type: 'refresh_token',
+      scope,
+    }).toString();
+
+    const tokenUrl = new URL(microsoftTokenUrl(data.d365_tenant_id));
+    const req = https.request({
+      hostname: tokenUrl.hostname,
+      path: tokenUrl.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Content-Length': Buffer.byteLength(postData),
+      },
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        try {
+          const tokens = JSON.parse(body);
+          if (tokens.error) return reject(new Error(tokens.error_description || tokens.error));
+          data.d365_access_token = tokens.access_token;
+          if (tokens.refresh_token) data.d365_refresh_token = tokens.refresh_token;
+          data.d365_token_expiry = Math.floor(Date.now() / 1000) + (tokens.expires_in || 3600);
+          saveConnections(data);
+          resolve({ success: true });
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
  * Set Zoom Server-to-Server OAuth credentials
  */
 function setZoomConfig(accountId, clientId, clientSecret) {
@@ -583,5 +747,10 @@ module.exports = {
   testTelegramToken,
   setJiraConfig,
   setConfluenceConfig,
+  setD365Config,
+  setD365Credentials,
+  getD365AuthUrl,
+  exchangeD365Code,
+  refreshD365Token,
   setZoomConfig,
 };

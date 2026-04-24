@@ -1397,6 +1397,7 @@
     zoom: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4.585 6.836A3.252 3.252 0 0 0 1.34 10.09v3.82a3.252 3.252 0 0 0 3.245 3.254h8.348v-3.82H6.53a1.95 1.95 0 0 1-1.945-1.954V8.79h11.608a1.95 1.95 0 0 1 1.945 1.6l3.358-2.26A1.3 1.3 0 0 0 22.66 7V5.75a.92.92 0 0 0-.917-.914H4.585v2zm17.07 3.234l-3.357 2.26v4.834a.92.92 0 0 1-.917.914h-4.453v2h5.37a3.25 3.25 0 0 0 3.245-3.254v-3.82a3.25 3.25 0 0 0-.888-2.934z"/></svg>',
     figma: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 24c2.208 0 4-1.792 4-4v-4H8c-2.208 0-4 1.792-4 4s1.792 4 4 4zm0-20c-2.208 0-4 1.792-4 4s1.792 4 4 4h4V4c0-2.208-1.792-4-4-4zm0 8c-2.208 0-4 1.792-4 4s1.792 4 4 4h4v-8H8zm8-8h-4v8h4c2.208 0 4-1.792 4-4s-1.792-4-4-4zm0 12a4 4 0 1 0 0 8 4 4 0 0 0 0-8z"/></svg>',
     asana: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="6" r="5.5"/><circle cx="5.5" cy="17.5" r="5.5"/><circle cx="18.5" cy="17.5" r="5.5"/></svg>',
+    dynamics365: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M4 4l8-4v10.6L4 14V4zm0 12l8-3.4V24l-8-4V16zm10-5.4L22 8v8l-8 4V10.6z"/></svg>',
   };
 
   document.getElementById('settings-btn').addEventListener('click', () => {
@@ -2890,6 +2891,19 @@
         } else {
           html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupZoom()">Setup</button>`;
         }
+      } else if (conn.type === 'dynamics365') {
+        if (conn.active) {
+          const mode = conn.authMode === 'delegated' ? 'Delegated (user)' : 'Client credentials (app)';
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)} &middot; ${mode}</div>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.reconnectD365()">Reconnect</button>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupD365()">Edit Credentials</button>`;
+          html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
+        } else if (conn.hasCredentials) {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.authorizeD365()">Authorize</button>`;
+          html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupD365()">Edit Credentials</button>`;
+        } else {
+          html += `<button class="btn btn-primary btn-sm" onclick="Settings.setupD365()">Setup</button>`;
+        }
       } else if (conn.type === 'telegram') {
         if (conn.active) {
           const chatStatus = conn.chatId
@@ -3300,6 +3314,87 @@
         });
         this.refresh();
       } catch {}
+    },
+
+    setupD365() {
+      const actionsEl = document.getElementById('conn-actions-dynamics365');
+      if (!actionsEl) return;
+      actionsEl.innerHTML = `
+        <div class="connection-input-group">
+          <p style="font-size:0.8rem;color:var(--text-muted);margin:0">
+            1. Register an app in <a href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade" target="_blank" style="color:var(--primary)">Azure AD (Entra ID)</a>.<br>
+            2. Add API permission: <strong>Dynamics CRM &gt; user_impersonation</strong>.<br>
+            3. Create a client secret under Certificates & Secrets.<br>
+            4. Set redirect URI to <code style="font-size:0.75rem">http://localhost:7749/oauth/dynamics365/callback</code> (Web platform).
+          </p>
+          <input type="text" id="d365-url-input" placeholder="Environment URL (e.g. https://org.crm.dynamics.com)" autocomplete="off">
+          <input type="text" id="d365-tenant-input" placeholder="Azure Tenant ID" autocomplete="off">
+          <input type="text" id="d365-client-id-input" placeholder="Client ID (Application ID)" autocomplete="off">
+          <input type="password" id="d365-client-secret-input" placeholder="Client Secret" autocomplete="off">
+          <div class="connection-input-row">
+            <button class="btn btn-primary btn-sm" onclick="Settings.saveD365Creds()">Save & Authorize</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.saveD365Direct()">Save (Client Credentials Only)</button>
+            <button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('d365-url-input').focus();
+    },
+
+    async saveD365Creds() {
+      const url = document.getElementById('d365-url-input')?.value.trim();
+      const tenantId = document.getElementById('d365-tenant-input')?.value.trim();
+      const clientId = document.getElementById('d365-client-id-input')?.value.trim();
+      const clientSecret = document.getElementById('d365-client-secret-input')?.value.trim();
+      if (!url || !tenantId || !clientId || !clientSecret) return;
+      try {
+        await fetch('/api/connections/dynamics365/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, tenantId, clientId, clientSecret }),
+        });
+        this.authorizeD365();
+      } catch {}
+    },
+
+    async saveD365Direct() {
+      const url = document.getElementById('d365-url-input')?.value.trim();
+      const tenantId = document.getElementById('d365-tenant-input')?.value.trim();
+      const clientId = document.getElementById('d365-client-id-input')?.value.trim();
+      const clientSecret = document.getElementById('d365-client-secret-input')?.value.trim();
+      if (!url || !tenantId || !clientId || !clientSecret) return;
+      try {
+        await fetch('/api/connections/dynamics365/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, tenantId, clientId, clientSecret }),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    async authorizeD365() {
+      try {
+        const res = await fetch('/api/connections/dynamics365/auth-url');
+        const data = await res.json();
+        if (data.url) {
+          window.open(data.url, '_blank');
+          const actionsEl = document.getElementById('conn-actions-dynamics365');
+          if (actionsEl) {
+            actionsEl.innerHTML = `
+              <div style="font-size:0.8rem;color:var(--text-muted);display:flex;align-items:center;gap:8px">
+                <div class="spinner" style="width:14px;height:14px;border-width:2px"></div>
+                Waiting for D365 authorization... Complete sign-in in the opened tab.
+              </div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="Settings.refresh()">Done</button>
+            `;
+          }
+        }
+      } catch {}
+    },
+
+    reconnectD365() {
+      this.authorizeD365();
     },
 
     setupTelegram() {
