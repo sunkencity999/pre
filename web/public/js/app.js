@@ -1443,13 +1443,18 @@
         const lastRun = job.last_run_at
           ? new Date(job.last_run_at).toLocaleString()
           : 'Never';
+        const nextRun = job.enabled ? nextCronRun(job.schedule) : null;
+        const nextRunStr = nextRun
+          ? nextRun.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+          : 'N/A';
         html += `<div class="connection-card" style="margin-bottom:10px">
           <div class="connection-card-header" style="padding:12px 14px">
             <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
               ${statusDot}
               <div style="flex:1;min-width:0">
                 <div style="font-weight:600;font-size:0.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${Markdown.escapeHtml(job.description)}</div>
-                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${Markdown.escapeHtml(describeCron(job.schedule))} &middot; <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(job.schedule)}</code> &middot; Runs: ${job.run_count || 0} &middot; Last: ${lastRun}</div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px">${Markdown.escapeHtml(describeCron(job.schedule))} &middot; <code style="font-family:'SF Mono',monospace;font-size:0.7rem">${Markdown.escapeHtml(job.schedule)}</code></div>
+                <div style="font-size:0.75rem;color:var(--text-muted);margin-top:1px">Next: <strong style="color:var(--text-secondary)">${nextRunStr}</strong> &middot; Runs: ${job.run_count || 0} &middot; Last: ${lastRun}</div>
               </div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
@@ -1656,19 +1661,98 @@
     switch (n % 10) { case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
   }
 
+  const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const DOW_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
   function describeCron(expr) {
     const [min, hour, dom, mon, dow] = expr.split(/\s+/);
-    let desc = '';
     if (min.startsWith('*/')) return `Every ${min.slice(2)} minutes`;
     if (hour.startsWith('*/')) return `Every ${hour.slice(2)} hours` + (min !== '0' ? ` at :${min.padStart(2, '0')}` : '');
     const h = parseInt(hour), m = parseInt(min);
     const timeStr = !isNaN(h) ? fmtTime(h, isNaN(m) ? 0 : m) : `${hour}:${min}`;
-    if (dow === '1-5') desc = `Weekdays at ${timeStr}`;
-    else if (dow === '0,6') desc = `Weekends at ${timeStr}`;
-    else if (dow !== '*') desc = `Days ${dow} at ${timeStr}`;
-    else if (dom !== '*') desc = `Day ${dom} of month at ${timeStr}`;
-    else desc = `Daily at ${timeStr}`;
-    return desc;
+    if (dow === '1-5') return `Weekdays at ${timeStr}`;
+    if (dow === '0,6') return `Weekends at ${timeStr}`;
+    if (dow !== '*') {
+      const dayStr = describeDow(dow);
+      return `${dayStr} at ${timeStr}`;
+    }
+    if (dom !== '*') return `Day ${dom} of month at ${timeStr}`;
+    return `Daily at ${timeStr}`;
+  }
+
+  function describeDow(dow) {
+    // Expand ranges and lists: "1,3,5" → "Mon, Wed, Fri"; "1-3" → "Mon–Wed"; "3" → "Every Wednesday"
+    const parts = dow.split(',');
+    const names = [];
+    for (const part of parts) {
+      if (part.includes('-')) {
+        const [a, b] = part.split('-').map(Number);
+        if (!isNaN(a) && !isNaN(b) && DOW_NAMES[a] && DOW_NAMES[b]) {
+          names.push(`${DOW_NAMES[a]}–${DOW_NAMES[b]}`);
+        } else {
+          names.push(part);
+        }
+      } else {
+        const n = parseInt(part);
+        if (!isNaN(n) && DOW_FULL[n]) {
+          names.push(parts.length === 1 ? `Every ${DOW_FULL[n]}` : DOW_NAMES[n]);
+        } else {
+          names.push(part);
+        }
+      }
+    }
+    return names.join(', ');
+  }
+
+  /**
+   * Compute the next fire time for a 5-field cron expression.
+   * Returns a Date or null if unparseable.
+   */
+  function nextCronRun(expr) {
+    const [minF, hourF, domF, monF, dowF] = expr.split(/\s+/);
+    const now = new Date();
+    // Brute-force: scan forward up to 400 days in 1-minute increments
+    // (optimised: jump by hour/day when possible)
+    const candidate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + 1, 0, 0);
+
+    function matchesField(val, field, rangeMax) {
+      if (field === '*') return true;
+      for (const part of field.split(',')) {
+        if (part.includes('/')) {
+          const [base, step] = part.split('/');
+          const s = parseInt(step);
+          const b = base === '*' ? 0 : parseInt(base);
+          if (!isNaN(s) && (val - b) % s === 0 && val >= b) return true;
+        } else if (part.includes('-')) {
+          const [a, b] = part.split('-').map(Number);
+          if (val >= a && val <= b) return true;
+        } else {
+          if (parseInt(part) === val) return true;
+        }
+      }
+      return false;
+    }
+
+    for (let i = 0; i < 525600; i++) { // up to 365 days of minutes
+      const d = new Date(candidate.getTime() + i * 60000);
+      if (!matchesField(d.getMonth() + 1, monF)) continue;
+      // DOM and DOW: if both are restricted (not *), either can match (OR logic per cron spec)
+      const domMatch = matchesField(d.getDate(), domF);
+      const dowMatch = matchesField(d.getDay(), dowF);
+      if (domF !== '*' && dowF !== '*') {
+        if (!domMatch && !dowMatch) continue;
+      } else {
+        if (!domMatch || !dowMatch) continue;
+      }
+      if (!matchesField(d.getHours(), hourF)) {
+        // Skip ahead to next hour
+        i += 59 - d.getMinutes();
+        continue;
+      }
+      if (!matchesField(d.getMinutes(), minF)) continue;
+      return d;
+    }
+    return null;
   }
 
   window.Cron = {
