@@ -184,10 +184,12 @@ function fireTrigger(trigger, context = {}) {
   console.log(`[triggers] Firing trigger ${trigger.id}: "${trigger.name}"`);
 
   // Execute through the cron runner pipeline
+  // Pass the watch path as cwd so the model operates in the watched directory
   executeCallback({
     id: trigger.id,
     description: trigger.name,
     prompt,
+    cwd: context.watchPath || undefined,
   }).catch(err => {
     console.error(`[triggers] Execution error for ${trigger.id}: ${err.message}`);
   });

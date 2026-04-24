@@ -60,7 +60,7 @@ async function executeCronJob(job, { broadcastWS } = {}) {
   try {
     await runToolLoop({
       sessionId,
-      cwd: process.env.HOME || '/tmp',
+      cwd: job.cwd || process.env.HOME || '/tmp',
       signal: abortController.signal,
       userMessage: job.prompt,
       needsTitle: false, // we already set the title
