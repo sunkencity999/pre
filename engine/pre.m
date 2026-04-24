@@ -8837,7 +8837,36 @@ static void argus_react(const char *tool_name, const char *tool_output) {
 
     char reaction[1024];
     if (json_extract_str(json_start, "content", reaction, sizeof(reaction)) > 0 && strlen(reaction) >= 5) {
-        printf("\n  " ANSI_MAGENTA "✦ " ANSI_RESET ANSI_CYAN "%s" ANSI_RESET "\n", reaction);
+        // Word-wrap the reaction to fit within the box (40 visible chars per line)
+        char wrapped[1200];
+        int wi = 0, col = 0;
+        for (int i = 0; reaction[i] && wi < (int)sizeof(wrapped) - 4; i++) {
+            if (reaction[i] == '\n') { wrapped[wi++] = '\n'; col = 0; continue; }
+            if (col >= 38 && reaction[i] == ' ') { wrapped[wi++] = '\n'; col = 0; continue; }
+            wrapped[wi++] = reaction[i];
+            col++;
+        }
+        wrapped[wi] = 0;
+
+        printf("\n");
+        printf("  " ANSI_MAGENTA "  ┌──────────────────────────────────────────┐" ANSI_RESET "\n");
+        printf("  " ANSI_MAGENTA "  │" ANSI_RESET "  " ANSI_BOLD ANSI_MAGENTA "⏿ Argus" ANSI_RESET "                                 " ANSI_MAGENTA "│" ANSI_RESET "\n");
+        printf("  " ANSI_MAGENTA "  ├──────────────────────────────────────────┤" ANSI_RESET "\n");
+
+        // Print each line of the wrapped reaction inside the box
+        char *line = wrapped;
+        while (line && *line) {
+            char *nl = strchr(line, '\n');
+            int len = nl ? (int)(nl - line) : (int)strlen(line);
+            if (len > 40) len = 40;
+            printf("  " ANSI_MAGENTA "  │" ANSI_RESET "  " ANSI_CYAN "%.*s" ANSI_RESET, len, line);
+            // Pad to fixed width (interior = 42: 2 leading + text + pad)
+            for (int p = len; p < 40; p++) printf(" ");
+            printf(ANSI_MAGENTA "│" ANSI_RESET "\n");
+            line = nl ? nl + 1 : NULL;
+        }
+
+        printf("  " ANSI_MAGENTA "  └──────────────────────────────────────────┘" ANSI_RESET "\n");
     }
 }
 
@@ -8845,9 +8874,15 @@ static void cmd_argus(const char *args) {
     (void)args;
     g_argus_enabled = !g_argus_enabled;
     argus_save();
-    printf("\n  " ANSI_MAGENTA "✦ Argus" ANSI_RESET " %s\n",
-           g_argus_enabled ? "enabled — reactions will appear between tool outputs"
-                          : "disabled");
+    if (g_argus_enabled) {
+        printf("\n");
+        printf("  " ANSI_MAGENTA "  ┌──────────────────────────────────────────┐" ANSI_RESET "\n");
+        printf("  " ANSI_MAGENTA "  │" ANSI_RESET "  " ANSI_BOLD ANSI_MAGENTA "⏿ Argus" ANSI_RESET " — " ANSI_DIM "session observer" ANSI_RESET "              " ANSI_MAGENTA "│" ANSI_RESET "\n");
+        printf("  " ANSI_MAGENTA "  │" ANSI_RESET "  " ANSI_CYAN "Watching. Reactions appear after tools." ANSI_RESET "  " ANSI_MAGENTA "│" ANSI_RESET "\n");
+        printf("  " ANSI_MAGENTA "  └──────────────────────────────────────────┘" ANSI_RESET "\n");
+    } else {
+        printf("\n  " ANSI_MAGENTA "  ⏿ Argus" ANSI_RESET " " ANSI_DIM "disabled" ANSI_RESET "\n");
+    }
     printf("\n");
 }
 
