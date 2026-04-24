@@ -2067,6 +2067,7 @@
               </div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
+              ${t.type === 'file_watch' && t.enabled && !t.watching ? `<button class="btn btn-primary btn-sm" onclick="window.Triggers.restart('${t.id}')">Start</button>` : ''}
               <button class="btn btn-ghost btn-sm" onclick="window.Triggers.toggle('${t.id}', ${!t.enabled})">${t.enabled ? 'Disable' : 'Enable'}</button>
               <button class="btn btn-ghost btn-sm" onclick="window.Triggers.del('${t.id}')" style="color:var(--danger)" title="Delete">&times;</button>
             </div>
@@ -2185,6 +2186,14 @@
     async del(id) {
       if (!confirm('Delete this trigger?')) return;
       await fetch(`/api/triggers/${id}`, { method: 'DELETE' });
+      openTriggersPanel();
+    },
+    async restart(id) {
+      try {
+        const res = await fetch(`/api/triggers/${id}/restart`, { method: 'POST' });
+        const data = await res.json();
+        if (data.error) alert(data.error);
+      } catch {}
       openTriggersPanel();
     },
   };

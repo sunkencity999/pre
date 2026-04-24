@@ -557,6 +557,12 @@ app.patch('/api/triggers/:id', (req, res) => {
   res.json({ ok: true, message: result });
 });
 
+app.post('/api/triggers/:id/restart', (req, res) => {
+  const result = triggerSystem.restartWatcher(req.params.id);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.json(result);
+});
+
 app.delete('/api/triggers/:id', (req, res) => {
   const result = triggerSystem.trigger({ action: 'remove', id: req.params.id });
   if (result.startsWith('Error')) return res.status(404).json({ error: result });

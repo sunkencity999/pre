@@ -400,6 +400,24 @@ function isWatching(triggerId) {
   return activeWatchers.has(triggerId);
 }
 
+/**
+ * Restart the file watcher for a given trigger.
+ * Useful when the watcher died or wasn't started.
+ */
+function restartWatcher(triggerId) {
+  const triggers = loadTriggers();
+  const trigger = triggers.find(t => t.id === triggerId);
+  if (!trigger) return { error: 'Trigger not found' };
+  if (trigger.type !== 'file_watch') return { error: 'Not a file watcher trigger' };
+  if (!trigger.enabled) return { error: 'Trigger is disabled — enable it first' };
+
+  stopWatcher(triggerId);
+  const ok = startFileWatcher(trigger);
+  return ok
+    ? { ok: true, watching: true }
+    : { error: `Failed to start watcher for ${trigger.config?.path || triggerId}` };
+}
+
 module.exports = {
   trigger,
   init,
@@ -408,4 +426,5 @@ module.exports = {
   loadTriggers,
   saveTriggers,
   isWatching,
+  restartWatcher,
 };
