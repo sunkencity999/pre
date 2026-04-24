@@ -147,8 +147,9 @@ async function sendNotifications(job, sessionId, response) {
   sendMacNotification(job.description, macPreview, guiUrl);
 
   // 2. Telegram (if configured) — send full response, chunking handles the 4096 limit
+  // Skip if the job originated from Telegram (the receiver sends its own reply)
   const conns = loadConnections();
-  if (conns.telegram_key) {
+  if (conns.telegram_key && !job.fromTelegram) {
     sendTelegramNotification(job, response).catch(err => {
       console.log(`[cron-runner] Telegram notification failed: ${err.message}`);
     });

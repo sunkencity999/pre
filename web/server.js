@@ -40,6 +40,7 @@ const mcp = require('./src/mcp');
 const hooksSystem = require('./src/hooks');
 const experienceSystem = require('./src/experience');
 const triggerSystem = require('./src/triggers');
+const telegramReceiver = require('./src/telegram-receiver');
 const chronosSystem = require('./src/chronos');
 const argusSystem = require('./src/argus');
 const { createMcpServer } = require('./src/mcp-server');
@@ -242,6 +243,10 @@ app.post('/api/connections/telegram/chat-id', (req, res) => {
   if (!chatId) return res.status(400).json({ error: 'chatId required' });
   setTelegramChatId(chatId);
   res.json({ success: true, chatId });
+});
+
+app.get('/api/telegram/receiver/status', (req, res) => {
+  res.json(telegramReceiver.getStatus());
 });
 
 app.post('/api/connections/jira/config', (req, res) => {
@@ -1332,6 +1337,7 @@ wss.on('connection', (ws) => {
 function shutdown() {
   console.log('\n  PRE Web GUI shutting down...');
   triggerSystem.shutdown();
+  telegramReceiver.shutdown();
   wss.clients.forEach(ws => ws.close());
   server.close();
   process.exit(0);
@@ -1405,6 +1411,17 @@ server.listen(PORT, async () => {
   console.log(`  Argus: ${buddyCfg.enabled ? 'enabled' : 'disabled'} (${buddyCfg.name})`);
 
   console.log(`  MCP server: HTTP at /mcp | stdio via mcp-stdio.js`);
+
+  // Initialize Telegram background receiver (incoming message polling)
+  telegramReceiver.init(
+    async (job) => executeCronJob(job, { broadcastWS })
+  ).then(tg => {
+    if (tg.active) {
+      console.log(`  Telegram: receiver active (@${tg.username})`);
+    }
+  }).catch(err => {
+    console.error(`  Telegram: receiver failed — ${err.message}`);
+  });
 
   // Check for cron jobs that were missed while the system was down
   if (enabledCount > 0) {
