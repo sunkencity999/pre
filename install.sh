@@ -349,13 +349,16 @@ step "Building PRE"
 
 cd "$ENGINE_DIR"
 make clean 2>/dev/null || true
-make pre telegram 2>&1 | tail -5
+make pre telegram menubar 2>&1 | tail -5
 if [ ! -x "$ENGINE_DIR/pre" ]; then
     fail "Build failed — 'pre' binary not found."
 fi
 ok "  Built: pre ($(du -sh pre | cut -f1))"
 if [ -x "$ENGINE_DIR/pre-telegram" ]; then
     ok "  Built: pre-telegram ($(du -sh pre-telegram | cut -f1))"
+fi
+if [ -x "$ENGINE_DIR/PRE.app/Contents/MacOS/pre-menubar" ]; then
+    ok "  Built: PRE.app (menu bar helper)"
 fi
 
 # ============================================================================
@@ -601,12 +604,21 @@ echo -e "  The MCP server auto-starts Ollama and PRE — no manual launch needed
 echo -e "  See ${CYAN}web/README.md${RESET} for delegation guidelines and cost savings data."
 
 # ============================================================================
-# Step 7: Install pre-launch command
+# Step 7: Install pre-launch command + menu bar app
 # ============================================================================
-step "Installing pre-launch command"
+step "Installing pre-launch command + menu bar app"
 
 chmod +x "$ENGINE_DIR/pre-launch"
 make -C "$ENGINE_DIR" install 2>&1
+
+# Install PRE.app menu bar helper
+if [ -d "$ENGINE_DIR/PRE.app" ] && [ -x "$ENGINE_DIR/PRE.app/Contents/MacOS/pre-menubar" ]; then
+    mkdir -p "$HOME/Applications"
+    rm -rf "$HOME/Applications/PRE.app"
+    cp -R "$ENGINE_DIR/PRE.app" "$HOME/Applications/PRE.app"
+    ok "  Installed PRE.app → ~/Applications/ (menu bar helper)"
+    echo -e "  ${DIM}Start/stop PRE from the menu bar — no terminal needed.${RESET}"
+fi
 
 # Ensure ~/.local/bin is in PATH
 if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
@@ -1087,6 +1099,10 @@ echo -e "  ${BOLD}Launch:${RESET}"
 echo -e "    ${CYAN}pre-launch${RESET}                  Start PRE (CLI + Web GUI)"
 echo -e "    ${CYAN}pre-launch --show-think${RESET}     Start with visible reasoning"
 echo -e "    Web GUI auto-starts at ${CYAN}http://localhost:7749${RESET}"
+fi
+if [ -d "$HOME/Applications/PRE.app" ]; then
+echo -e "    ${GREEN}PRE.app${RESET}                     Menu bar helper (~/Applications/)"
+echo -e "    ${DIM}Start, stop, restart, and open PRE from the menu bar.${RESET}"
 fi
 echo ""
 echo -e "  ${BOLD}Hardware Profile:${RESET}"

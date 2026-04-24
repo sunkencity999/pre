@@ -1,6 +1,7 @@
 # Compiled binaries
 engine/pre
 engine/pre-telegram
+engine/PRE.app/Contents/MacOS/pre-menubar
 
 # Claude Code context
 CLAUDE.md
