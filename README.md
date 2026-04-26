@@ -159,6 +159,8 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 **Monitor background processes** — Start long-running commands (builds, servers, log tails), check their output periodically, and stop them when done — without blocking the conversation.
 
+**Argus companion** — An interactive session observer that watches PRE work in real time. Diagnoses errors with root-cause analysis and fix suggestions, relates observations to your stated goal (not just tool actions), filters out low-value noise with paraphrase detection, and supports reply-to-reaction micro-conversations where you can ask Argus to elaborate.
+
 **Live dashboards** — Create HTML artifacts that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints.
 
 ### Enterprise Integrations
@@ -806,6 +808,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 - **Sub-agent spawning** — the model can delegate research tasks to autonomous sub-agents that run in parallel, each with their own Ollama session
 - **Browser automation** — headless Chrome control with vision-aware screenshot feedback. Navigate, click, type, scroll, and read web pages.
 - **MCP server support** — connect external MCP tool servers; their tools are automatically discovered and available to the model
+- **Argus companion** — interactive session observer with goal-aware reactions, error diagnostics, cross-event pattern recognition, typing indicator, and reply-to-reaction conversations
 - **Hooks** — pre/post tool execution hooks for auditing, safety guardrails, and workflow automation
 - **File and image upload** — drag-and-drop, clipboard paste (Ctrl/Cmd+V), or file picker button. Images sent to model for analysis; text files included as context.
 - **Image generation** — generates images locally via ComfyUI. Results display inline with Full Size, Download, and Show in Finder actions.

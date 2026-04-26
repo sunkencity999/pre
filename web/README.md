@@ -63,7 +63,7 @@ The `pre-launch` command also starts the web GUI automatically in the background
 - **Live artifacts** — HTML dashboards that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints
 - **Parallel sub-agents** — spawn multiple research agents that run concurrently via `Promise.all`; tool execution (web fetches, file reads) runs in parallel
 - **Background process monitor** — start, read output from, and stop long-running commands without blocking the conversation
-- **Argus companion** — a real-time session observer that watches PRE work and adds brief, contextual reactions (tips, warnings, insights) via a floating widget
+- **Argus companion** — an interactive session observer that watches PRE work, diagnoses errors with actionable fixes, relates observations to your stated goal, and supports reply-to-reaction micro-conversations
 - **Auto-sized context window** — the installer detects your Mac's RAM and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
@@ -634,23 +634,26 @@ PRE integrates with [Microsoft Dynamics 365](https://dynamics.microsoft.com) and
 
 ---
 
-## Argus — Real-Time Session Companion
+## Argus — Interactive Session Companion
 
-Argus is a watchful observer that monitors your PRE sessions in real time and adds brief, contextual reactions as you work. Think of it as a senior engineer looking over your shoulder — it spots potential issues, adds useful context, and highlights things the main response might have missed.
+Argus is an interactive observer that monitors your PRE sessions in real time and provides contextual, goal-aware reactions as you work. It diagnoses errors with actionable fixes, relates observations to your stated intent, filters out low-value noise, and supports reply-to-reaction micro-conversations — turning a passive watcher into a collaborative pair.
 
 ### How It Works
 
 1. **Event observation** — Argus watches every tool call, result, error, and completion in your session
 2. **Selective triggering** — only reacts to interesting events (errors, web searches, bash commands, file operations, task completions) with a 30-second cooldown between reactions
-3. **Separate LLM call** — generates reactions via a lightweight Ollama call with thinking mode disabled (`think: false`) for terse, direct output
-4. **Quality filtering** — an automatic filter rejects narration, meta-text, and instruction echoing, only surfacing genuinely useful observations
+3. **Goal-aware prompting** — Argus sees your original message and relates observations to your intent, e.g., "Auth module is taking shape — the JWT verification looks clean" instead of "File written"
+4. **Thinking indicator** — a "thinking..." shimmer appears while Argus generates, so reactions feel like a companion forming a thought rather than a random text injection
+5. **Smart quality filter** — rejects paraphrases of tool output (>70% word overlap), reactions under 20 characters, narration, and meta-text; boosts reactions that connect patterns across multiple events
+6. **Reply-to-Argus** — hover over any reaction to reveal a reply button; ask "what do you mean?" and Argus responds with one more turn using the full reaction context
 
 ### What Argus Is Good At
 
-- **Catching errors** — spots permission issues, failed commands, and mismatched data before you scroll back to check
-- **Analyzing search quality** — notes when search queries might return stale data, when results lack the needed information, or when a different query would be more effective
+- **Diagnosing errors** — when a tool returns an error or stack trace, Argus identifies the likely root cause and suggests a specific fix, not just "error occurred"
+- **Tracking progress toward your goal** — if you said "refactor auth to use JWT," Argus comments on progress toward that goal as files are written and tests pass
+- **Cross-event pattern recognition** — connects dots across the session: "This is the third file that imports the deprecated config format — might be worth a bulk update." These insights get a visual accent (purple left border) in the panel
+- **Analyzing search quality** — notes when search queries might return stale data or when a different query would be more effective
 - **Adding context** — provides relevant facts or technical details that complement the main response
-- **Flagging potential issues** — identifies edge cases, missing error handling, or assumptions in tool output
 
 ### Configuration
 
@@ -675,7 +678,13 @@ Argus config lives at `~/.pre/argus.json`:
 
 ### GUI Widget
 
-A floating **✦** button in the bottom-right corner of the chat area. Click it to expand the Argus panel, which shows a scrollable list of reactions with timestamps and trigger context (e.g., "tool_result · web_search"). Reactions appear in real time as they're generated.
+A floating **✦** button in the bottom-right corner of the chat area. Click it to expand the Argus panel:
+
+- **Thinking indicator** — animated bouncing dots ("Argus is thinking...") appear while a reaction generates, then smoothly replace with the actual text
+- **Reaction cards** — each shows the reaction text, timestamp, and trigger context (e.g., "tool_result · web_search")
+- **Boosted reactions** — cross-event insights that connect patterns across the session get a purple left border accent
+- **Reply button** — hover over any reaction to reveal "reply"; click to open an inline text input. Press Enter to send your reply and Argus responds in a threaded sub-message below the original reaction
+- **Toggle switch** — enable/disable Argus from the panel header without leaving the chat
 
 ### CLI Support
 
@@ -688,6 +697,7 @@ The CLI (`/argus` command) toggles Argus on/off. When enabled, reactions appear 
 | `/api/argus` | `GET` | Get current Argus config |
 | `/api/argus` | `POST` | Update Argus config |
 | `/api/argus/status` | `GET` | Get Argus status (enabled, generating, window size) |
+| `/api/argus/reply` | `POST` | Reply to a reaction (`{ reactionId, reply }`) — returns Argus's follow-up response |
 
 ---
 
@@ -2074,7 +2084,7 @@ src/
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
-  argus.js                 Real-time session companion (event observation, reaction generation)
+  argus.js                 Interactive session companion (event observation, goal-aware reactions, reply-to-Argus)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
   constants.js             MODEL_CTX (from ~/.pre/context), paths
   triggers.js              Event-driven trigger engine (file watchers, webhooks, polling)

@@ -600,6 +600,28 @@ const MODULES = [
     challenge: 'Start a monitor on a real process (a log tail, a build command, or a dev server), do something else in the conversation, then come back and read the output. Multi-tasking!'
   },
   {
+    id: 'argus',
+    title: 'Argus Companion',
+    desc: 'An interactive observer that watches your session and offers insights',
+    xp: 15,
+    badge: 'Watchful Eye',
+    lessons: [
+      {
+        icon: '\u{2728}',
+        title: 'Reactions & Diagnostics',
+        text: 'Argus watches every tool call and result in real time. When errors occur, it diagnoses the root cause and suggests a fix. For successful operations, it relates what happened to your stated goal \u2014 "Auth module is taking shape" instead of just "File written." Look for the floating \u2726 button in the bottom-right corner.',
+        prompts: ['Tell PRE to read a file that doesn\'t exist, then check the Argus panel \u2014 it should suggest why the error occurred.', 'Ask PRE to create a multi-step project and watch Argus comment on your progress toward the goal.']
+      },
+      {
+        icon: '\u{1F4AC}',
+        title: 'Reply to Argus',
+        text: 'Argus isn\'t fire-and-forget \u2014 you can reply. Hover over any reaction to reveal a "reply" button. Click it, type a question like "what do you mean?" and Argus responds in a threaded sub-message. Cross-event insights (where Argus connects patterns across the session) appear with a purple accent border.',
+        prompts: ['Do a multi-step task (search, read, write), then open the Argus panel and reply to one of its observations with "tell me more".', 'Ask PRE to research a topic with sub-agents, then ask Argus about any patterns it noticed.']
+      }
+    ],
+    challenge: 'Do a real multi-tool task and watch the Argus panel. When a reaction appears, reply to it with a follow-up question. Argus remembers the full context of that reaction and can expand on its observation.'
+  },
+  {
     id: 'artifacts',
     title: 'Artifacts & Reports',
     desc: 'Interactive HTML documents, visualizations, and exports',
