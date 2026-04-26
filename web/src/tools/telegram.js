@@ -99,6 +99,7 @@ function botRequest(method, params) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Telegram request timed out')); });
     req.write(postData);
     req.end();
   });

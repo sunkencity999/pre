@@ -664,12 +664,21 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         continue;
       }
 
-      // Execute the tool
+      // Execute the tool (with abort-race so Stop cancels hung tools)
       let output;
       try {
-        output = await executeTool(toolName, toolArgs, cwd, {
+        const toolPromise = executeTool(toolName, toolArgs, cwd, {
           onStatus: (event) => send({ type: 'agent_status', ...event }),
         });
+        if (signal) {
+          const abortPromise = new Promise((_, reject) => {
+            if (signal.aborted) return reject(new Error('Cancelled by user'));
+            signal.addEventListener('abort', () => reject(new Error('Cancelled by user')), { once: true });
+          });
+          output = await Promise.race([toolPromise, abortPromise]);
+        } else {
+          output = await toolPromise;
+        }
       } catch (err) {
         output = `Error: ${err.message}`;
       }

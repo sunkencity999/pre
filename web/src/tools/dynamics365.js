@@ -75,6 +75,7 @@ function fetchClientCredentialsToken(config) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('D365 auth request timed out')); });
     req.write(postData);
     req.end();
   });
@@ -117,6 +118,7 @@ function refreshDelegatedToken(config) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('D365 token refresh timed out')); });
     req.write(postData);
     req.end();
   });
@@ -204,6 +206,7 @@ function dataverseRequest(method, apiPath, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Dataverse request timed out')); });
     if (body) req.write(JSON.stringify(body));
     req.end();
   });

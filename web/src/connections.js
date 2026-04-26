@@ -96,6 +96,7 @@ function testTelegramToken(token) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(15000, () => { req.destroy(); reject(new Error('Telegram token test timed out')); });
     req.end();
   });
 }
@@ -368,6 +369,7 @@ function exchangeGoogleCode(code, redirectPort) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Google OAuth exchange timed out')); });
     req.write(postData);
     req.end();
   });
@@ -412,6 +414,7 @@ function refreshGoogleToken() {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Google token refresh timed out')); });
     req.write(postData);
     req.end();
   });
@@ -493,6 +496,7 @@ function exchangeMicrosoftCode(code, redirectPort) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Microsoft OAuth exchange timed out')); });
     req.write(postData);
     req.end();
   });
@@ -542,6 +546,7 @@ function refreshMicrosoftToken() {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Microsoft token refresh timed out')); });
     req.write(postData);
     req.end();
   });
@@ -664,6 +669,7 @@ function exchangeD365Code(code, redirectPort) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('D365 OAuth exchange timed out')); });
     req.write(postData);
     req.end();
   });
@@ -714,6 +720,7 @@ function refreshD365Token() {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('D365 token refresh timed out')); });
     req.write(postData);
     req.end();
   });

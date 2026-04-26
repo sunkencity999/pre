@@ -62,6 +62,7 @@ function confluenceRequest(method, path, config, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Confluence request timed out')); });
     if (body) req.write(JSON.stringify(body));
     req.end();
   });

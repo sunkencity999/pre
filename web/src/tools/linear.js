@@ -47,6 +47,7 @@ function graphql(query, variables, config) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Linear request timed out')); });
     req.write(body);
     req.end();
   });

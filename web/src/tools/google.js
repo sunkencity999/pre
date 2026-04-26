@@ -67,6 +67,7 @@ function refreshToken(data) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Google token refresh timed out')); });
     req.write(postData);
     req.end();
   });
@@ -108,6 +109,7 @@ function googleRequest(method, url, token, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Google API request timed out')); });
     if (body) {
       req.write(typeof body === 'string' ? body : JSON.stringify(body));
     }

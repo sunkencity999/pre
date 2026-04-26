@@ -61,6 +61,7 @@ function getAccessToken(config) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Zoom auth request timed out')); });
     req.write(postData);
     req.end();
   });
@@ -100,6 +101,7 @@ function zoomRequest(method, path, token, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Zoom request timed out')); });
     if (postData) req.write(postData);
     req.end();
   });

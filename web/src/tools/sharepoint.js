@@ -76,6 +76,7 @@ function refreshAccessToken(config) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('SharePoint token refresh timed out')); });
     req.write(postData);
     req.end();
   });
@@ -572,6 +573,7 @@ async function getPage(siteId, pageId) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('SharePoint page request timed out')); });
     req.end();
   });
 

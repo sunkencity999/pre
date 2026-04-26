@@ -61,6 +61,7 @@ function slackRequest(method, path, config, body) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Slack request timed out')); });
     if (postData) req.write(postData);
     req.end();
   });
