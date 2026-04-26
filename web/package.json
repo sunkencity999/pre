@@ -8,7 +8,9 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js --dev"
+    "dev": "node server.js --dev",
+    "test": "jest --verbose",
+    "test:watch": "jest --watch"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -19,5 +21,8 @@
     "puppeteer-core": "^24.40.0",
     "ws": "^8.18.0",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "jest": "^30.3.0"
   }
 }
