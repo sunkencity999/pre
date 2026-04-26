@@ -642,8 +642,23 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     // Execute tool calls
     send({ type: 'done_partial', stats: result.stats });
 
+    // Deduplicate tool calls — model sometimes emits the same call twice in one turn.
+    // Compare by name + JSON-serialized args; keep the first occurrence.
+    const seenCalls = new Set();
+    const dedupedCalls = result.toolCalls.filter(tc => {
+      const name = tc.function?.name || '';
+      const args = JSON.stringify(tc.function?.arguments || {});
+      const key = `${name}::${args}`;
+      if (seenCalls.has(key)) {
+        console.log(`[tool-loop] Skipping duplicate tool call: ${name}`);
+        return false;
+      }
+      seenCalls.add(key);
+      return true;
+    });
+
     const toolResults = [];
-    for (const tc of result.toolCalls) {
+    for (const tc of dedupedCalls) {
       if (signal?.aborted) break;
 
       const toolName = ALIASES[tc.function?.name] || tc.function?.name || 'unknown';
