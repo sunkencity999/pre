@@ -144,8 +144,17 @@
         loadSessionList();
         break;
 
+      case 'argus_thinking':
+        if (window.Argus) window.Argus.showThinking();
+        break;
+      case 'argus_thinking_done':
+        if (window.Argus) window.Argus.hideThinking();
+        break;
       case 'argus_reaction':
         if (window.Argus) window.Argus.addReaction(msg);
+        break;
+      case 'argus_reply':
+        if (window.Argus) window.Argus.addReply(msg);
         break;
 
       case 'cron_complete':
@@ -3853,27 +3862,96 @@
   function renderArgusReactions() {
     const body = document.getElementById('argus-panel-body');
     if (!body) return;
-    if (argusReactions.length === 0) {
+    if (argusReactions.length === 0 && !body.querySelector('.argus-thinking')) {
       body.innerHTML = '<div class="argus-empty">Argus is watching and will share<br>thoughts as you work.</div>';
       return;
     }
-    body.innerHTML = argusReactions.map(r => {
+    // Preserve thinking indicator if present
+    const thinkingEl = body.querySelector('.argus-thinking');
+
+    body.innerHTML = argusReactions.map((r, i) => {
       const time = new Date(r.timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
       const trigger = r.trigger || '';
-      const tool = r.tool ? ` · ${r.tool}` : '';
-      return `<div class="argus-reaction">
+      const tool = r.tool ? ` \u00b7 ${r.tool}` : '';
+      const boostedClass = r.boosted ? ' argus-reaction--boosted' : '';
+      const reactionId = r.id || '';
+
+      // Render reply thread if present
+      let replyHtml = '';
+      if (r.replies && r.replies.length > 0) {
+        replyHtml = r.replies.map(rep =>
+          `<div class="argus-reply-thread">
+            <div class="argus-reply-user">${escapeHtml(rep.userReply)}</div>
+            <div class="argus-reply-response">${escapeHtml(rep.content)}</div>
+          </div>`
+        ).join('');
+      }
+
+      return `<div class="argus-reaction${boostedClass}" data-reaction-id="${escapeHtml(reactionId)}" data-index="${i}">
         <div class="argus-reaction-content">${escapeHtml(r.content)}</div>
+        ${replyHtml}
         <div class="argus-reaction-meta">
           <span>${time}</span>
           <span class="argus-reaction-trigger">${escapeHtml(trigger)}${escapeHtml(tool)}</span>
+          ${reactionId ? `<button class="argus-reply-btn" data-reaction-id="${escapeHtml(reactionId)}" title="Reply to this">reply</button>` : ''}
         </div>
       </div>`;
     }).join('');
+
+    // Re-attach thinking indicator if it was present
+    if (thinkingEl) body.appendChild(thinkingEl);
+
+    // Attach reply button handlers
+    body.querySelectorAll('.argus-reply-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const rid = btn.dataset.reactionId;
+        const reactionEl = btn.closest('.argus-reaction');
+        // Toggle reply input
+        let existing = reactionEl.querySelector('.argus-reply-input-wrap');
+        if (existing) { existing.remove(); return; }
+        // Remove any other open reply inputs
+        body.querySelectorAll('.argus-reply-input-wrap').forEach(el => el.remove());
+        // Create inline input
+        const wrap = document.createElement('div');
+        wrap.className = 'argus-reply-input-wrap';
+        wrap.innerHTML = `<input type="text" class="argus-reply-input" placeholder="Reply to ${escapeHtml(argusName)}..." maxlength="300" />`;
+        reactionEl.insertBefore(wrap, reactionEl.querySelector('.argus-reaction-meta'));
+        const input = wrap.querySelector('input');
+        input.focus();
+        input.addEventListener('keydown', async (ev) => {
+          if (ev.key !== 'Enter' || !input.value.trim()) return;
+          const userReply = input.value.trim();
+          input.disabled = true;
+          input.value = 'thinking...';
+          try {
+            const res = await fetch('/api/argus/reply', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reactionId: rid, reply: userReply }),
+            });
+            const data = await res.json();
+            if (data.content) {
+              // Find the reaction and add the reply
+              const idx = parseInt(reactionEl.dataset.index, 10);
+              if (argusReactions[idx]) {
+                if (!argusReactions[idx].replies) argusReactions[idx].replies = [];
+                argusReactions[idx].replies.push({ userReply, content: data.content });
+              }
+            }
+          } catch {}
+          renderArgusReactions();
+        });
+      });
+    });
+
     body.scrollTop = body.scrollHeight;
   }
 
   window.Argus = {
     addReaction(msg) {
+      // Remove thinking indicator
+      this.hideThinking();
       argusReactions.push(msg);
       if (argusReactions.length > MAX_ARGUS_REACTIONS) argusReactions.shift();
       renderArgusReactions();
@@ -3882,8 +3960,37 @@
         document.getElementById('argus-fab')?.classList.add('argus-fab--active');
       }
     },
+    addReply(msg) {
+      // Find the reaction this reply belongs to and append it
+      const reaction = argusReactions.find(r => r.id === msg.reactionId);
+      if (reaction) {
+        if (!reaction.replies) reaction.replies = [];
+        // Only add if not already present (might have been added via fetch response)
+        if (!reaction.replies.some(rep => rep.content === msg.content)) {
+          reaction.replies.push({ userReply: '', content: msg.content });
+        }
+        renderArgusReactions();
+      }
+    },
+    showThinking() {
+      const body = document.getElementById('argus-panel-body');
+      if (!body || body.querySelector('.argus-thinking')) return;
+      // Remove empty state if present
+      const empty = body.querySelector('.argus-empty');
+      if (empty) empty.remove();
+      const el = document.createElement('div');
+      el.className = 'argus-thinking';
+      el.innerHTML = `<span class="argus-thinking-text">${escapeHtml(argusName)} is thinking</span><span class="argus-thinking-dots"><span>.</span><span>.</span><span>.</span></span>`;
+      body.appendChild(el);
+      body.scrollTop = body.scrollHeight;
+    },
+    hideThinking() {
+      const el = document.querySelector('.argus-thinking');
+      if (el) el.remove();
+    },
     clear() {
       argusReactions.length = 0;
+      this.hideThinking();
       renderArgusReactions();
       document.getElementById('argus-fab')?.classList.remove('argus-fab--active');
     },

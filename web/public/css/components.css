@@ -880,3 +880,89 @@
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* (#6c) Boosted reactions — cross-event pattern recognition */
+.argus-reaction--boosted {
+  border-left: 2px solid var(--accent, #a78bfa);
+  padding-left: 12px;
+}
+
+/* (#7) Thinking indicator */
+.argus-thinking {
+  padding: 10px 14px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  animation: argus-reaction-in 0.3s ease;
+}
+.argus-thinking-text {
+  opacity: 0.7;
+}
+.argus-thinking-dots span {
+  animation: argus-dot-bounce 1.4s infinite;
+  display: inline-block;
+}
+.argus-thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+.argus-thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes argus-dot-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* (#8) Reply to Argus */
+.argus-reply-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  cursor: pointer;
+  padding: 0 4px;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.2s ease, color 0.2s ease;
+}
+.argus-reaction:hover .argus-reply-btn {
+  opacity: 1;
+}
+.argus-reply-btn:hover {
+  color: var(--accent, #a78bfa);
+}
+
+.argus-reply-input-wrap {
+  padding: 6px 0;
+}
+.argus-reply-input {
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-hover);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+.argus-reply-input:focus {
+  border-color: var(--accent, #a78bfa);
+}
+.argus-reply-input:disabled {
+  opacity: 0.6;
+}
+
+.argus-reply-thread {
+  margin: 6px 0 4px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  font-size: 0.78rem;
+}
+.argus-reply-user {
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 2px;
+}
+.argus-reply-response {
+  color: var(--text);
+  line-height: 1.4;
+}

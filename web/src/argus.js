@@ -29,6 +29,11 @@ let currentUserMessage = '';  // the user's most recent prompt (for context)
 let recentResponseText = '';  // accumulates assistant response tokens
 let deferredReaction = null;  // pending tool_result reaction timer
 
+// Reaction context store — keyed by reaction ID, holds context for reply-to-Argus (#8)
+const reactionContexts = new Map();
+const MAX_STORED_CONTEXTS = 30;
+let reactionCounter = 0;
+
 // ── Config management ──
 
 function loadConfig() {
@@ -198,9 +203,16 @@ function buildReactionContext(trigger) {
 
 /**
  * Check whether a reaction is genuinely useful vs. narration/meta-text.
+ * (#6) Enhanced: rejects paraphrases, too-short reactions, rewards cross-event insight.
+ * @param {string} text - The reaction text
+ * @param {object} [trigger] - The triggering event summary (for paraphrase detection)
+ * @returns {boolean|'boosted'} - true if acceptable, 'boosted' if high-value, false if rejected
  */
-function isQualityReaction(text) {
-  if (!text || text.length < 10 || text.length > 400) return false;
+function isQualityReaction(text, trigger) {
+  if (!text || text.length > 400) return false;
+
+  // (#6b) Reject reactions under 20 characters — "Nice!" and "Got it." aren't worth the round-trip
+  if (text.length < 20) return false;
 
   const lower = text.toLowerCase();
 
@@ -224,6 +236,33 @@ function isQualityReaction(text) {
   // Silence signals
   if (/^[.…—\-*\s]+$/.test(text)) return false;
 
+  // (#6a) Reject paraphrases of tool output — if the reaction just restates what the tool said
+  if (trigger && trigger.result) {
+    const resultLower = trigger.result.toLowerCase().slice(0, 300);
+    // Extract significant words (4+ chars) from reaction
+    const reactionWords = lower.match(/\b[a-z]{4,}\b/g) || [];
+    const resultWords = new Set((resultLower.match(/\b[a-z]{4,}\b/g) || []));
+    if (reactionWords.length > 0) {
+      const overlap = reactionWords.filter(w => resultWords.has(w)).length;
+      const overlapRatio = overlap / reactionWords.length;
+      // If >70% of the reaction's words appear in the tool output, it's a paraphrase
+      if (overlapRatio > 0.7) return false;
+    }
+  }
+
+  // (#6c) Boost reactions that reference older events (not just the latest trigger).
+  // These are the pattern-recognition moments where Argus connects dots across the session.
+  if (eventWindow.length >= 3) {
+    const olderEvents = eventWindow.slice(0, -1); // everything except the latest
+    const olderText = olderEvents.map(e =>
+      [e.tool, e.result, e.error, e.title].filter(Boolean).join(' ')
+    ).join(' ').toLowerCase();
+    // Check if the reaction mentions something from older events
+    const reactionWords = lower.match(/\b[a-z]{5,}\b/g) || [];
+    const crossRef = reactionWords.some(w => olderText.includes(w) && !(trigger?.result || '').toLowerCase().includes(w));
+    if (crossRef) return 'boosted';
+  }
+
   return true;
 }
 
@@ -236,20 +275,41 @@ async function generateReaction(trigger) {
   console.log(`[argus] Generating reaction for ${trigger.type}${trigger.tool ? ':' + trigger.tool : ''}`);
 
   try {
-    // Choose prompt based on trigger type — 'done' events get the substantive
-    // commentary prompt since the full response is available for analysis.
+    // (#7) Broadcast thinking indicator before Ollama call
+    const reactionId = `argus_${++reactionCounter}_${Date.now().toString(36)}`;
+    if (broadcastFn) {
+      broadcastFn({
+        type: 'argus_thinking',
+        name: cfg.name,
+        trigger: trigger.type,
+        tool: trigger.tool || null,
+      });
+    }
+
+    // Choose prompt based on trigger type and error state
     const isContentTrigger = trigger.type === 'done' || trigger.type === 'artifact' || trigger.type === 'document';
+    const isError = trigger.hasError || trigger.status === 'error' || trigger.type === 'error';
     const groundingRule = ' IMPORTANT: Tool results (especially web_search) are real-time data — trust them over your training knowledge. Never claim a feature or product does not exist if search results show otherwise.';
-    const systemPrompt = isContentTrigger
-      ? 'You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. Speak to the substance, not the mechanics. No labels, no preamble.' + groundingRule
-      : 'You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. No labels, no preamble.' + groundingRule;
+
+    // (#4) User intent awareness — all prompts instruct Argus to relate to the user's goal
+    // (#5) Error reactions get a diagnostic prompt that asks for root cause + fix suggestions
+    let systemPrompt;
+    if (isError) {
+      systemPrompt = `You are Argus, a sharp diagnostic advisor. An error just occurred. Analyze the error and provide ONE actionable response: identify the likely root cause and suggest a specific fix or next step. Don't just acknowledge the error — diagnose it. If you can see what the user was trying to accomplish, frame your suggestion in terms of achieving that goal. No labels, no preamble.${groundingRule}`;
+    } else if (isContentTrigger) {
+      systemPrompt = `You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. If you can see the user's original intent, comment on progress toward that goal rather than just the mechanics of what happened. Speak to the substance. No labels, no preamble.${groundingRule}`;
+    } else {
+      systemPrompt = `You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. If you can see the user's goal, relate your observation to their progress — e.g., "Auth module is taking shape" beats "File written." No labels, no preamble.${groundingRule}`;
+    }
+
+    const contextText = buildReactionContext(trigger);
 
     const result = await streamChat({
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: buildReactionContext(trigger) },
+        { role: 'user', content: contextText },
       ],
-      maxTokens: isContentTrigger ? 120 : 80,
+      maxTokens: isError ? 150 : (isContentTrigger ? 120 : 80),
       think: false,
       extraOptions: { temperature: 0.6 },
     });
@@ -268,20 +328,41 @@ async function generateReaction(trigger) {
       if (end > 10) reaction = reaction.slice(0, end + 1).trim();
     }
 
-    // Quality gate
-    if (!isQualityReaction(reaction)) {
+    // (#6) Quality gate — pass trigger for paraphrase detection
+    const quality = isQualityReaction(reaction, trigger);
+    if (!quality) {
       console.log(`[argus] Filtered: "${reaction.slice(0, 80)}"`);
       reaction = '';
     }
 
     if (reaction && broadcastFn) {
-      console.log(`[argus] Broadcasting: "${reaction.slice(0, 80)}"`);
+      const isBoosted = quality === 'boosted';
+      if (isBoosted) console.log(`[argus] Boosted (cross-event): "${reaction.slice(0, 80)}"`);
+      else console.log(`[argus] Broadcasting: "${reaction.slice(0, 80)}"`);
+
+      // (#8) Store context for reply-to-Argus
+      reactionContexts.set(reactionId, {
+        systemPrompt,
+        contextText,
+        reaction,
+        trigger: { type: trigger.type, tool: trigger.tool, hasError: trigger.hasError },
+        userMessage: currentUserMessage,
+        createdAt: Date.now(),
+      });
+      // Evict oldest if over limit
+      if (reactionContexts.size > MAX_STORED_CONTEXTS) {
+        const oldest = reactionContexts.keys().next().value;
+        reactionContexts.delete(oldest);
+      }
+
       broadcastFn({
         type: 'argus_reaction',
+        id: reactionId,
         content: reaction,
         name: cfg.name,
         trigger: trigger.type,
         tool: trigger.tool || null,
+        boosted: isBoosted,
         timestamp: Date.now(),
       });
     }
@@ -289,6 +370,54 @@ async function generateReaction(trigger) {
     console.log(`[argus] Reaction error: ${err.message}`);
   } finally {
     generating = false;
+    // (#7) Clear thinking indicator
+    if (broadcastFn) {
+      broadcastFn({ type: 'argus_thinking_done' });
+    }
+  }
+}
+
+// ── Reply to Argus (#8) ──
+
+/**
+ * Handle a user reply to a specific Argus reaction.
+ * Rebuilds the conversation context and generates a follow-up response.
+ * @param {string} reactionId - ID of the reaction being replied to
+ * @param {string} userReply - The user's reply text
+ * @returns {Promise<{content: string, reactionId: string}|{error: string}>}
+ */
+async function replyToReaction(reactionId, userReply) {
+  const ctx = reactionContexts.get(reactionId);
+  if (!ctx) return { error: 'Reaction context expired — Argus can only reply to recent reactions.' };
+  if (!userReply || userReply.trim().length === 0) return { error: 'Empty reply.' };
+
+  const cfg = getConfig();
+
+  try {
+    const result = await streamChat({
+      messages: [
+        { role: 'system', content: `You are ${cfg.name}, a perceptive session companion. The user is replying to one of your earlier observations. Answer their question or expand on your point in 1-2 sentences. Be specific and helpful. No labels, no preamble.` },
+        { role: 'user', content: ctx.contextText },
+        { role: 'assistant', content: ctx.reaction },
+        { role: 'user', content: userReply.trim() },
+      ],
+      maxTokens: 150,
+      think: false,
+      extraOptions: { temperature: 0.6 },
+    });
+
+    let reply = (result.response || '').trim();
+    reply = reply.replace(/^argus:\s*/i, '');
+    // Take first two lines max for replies (slightly more generous than reactions)
+    const lines = reply.split('\n').filter(l => l.trim());
+    reply = lines.slice(0, 2).join(' ').trim();
+
+    if (reply.length < 5) return { error: 'Argus had nothing useful to add.' };
+
+    return { content: reply, reactionId };
+  } catch (err) {
+    console.log(`[argus] Reply error: ${err.message}`);
+    return { error: `Reply failed: ${err.message}` };
   }
 }
 
@@ -373,4 +502,5 @@ module.exports = {
   saveConfig,
   getStatus,
   loadConfig,
+  replyToReaction,
 };

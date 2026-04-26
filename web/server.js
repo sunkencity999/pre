@@ -711,6 +711,15 @@ app.post('/api/argus', (req, res) => {
 app.get('/api/argus/status', (_req, res) => {
   res.json(argusSystem.getStatus());
 });
+app.post('/api/argus/reply', async (req, res) => {
+  const { reactionId, reply } = req.body;
+  if (!reactionId || !reply) return res.status(400).json({ error: 'reactionId and reply are required' });
+  const result = await argusSystem.replyToReaction(reactionId, reply);
+  if (result.error) return res.status(404).json(result);
+  // Also broadcast as WS event so the panel updates in real-time
+  broadcastWS({ type: 'argus_reply', ...result, name: argusSystem.getConfig().name, timestamp: Date.now() });
+  res.json(result);
+});
 
 // ── Live Data endpoints (for auto-refreshing artifacts) ──
 const calendarTool = require('./src/tools/calendar');
