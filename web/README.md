@@ -1,6 +1,6 @@
 # PRE Web GUI
 
-A local AI operating system for macOS. 63+ tools, desktop automation, document intelligence, voice interface, 15 enterprise integrations, event-driven triggers, persistent memory, and a full management GUI — all running on your Apple Silicon Mac with zero cloud dependency.
+A local AI operating system for macOS. 70+ tools, desktop automation, document intelligence, voice interface, 16 enterprise integrations, event-driven triggers, self-architecting virtual tools, relevance-ranked memory, and a full management GUI — all running on your Apple Silicon Mac with zero cloud dependency.
 
 PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated AI platform** that controls your desktop, reads your email, searches your documents semantically, reacts to file changes, speaks and listens, records and replays workflows, schedules autonomous tasks, and connects to every enterprise tool your team uses — through a single conversational interface backed by Google Gemma 4 26B running locally at ~73 tokens/second.
 
@@ -14,10 +14,11 @@ PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated
 | **Desktop automation** | Computer Use + Workflow recording: PRE sees your screen and operates any application. Record actions, replay on demand. |
 | **Document intelligence** | Local RAG indexes your files and searches by meaning, not keywords. Powered by `nomic-embed-text` embeddings. |
 | **Voice interface** | Hold-to-record microphone in the GUI. Whisper transcribes locally; macOS `say` speaks responses. No audio leaves your machine. |
-| **Event-driven triggers** | File watchers and webhooks that fire prompts automatically. PRE reacts to your environment without being asked. |
-| **Enterprise integrations** | 15 services (Jira, Confluence, SharePoint, Slack, Linear, Zoom, Figma, Asana, Gmail, Drive, GitHub, Smartsheet, Telegram, Brave, Wolfram) in one interface. |
+| **Event-driven triggers** | File watchers, webhooks, and polling monitors that fire prompts automatically. PRE reacts to your environment without being asked. |
+| **Enterprise integrations** | 16 services (Jira, Confluence, SharePoint, Slack, Linear, Zoom, Figma, Asana, Gmail, Drive, GitHub, Smartsheet, Dynamics 365, Telegram, Brave, Wolfram) in one interface. |
 | **Autonomous scheduling** | Cron jobs run server-side — daily briefings, monitoring, reports — even when you're not at the computer. |
-| **Persistent memory** | Auto-extracted from conversations, age-tracked, semantically searchable. PRE gets smarter over weeks and months. |
+| **Persistent memory** | Auto-extracted from conversations, age-tracked, relevance-ranked via embeddings. PRE gets smarter over weeks and months. |
+| **Self-architecting tools** | Create reusable parameterized tools at runtime from prompt templates, recorded workflows, or multi-step chains. PRE extends its own capabilities. |
 | **Live artifacts** | HTML dashboards that auto-refresh with real-time data from your Mac — calendar, email, system stats, reminders — no manual updates. |
 | **Parallel sub-agents** | Spawn multiple research agents that run concurrently, each with their own session and tools. Results collected and synthesized automatically. |
 | **Background process monitor** | Start long-running commands (builds, servers, watchers), check their output periodically, and stop them when done — without blocking the conversation. |
@@ -49,11 +50,14 @@ The `pre-launch` command also starts the web GUI automatically in the background
 
 - **Computer Use** — desktop automation via screenshot + mouse/keyboard control; the model sees your screen and operates any application
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
-- **Full tool execution** — 63+ tools run server-side with multi-turn agentic loop (up to 25 tool calls per prompt)
+- **Full tool execution** — 70+ tools run server-side with multi-turn agentic loop (up to 35 tool calls per prompt)
 - **Local image generation** — ComfyUI + Stable Diffusion XL on Apple Silicon GPU, inline image preview in chat
 - **Auto-start at login** — optional macOS LaunchAgent keeps the web GUI running in the background; toggle from Settings
 - **Local RAG** — index directories and search by meaning using `nomic-embed-text` embeddings; incremental re-indexing, paragraph-aware chunking
-- **Event-driven triggers** — file watchers and webhooks that fire prompts automatically when things change
+- **Event-driven triggers** — file watchers, webhooks, and polling monitors that fire prompts automatically when things change
+- **Self-architecting virtual tools** — create reusable parameterized tools at runtime from prompt templates, recorded workflows, or multi-step tool chains
+- **Relevance-ranked memory** — embedding-based semantic ranking ensures the most relevant memories and experiences are injected into context, not just the most recent
+- **Graceful cancellation** — Stop button immediately cancels hung tool execution via abort signals; 30-second HTTP timeouts prevent indefinite hangs on cloud API calls
 - **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say`; all audio stays on your machine
 - **Workflow capture and replay** — record Computer Use action sequences and replay them at configurable speed
 - **Live artifacts** — HTML dashboards that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints
@@ -126,6 +130,7 @@ All cloud integrations are configured through the Settings panel (gear icon in s
 | **Zoom** | Server-to-Server OAuth | Meetings (CRUD), recordings, users |
 | **Figma** | Personal Access Token | Files, nodes, comments, projects, versions, image export |
 | **Asana** | Personal Access Token | Tasks (CRUD), projects, workspaces, sections, search, comments |
+| **Dynamics 365** | URL + Client ID + Client Secret + Tenant ID | Search, records (CRUD), entity metadata, OData queries |
 
 ## Computer Use (Desktop Automation)
 
@@ -394,7 +399,7 @@ Click the **search+ icon** in the sidebar footer to open the RAG management pane
 
 ## Event-Driven Triggers
 
-PRE can react to events automatically — watch files for changes or listen for webhooks, then execute prompts when triggered. Triggers use the same execution pipeline as cron jobs, so they create sessions, run tool loops, and deliver notifications.
+PRE can react to events automatically — watch files for changes, listen for webhooks, or poll connected services on an interval, then execute prompts when triggered. Triggers use the same execution pipeline as cron jobs, so they create sessions, run tool loops, and deliver notifications.
 
 ### Trigger Types
 
@@ -402,12 +407,13 @@ PRE can react to events automatically — watch files for changes or listen for 
 |------|-------------|
 | **File watcher** | Monitors a directory (recursive) for file changes. Debounced (default 3s) to batch rapid changes. Optional glob filter. |
 | **Webhook** | Listens at `/api/triggers/webhook/:id`. Fires when an HTTP POST is received. Optional secret verification via `X-Webhook-Secret` header. |
+| **Polling** | Proactively monitors connected services (GitHub, Gmail, Jira, Slack, Calendar) on a configurable interval (default 60 min, minimum 15 min). Generates a briefing from each service's recent activity. |
 
 ### Available Actions
 
 | Action | Description |
 |--------|-------------|
-| `add` | Create a new trigger (file_watch or webhook) |
+| `add` | Create a new trigger (file_watch, webhook, or polling) |
 | `list` | List all triggers with status and hit counts |
 | `remove` | Delete a trigger (requires confirmation) |
 | `enable` | Re-enable a disabled trigger |
@@ -421,11 +427,15 @@ Trigger prompts support variables that are replaced with event data at fire time
 
 **Webhook:** `{payload}` (POST body as JSON), `{headers}` (request headers)
 
+**Polling:** `{services}` (list of monitored services)
+
 ### Example Uses
 
 > "Watch ~/Documents/reports for new files and summarize any new PDFs"
 
 > "Create a webhook trigger that processes incoming JSON payloads and posts a summary to Slack"
+
+> "Set up a polling trigger to check my GitHub notifications and Jira issues every 30 minutes"
 
 > "List all my active triggers"
 
@@ -433,7 +443,7 @@ Trigger prompts support variables that are replaced with event data at fire time
 
 ### Storage
 
-Triggers are stored in `~/.pre/triggers.json`. File watchers start automatically when the server boots (via `triggers.init()`). Webhooks are stateless listeners on the REST API.
+Triggers are stored in `~/.pre/triggers.json`. File watchers and polling monitors start automatically when the server boots (via `triggers.init()`). Webhooks are stateless listeners on the REST API. Polling monitors check connected services on their configured interval and generate briefings.
 
 ### GUI Panel
 
@@ -541,6 +551,86 @@ Click the **grid icon** in the sidebar footer to open the Workflows panel. From 
 - Click **View** to inspect individual steps
 - Click **Replay** to re-execute a workflow (with confirmation prompt)
 - Delete workflows you no longer need
+
+---
+
+## Dynamic Virtual Tools (Self-Architecting)
+
+PRE can create new tools at runtime. Define a reusable parameterized tool from a prompt template, a recorded workflow, or a multi-step chain of existing tools — and it becomes available in the tool list immediately, callable by name.
+
+### How It Works
+
+1. Call `custom_tool` with `action: create` — provide a name, description, and implementation (template, workflow, or chain)
+2. The tool is saved to `~/.pre/custom_tools/` as a JSON file
+3. On the next turn, it appears in the model's tool list as `custom_<name>` with the parameters you defined
+4. The model can call it like any built-in tool — parameters are substituted into the implementation at execution time
+
+### Implementation Types
+
+| Type | How It Works |
+|------|-------------|
+| **Prompt template** | A parameterized prompt with `${param}` placeholders. When called, parameters are substituted and the expanded prompt is returned for the model to act on. |
+| **Workflow-backed** | Delegates to a recorded workflow (from Workflow Capture). The workflow replays with parameter substitution in its arguments. |
+| **Multi-step chain** | A sequence of tool calls executed in order. Each step can reference parameters and previous step results (`${step1}`, `${step2}`, etc.). |
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `create` | Build a new custom tool with name, description, parameters, and implementation |
+| `list` | List all custom tools with types and parameter info |
+| `show` | Inspect a tool's full definition including implementation details |
+| `delete` | Remove a custom tool |
+| `from_workflow` | Convert a saved workflow into a reusable custom tool |
+
+### Example Uses
+
+> "Create a custom tool called 'daily_report' that takes a 'team' parameter and generates a standup report by checking Jira, Slack, and GitHub for that team"
+
+> "Convert my 'deploy-staging' workflow into a custom tool with a 'branch' parameter"
+
+> "List all my custom tools"
+
+> "Show me the definition of the daily_report tool"
+
+### Storage
+
+Custom tools are stored as JSON files in `~/.pre/custom_tools/`. Each file contains the tool name, description, parameter definitions, and implementation (template, workflow reference, or chain steps).
+
+---
+
+## Dynamics 365 / Dataverse
+
+PRE integrates with [Microsoft Dynamics 365](https://dynamics.microsoft.com) and Dataverse for CRM/ERP data access via the Web API.
+
+### Setup
+
+1. Register an Azure AD application with Dynamics 365 API permissions
+2. In PRE, open Settings → find **Dynamics 365** → enter your Environment URL, Client ID, Client Secret, and Tenant ID → Save
+
+### Available Actions
+
+| Action | Description |
+|--------|-------------|
+| `whoami` | Get your Dynamics 365 user info |
+| `search` | Full-text search across entities |
+| `list_entities` | List available entity types (accounts, contacts, leads, etc.) |
+| `get_entity_metadata` | Get field definitions and schema for an entity |
+| `list_records` | List records with OData filtering, sorting, and field selection |
+| `get_record` | Get a single record by GUID |
+| `create_record` | Create a new record in any entity |
+| `update_record` | Update fields on an existing record |
+| `delete_record` | Delete a record (requires confirmation) |
+
+### Example Uses
+
+> "Search Dynamics 365 for contacts at Acme Corporation"
+
+> "List all open opportunities worth over $50,000"
+
+> "Create a new lead for Jane Smith at TechCorp with email jane@techcorp.com"
+
+> "Show me the field schema for the incidents entity"
 
 ---
 
@@ -695,7 +785,7 @@ The sidebar footer contains these buttons (left to right):
 | Lightning | **Triggers** | Create file watchers and webhooks, enable/disable, view fire counts, delete |
 | Search+ | **RAG Indexes** | Index directories, semantic search across documents, manage and delete indexes |
 | Grid | **Workflows** | View saved workflows, inspect steps, replay, delete |
-| Gear | **Settings** | Configure all 15 enterprise integrations, MCP servers, auto-start at login |
+| Gear | **Settings** | Configure all 16 enterprise integrations, MCP servers, auto-start at login |
 
 ### Voice Input (Microphone Button)
 
@@ -713,10 +803,11 @@ The microphone button is hidden if Whisper is not installed. Install it with `pi
 Click the **lightning icon** to manage event-driven triggers:
 
 - **+ New Trigger** — opens a form with:
-  - **Type selector**: File Watcher or Webhook
+  - **Type selector**: File Watcher, Webhook, or Polling
   - **File Watcher fields**: watch path, glob filter (e.g., `*.pdf`)
   - **Webhook fields**: optional shared secret for verification
-  - **Prompt**: the text sent to the model when triggered (supports `{file}`, `{event}`, `{path}`, `{payload}`, `{headers}` variables)
+  - **Polling fields**: services to monitor (GitHub, Gmail, Jira, Slack, Calendar), interval in minutes
+  - **Prompt**: the text sent to the model when triggered (supports `{file}`, `{event}`, `{path}`, `{payload}`, `{headers}`, `{services}` variables)
 - Each trigger shows: name, type badge, status dot (green=enabled), watch path or webhook endpoint, fire count, last fired time
 - **Disable/Enable** toggles without deleting
 - **Delete** removes the trigger permanently
@@ -989,9 +1080,14 @@ When memories are injected into the system prompt, stale memories get a warning:
 
 This prevents the model from confidently acting on information that may have changed.
 
-### Context Injection
+### Context Injection — Relevance-Ranked Memory
 
-Memories are injected into the system prompt in priority order: **feedback** (behavioral guidance) > **user** (who you are) > **project** (what's happening) > **reference** (where to look). Up to 30 memories, 30 lines each.
+On the first turn of each conversation, memories and experiences are **ranked by semantic relevance** to your query using `nomic-embed-text` embeddings and cosine similarity. This means the system prompt contains the most useful context for the current task, not just the most recent or a fixed ordering.
+
+- **Embedding-based ranking** — each memory is embedded and compared against your message; type bonuses weight feedback (+0.25) and user (+0.15) memories higher
+- **Blended experience retrieval** — the top-5 semantically relevant experiences are blended with the top-5 most recent, deduplicated
+- **Embedding cache** — memory embeddings are cached to disk (`~/.pre/memory_embeddings.json`) so ranking adds only ~5-15ms overhead on Apple Silicon
+- **Fallback** — subsequent tool turns use the standard priority ordering: **feedback** > **user** > **project** > **reference** (up to 30 memories, 30 lines each)
 
 ### GUI Memory Browser
 
@@ -1065,7 +1161,7 @@ No additional setup needed — the HTTP transport is always available when the s
 
 | Tool | Description |
 |------|-------------|
-| `pre_agent` | Run a full agentic task through PRE's local model with 63+ tools. Multi-turn tool loop, zero API cost. |
+| `pre_agent` | Run a full agentic task through PRE's local model with 70+ tools. Multi-turn tool loop, zero API cost. |
 | `pre_chat` | One-shot query to the local model. No tools, no agent loop — just fast, free LLM reasoning. |
 | `pre_memory_search` | Search PRE's persistent memory for context about the user, projects, and preferences. |
 | `pre_sessions` | List recent PRE sessions to understand what tasks have been worked on. |
@@ -1077,7 +1173,7 @@ The MCP tool descriptions tell Claude *what* PRE can do. To tell Claude *when* t
 ```markdown
 ## Local Agent Delegation (PRE)
 
-You have access to PRE, a local AI agent running Gemma 4 26B with 63+ tools
+You have access to PRE, a local AI agent running Gemma 4 26B with 70+ tools
 on Apple Silicon. PRE runs at zero token cost. Delegate to PRE (`pre_agent`)
 when the task is execution-heavy but not reasoning-heavy:
 
@@ -1159,7 +1255,7 @@ Claude/GPT (frontier model)
          │
          PRE Server (localhost:7749)
               │
-              └─ Gemma 4 26B + 63+ tools
+              └─ Gemma 4 26B + 70+ tools
                    ├─ apple_mail.search → 8 results
                    ├─ apple_mail.read → full thread
                    └─ Returns summary to Claude
@@ -1286,7 +1382,7 @@ PRE is a conversational AI that runs entirely on your Mac. Just type naturally.
 ┌─────────────────────────────────────────────────────┐
 │  YOU:  What can you help me with?                   │
 │                                                     │
-│  PRE:  I have 63+ tools at my disposal...           │
+│  PRE:  I have 70+ tools at my disposal...           │
 │        [lists capabilities]                         │
 │                                                     │
 │  YOU:  Summarize what's in my Downloads folder       │
@@ -1644,7 +1740,7 @@ When a task requires deep research, PRE can spawn sub-agents that work autonomou
 
 ### 10. Cloud Integrations
 
-PRE connects to 15 enterprise services. Configure them in **Settings** (gear icon in the sidebar footer). Each requires a simple API key or OAuth setup.
+PRE connects to 16 enterprise services. Configure them in **Settings** (gear icon in the sidebar footer). Each requires a simple API key or OAuth setup.
 
 **GitHub:**
 
@@ -1974,14 +2070,16 @@ src/
   ollama.js                Ollama /api/chat NDJSON streaming
   sessions.js              JSONL read/write + project management
   tools.js                 Tool dispatcher + execution loop
-  tools-defs.js            63+ tool definitions for Ollama
+  tools-defs.js            70+ tool definitions for Ollama
   context.js               System prompt builder
   memory.js                 Enhanced memory system (save, extract, age, context injection)
   mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
   argus.js                 Real-time session companion (event observation, reaction generation)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
   constants.js             MODEL_CTX (from ~/.pre/context), paths
-  triggers.js              Event-driven trigger engine (file watchers, webhooks)
+  triggers.js              Event-driven trigger engine (file watchers, webhooks, polling)
+  custom-tools.js          Dynamic virtual tool system (create, execute, manage runtime tools)
+  experience.js            Experience ledger (lessons learned, semantic retrieval)
   tools/
     bash.js                Shell execution (stderr capture)
     files.js               read_file, list_dir, glob, grep, file_write, file_edit
@@ -2011,6 +2109,9 @@ src/
     zoom.js                Zoom REST API (S2S OAuth)
     figma.js               Figma REST API
     asana.js               Asana REST API
+    dynamics365.js         Dynamics 365 / Dataverse Web API
+    cron.js                Scheduled task management
+    delegate.js            Frontier AI delegation (Claude, Codex, Gemini)
     agents.js              Sub-agent spawning (parallel via Promise.all)
     monitor.js             Background process monitor (start, read, stop, list)
     rag.js                 Local RAG (directory indexing + semantic search)

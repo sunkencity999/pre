@@ -1,8 +1,8 @@
 # PRE — Personal Reasoning Engine
 
-> A local AI operating system for macOS. 63+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 15 enterprise integrations, persistent memory, and a full management GUI — running entirely on Apple Silicon. No cloud. No API keys required. No data leaves your machine.
+> A local AI operating system for macOS. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on Apple Silicon. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 63+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your MacBook.
 
 The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
 
@@ -18,7 +18,7 @@ Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, con
 
 - **Speed without sacrifice.** 26B-parameter quality at ~4B computational cost. On Apple Silicon with q8_0 quantization (~28 GB, near-lossless), this means **~73 tokens/second** — fast enough that the agent's tool-call-execute-respond loop feels interactive, not glacial.
 
-- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **128K token window** — large enough for deep multi-step workflows (read 20 files, chain tool calls, iterate across 63+ tools) while cold-loading in under 5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
+- **Context without collapse.** Gemma 4 supports up to 262K tokens natively. PRE allocates a **128K token window** — large enough for deep multi-step workflows (read 20 files, chain tool calls, iterate across 70+ tools) while cold-loading in under 5 seconds. Auto-compaction at 75% extends effective session length indefinitely.
 
 - **Strong instruction following.** Gemma 4 handles PRE's `<tool_call>` JSON format consistently — it doesn't hallucinate partial calls, forget to stop after calling a tool, or mangle JSON arguments. This sounds basic, but it's the #1 failure mode that makes local agents unusable.
 
@@ -33,7 +33,7 @@ PRE doesn't abstract away the hardware — it leans into it:
 | **Streaming I/O** | Raw `recv()` with 64KB ring buffer, `memchr()` line scan | Zero-latency token delivery |
 | **Context allocation** | `num_ctx` auto-sized from RAM, synced via `~/.pre/context` | ~5s cold load, no runtime reload penalty |
 | **KV cache reuse** | Identical system prompt prefix every turn | System prompt is free after turn 1 |
-| **Prompt compression** | Function-signature tool format (~8K tokens for 63+ tools) | ~8% of 128K context, leaves 92% for conversation |
+| **Prompt compression** | Function-signature tool format (~8K tokens for 70+ tools) | ~8% of 128K context, leaves 92% for conversation |
 | **Model pre-warming** | `keep_alive: "24h"` + real warmup request at launch | Full KV cache pre-allocated, sub-second TTFT |
 | **Server metrics** | Ollama-reported `eval_duration` / `prompt_eval_duration` | Ground-truth tok/s and TTFT numbers |
 
@@ -125,7 +125,7 @@ my-project #general>
 
 ## What PRE Can Do
 
-PRE is a local AI operating system with 63+ tools across six capability layers.
+PRE is a local AI operating system with 70+ tools across six capability layers.
 
 ### Desktop Automation
 
@@ -139,7 +139,9 @@ PRE is a local AI operating system with 63+ tools across six capability layers.
 
 **Search documents semantically** — Local RAG indexes your files and searches by meaning. Ask "what files discuss authentication?" and get ranked results even when the exact word never appears. Powered by `nomic-embed-text` embeddings, fully local. Manage indexes from the GUI panel.
 
-**Grow smarter over time** — An Experience Ledger captures lessons from past tasks and retrieves them via semantic similarity when relevant future tasks arise. Chronos temporal awareness flags stale memories and keeps the knowledge base current.
+**Grow smarter over time** — An Experience Ledger captures lessons from past tasks and retrieves them via semantic similarity when relevant future tasks arise. Chronos temporal awareness flags stale memories and keeps the knowledge base current. Relevance-ranked memory injection uses embeddings to surface the most useful context for each query, not just the most recent.
+
+**Extend itself** — Dynamic virtual tools let PRE create new reusable tools at runtime from prompt templates, recorded workflows, or multi-step chains. PRE architects its own capabilities as needed.
 
 ### Voice & Natural Input
 
@@ -149,7 +151,7 @@ PRE is a local AI operating system with 63+ tools across six capability layers.
 
 ### Reactive & Autonomous
 
-**React to events** — File watchers and webhooks fire prompts automatically when files change or HTTP requests arrive. PRE handles it with the same tool loop it uses for everything else. Manage triggers from the GUI panel.
+**React to events** — File watchers, webhooks, and polling monitors fire prompts automatically when files change, HTTP requests arrive, or connected services have new activity. PRE handles it with the same tool loop it uses for everything else. Manage triggers from the GUI panel.
 
 **Schedule recurring tasks** — Cron jobs with natural language input ("every weekday at 9am") run server-side even when the browser is closed. Results delivered via macOS notification, Telegram, and in-browser toast. Manage jobs from the GUI panel.
 
@@ -161,7 +163,7 @@ PRE is a local AI operating system with 63+ tools across six capability layers.
 
 ### Enterprise Integrations
 
-**15 services in one interface** — Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Gmail, Google Drive, Google Docs, GitHub, Telegram, Brave Search, and Wolfram Alpha. Search Jira, cross-reference Confluence, pull a file from SharePoint, and post a summary to Slack — in one conversation.
+**16 services in one interface** — Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Dynamics 365, Gmail, Google Drive, Google Docs, GitHub, Telegram, Brave Search, and Wolfram Alpha. Search Jira, cross-reference Confluence, pull a file from SharePoint, and post a summary to Slack — in one conversation.
 
 **Native macOS apps (zero config)** — Mail, Calendar, Contacts, Reminders, Notes, and Spotlight work immediately with whatever accounts you've configured on your Mac. No API keys, no OAuth.
 
@@ -169,7 +171,7 @@ PRE is a local AI operating system with 63+ tools across six capability layers.
 
 **Remember across sessions** — Persistent memory auto-extracts from conversations, tracks age, and injects relevant context. Four types: user, feedback, project, reference. Browse and manage from the GUI panel.
 
-**Run commands autonomously** — Nearly all 63+ tools auto-execute; only genuinely destructive operations ask for confirmation.
+**Run commands autonomously** — Nearly all 70+ tools auto-execute; only genuinely destructive operations ask for confirmation.
 
 **Read and modify your codebase** — Read files, glob/grep search, write and edit with checkpointed undo.
 
@@ -326,9 +328,9 @@ Type `/help` for the full list, or `/help <topic>` for detailed guides.
 
 ### Tools
 
-PRE has 63+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
+PRE has 70+ tools that the model calls autonomously. Nearly all auto-execute without confirmation:
 
-- **Auto** — executes immediately (47+ tools)
+- **Auto** — executes immediately (55+ tools)
 - **Confirm always** — asks every time (3 tools: `process_kill`, `memory_delete`, `applescript`)
 - **Hook-controlled** — optional pre/post hooks can block or audit any tool call
 
@@ -472,6 +474,7 @@ These require API keys or OAuth setup via `/connections` or the web GUI Settings
 | `figma` | Figma | Inspect files, export images, post comments |
 | `asana` | Asana | List/create/search tasks, manage projects |
 | `sharepoint` | Microsoft 365 | List sites, search/upload/download files |
+| `dynamics365` | Dynamics 365 | Search, records (CRUD), entity metadata, OData queries |
 | `wolfram` | Wolfram Alpha | Computation, math, science, data queries |
 
 #### Local RAG (Document Intelligence)
@@ -486,9 +489,9 @@ Indexes directories of text files, splits them into chunks at paragraph boundari
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `trigger` | `action`, `type`?, `path`?, `prompt`?, `name`?, `glob`?, `secret`? | Create file watchers and webhooks that fire prompts automatically. Actions: `add`, `list`, `remove`, `enable`, `disable` |
+| `trigger` | `action`, `type`?, `path`?, `prompt`?, `name`?, `glob`?, `secret`?, `services`?, `interval_minutes`? | Create file watchers, webhooks, and polling monitors that fire prompts automatically. Actions: `add`, `list`, `remove`, `enable`, `disable` |
 
-File watchers monitor directories for changes (debounced, glob-filtered). Webhooks listen at `/api/triggers/webhook/:id` with optional secret verification. Both use the same execution pipeline as cron — triggers create sessions, run tool loops, and deliver notifications.
+File watchers monitor directories for changes (debounced, glob-filtered). Webhooks listen at `/api/triggers/webhook/:id` with optional secret verification. Polling monitors check connected services (GitHub, Gmail, Jira, Slack, Calendar) on a configurable interval (default 60 min, minimum 15 min) and generate briefings. All three types use the same execution pipeline as cron — triggers create sessions, run tool loops, and deliver notifications.
 
 #### Voice Interface
 
@@ -505,6 +508,14 @@ Requires `pip install openai-whisper` for STT. TTS uses macOS built-in `say` wit
 | `workflow` | `action`, `name`?, `description`?, `speed`? | Record Computer Use action sequences and replay them. Actions: `record`, `stop`, `status`, `list`, `replay`, `show`, `delete`, `export` |
 
 Records click/type/key/scroll/drag actions during Computer Use with inter-step timing. Replay re-executes steps with configurable speed multiplier. Observation-only actions (screenshot, screen_size) are filtered out. Storage: `~/.pre/workflows/`.
+
+#### Dynamic Virtual Tools (Self-Architecting)
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `custom_tool` | `action`, `name`?, `description`?, `template`?, `steps`?, `parameters`?, `workflow_name`? | Create, manage, and execute self-defined virtual tools at runtime. Actions: `create`, `list`, `show`, `delete`, `from_workflow` |
+
+Build reusable parameterized tools from prompt templates (`${param}` substitution), recorded workflows, or multi-step tool chains. Created tools appear as `custom_<name>` in the tool list and can be called by the model like any built-in tool. Chain steps can reference previous results via `${step1}`, `${step2}`, etc. Storage: `~/.pre/custom_tools/`.
 
 ---
 
@@ -606,6 +617,7 @@ PRE integrates with external services via API keys and OAuth. Configure via `/co
 | **Figma** | Personal access token | `figma` |
 | **Asana** | Personal access token | `asana` |
 | **Microsoft 365** | Client ID + refresh token | `sharepoint` |
+| **Dynamics 365** | URL + Client ID + Client Secret + Tenant ID | `dynamics365` |
 | **Wolfram Alpha** | API key | `wolfram` |
 
 **Google** uses built-in OAuth — just sign in via your browser. No Google Cloud Console setup required. Multi-account supported: `/connections add google work`.
@@ -773,7 +785,7 @@ Configured in `engine/Modelfile` and applied to every request:
 
 ### Why Not Smaller / Why Not Bigger?
 
-- **Why not q4_K_M (~17 GB, ~88 tok/s)?** — The 3.3% quality loss measurably degrades multi-step reasoning and tool-call accuracy. For an agentic system where the model chains 10-25 tool calls per task, compounding small errors matters more than raw speed.
+- **Why not q4_K_M (~17 GB, ~88 tok/s)?** — The 3.3% quality loss measurably degrades multi-step reasoning and tool-call accuracy. For an agentic system where the model chains 10-35 tool calls per task, compounding small errors matters more than raw speed.
 - **Why not FP16 (~52 GB)?** — Would leave insufficient headroom for KV cache at large context. The q8_0 quantization is <1% quality loss — effectively indistinguishable from FP16 in practice.
 - **Why auto-sized context?** — Gemma 4 supports 262K natively, but KV cache memory scales with context size. The installer picks the largest context your RAM can comfortably support (see [Context Management](#context-management)). On 128GB systems, this is 128K — balancing deep multi-step workflows with memory headroom for model weights and OS.
 
@@ -790,7 +802,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 ### Features
 
 - **Real-time streaming** — tokens appear as the model generates them, with thinking blocks, streaming cursor, and live tool status cards
-- **Full tool execution** — all 63+ tools run server-side with the same multi-turn tool loop as the CLI (up to 25 autonomous tool calls per prompt)
+- **Full tool execution** — all 70+ tools run server-side with the same multi-turn tool loop as the CLI (up to 35 autonomous tool calls per prompt)
 - **Sub-agent spawning** — the model can delegate research tasks to autonomous sub-agents that run in parallel, each with their own Ollama session
 - **Browser automation** — headless Chrome control with vision-aware screenshot feedback. Navigate, click, type, scroll, and read web pages.
 - **MCP server support** — connect external MCP tool servers; their tools are automatically discovered and available to the model
@@ -801,7 +813,7 @@ PRE includes a built-in browser interface at `http://localhost:7749` that provid
 - **Artifact viewer** — rich HTML artifacts render in a slide-out right panel. Download or reveal in Finder.
 - **Frontier AI delegation** — toggle between PRE (local), Claude, Codex, or Gemini via a dropdown next to the input. Unavailable CLIs are auto-hidden. Responses stream in real-time with color-coded model badges. Sessions preserve which model generated each message.
 - **Voice input** — hold-to-record microphone button in the chat input; local Whisper transcription puts text in the input box. macOS `say` speaks responses aloud.
-- **Triggers panel** — create and manage file watchers and webhooks from the sidebar. Visual add form with type selector, path/glob/secret fields, and variable hints.
+- **Triggers panel** — create and manage file watchers, webhooks, and polling monitors from the sidebar. Visual add form with type selector, path/glob/secret/services fields, and variable hints.
 - **RAG panel** — index directories, run semantic searches, and manage document indexes from the sidebar. Search results show matched content chunks ranked by relevance.
 - **Workflow panel** — list, inspect, replay, and delete recorded desktop workflows from the sidebar.
 - **Cron scheduler** — visual panel for managing recurring jobs with natural language input, live cron preview, enable/disable toggles, and run-now buttons. Results delivered via macOS notification, Telegram, and in-browser toast.
@@ -1168,7 +1180,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 ┌──▼──────────────┐  ┌──┴──────────────┐
 │    ComfyUI      │  │   PRE Web GUI   │  localhost:7749
 │ Juggernaut XL   │  │  (Node.js/WS)   │  2 themes, streaming
-│  (MPS/Metal)    │  │  vanilla JS SPA  │  63+ tools, cron runner
+│  (MPS/Metal)    │  │  vanilla JS SPA  │  70+ tools, cron runner
 │ 25-step, 1024px │  │  shared sessions │  file upload, image gen
 └─────────────────┘  └─────────────────┘
 
@@ -1206,7 +1218,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 **PRE CLI** (`pre.m`) is a single-file Objective-C/C application (~10,000 lines) handling:
 - Raw `recv()` NDJSON streaming with 64KB ring buffer
 - Dynamic `num_ctx` from `~/.pre/context` — auto-sized by installer, synced across CLI and Web GUI (avoids Ollama reload)
-- 63+ tool implementations with two-tier permissions + hook-based policy enforcement
+- 70+ tool implementations with two-tier permissions + hook-based policy enforcement
 - Hybrid tool calling: native Ollama `tools` API + text-based `<tool_call>` fallback
 - Local image generation via ComfyUI (checkpoint-adaptive workflow)
 - Multi-part artifacts with incremental append
@@ -1329,7 +1341,7 @@ pre/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client
 │   │   ├── sessions.js      # JSONL read/write (shared with CLI)
 │   │   ├── tools.js         # Tool dispatcher + execution loop
-│   │   ├── tools-defs.js    # 63+ tool definitions for Ollama
+│   │   ├── tools-defs.js    # 70+ tool definitions for Ollama
 │   │   ├── context.js       # System prompt builder
 │   │   ├── memory.js        # Auto-extraction engine
 │   │   ├── connections.js   # Credential management
@@ -1339,8 +1351,9 @@ pre/
 │   │   ├── hooks.js         # Pre/post tool execution hooks
 │   │   ├── experience.js   # Experience ledger (post-task reflection + embeddings)
 │   │   ├── chronos.js      # Temporal awareness + memory staleness
-│   │   ├── triggers.js     # Event-driven trigger engine (file watchers, webhooks)
-│   │   └── tools/           # Tool implementations
+│   │   ├── triggers.js     # Event-driven trigger engine (file watchers, webhooks, polling)
+│   │   ├── custom-tools.js # Dynamic virtual tool system (create, execute, manage)
+│   │   └── tools/           # Tool implementations (37 modules)
 │   │       ├── bash.js      # Shell execution
 │   │       ├── files.js     # File operations
 │   │       ├── web.js       # Web fetch/search
@@ -1370,6 +1383,7 @@ pre/
 │   │       ├── figma.js     # Figma API
 │   │       ├── asana.js     # Asana API
 │   │       ├── sharepoint.js # Microsoft 365 / SharePoint
+│   │       ├── dynamics365.js # Dynamics 365 / Dataverse
 │   │       ├── agents.js    # Sub-agent spawning + parallel execution
 │   │       ├── monitor.js   # Background process monitor (start, read, stop, list)
 │   │       ├── delegate.js  # Frontier AI delegation (Claude/Codex/Gemini)
