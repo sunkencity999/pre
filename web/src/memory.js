@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { MEMORY_DIR } = require('./constants');
-const { streamChat } = require('./ollama');
+const { streamChat, embed } = require('./ollama');
 
 // Ensure global memory directory exists
 if (!fs.existsSync(MEMORY_DIR)) {
@@ -241,17 +241,123 @@ function memoryAge(mtimeMs) {
   return `[${Math.floor(days / 30)} months old — may be outdated, verify against current state]`;
 }
 
+// ── Embedding cache for memory relevance ranking ──
+
+const MEMORY_EMBEDDINGS_FILE = path.join(MEMORY_DIR, '.embeddings.json');
+let memoryEmbeddingCache = null;
+
+function loadMemoryEmbeddings() {
+  if (memoryEmbeddingCache) return memoryEmbeddingCache;
+  try {
+    if (fs.existsSync(MEMORY_EMBEDDINGS_FILE)) {
+      memoryEmbeddingCache = JSON.parse(fs.readFileSync(MEMORY_EMBEDDINGS_FILE, 'utf-8'));
+      return memoryEmbeddingCache;
+    }
+  } catch {}
+  memoryEmbeddingCache = {};
+  return memoryEmbeddingCache;
+}
+
+function saveMemoryEmbeddings() {
+  if (!memoryEmbeddingCache) return;
+  try {
+    fs.writeFileSync(MEMORY_EMBEDDINGS_FILE, JSON.stringify(memoryEmbeddingCache));
+  } catch {}
+}
+
+function cosineSim(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB) || 1);
+}
+
+/**
+ * Ensure a memory has a cached embedding vector.
+ * Computes and caches if missing or stale.
+ */
+async function ensureMemoryEmbedding(memory) {
+  const cache = loadMemoryEmbeddings();
+  const existing = cache[memory.filename];
+  // Re-embed if missing or if the memory was modified after embedding
+  if (existing?.vector && existing.mtimeMs >= memory.mtimeMs) {
+    return existing.vector;
+  }
+  try {
+    const text = `${memory.name}: ${memory.description}. ${memory.body}`.slice(0, 512);
+    const vectors = await embed(text);
+    if (vectors.length > 0) {
+      cache[memory.filename] = { vector: vectors[0], mtimeMs: memory.mtimeMs };
+      saveMemoryEmbeddings();
+      return vectors[0];
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Rank memories by semantic relevance to a query.
+ * Returns all memories sorted by relevance score (highest first).
+ * Feedback/user memories get a type bonus to ensure behavioral guidance stays prominent.
+ */
+async function rankMemoriesByRelevance(memories, query) {
+  try {
+    const queryVectors = await embed(query);
+    if (!queryVectors || queryVectors.length === 0) return null; // fallback to default sort
+
+    const queryVector = queryVectors[0];
+    const cache = loadMemoryEmbeddings();
+
+    // Type bonuses: feedback and user memories are always important
+    const typeBonus = { feedback: 0.25, user: 0.15, project: 0, reference: 0 };
+
+    const scored = memories.map(m => {
+      const cached = cache[m.filename];
+      const similarity = cached?.vector ? cosineSim(queryVector, cached.vector) : 0;
+      const bonus = typeBonus[m.type] || 0;
+      return { ...m, relevance: similarity + bonus };
+    });
+
+    scored.sort((a, b) => b.relevance - a.relevance);
+    return scored;
+  } catch {
+    return null; // embedding failed, fallback to default
+  }
+}
+
 // ── Context injection ──
 
 /**
  * Build memory context for system prompt injection.
- * Type-aware ordering: feedback first (behavioral guidance), then user, project, reference.
+ * When a query is provided, ranks memories by semantic relevance.
+ * Falls back to type-priority ordering when embeddings aren't available.
  */
-function buildMemoryContext(projectDir) {
+function buildMemoryContext(projectDir, query) {
   const memories = getAllMemories(projectDir);
   if (memories.length === 0) return '';
 
-  // Sort by type priority, then recency
+  // If we have a query, try relevance ranking (async, but we start the embedding
+  // indexing in the background and use sync fallback on first call)
+  if (query && memoryEmbeddingCache) {
+    try {
+      const cache = loadMemoryEmbeddings();
+      const typeBonus = { feedback: 0.25, user: 0.15, project: 0, reference: 0 };
+      // Check if we have a cached query vector we can use synchronously
+      // For the async path, see buildMemoryContextAsync below
+      const scored = memories.map(m => {
+        const cached = cache[m.filename];
+        return { ...m, hasEmbedding: !!cached?.vector };
+      });
+      // If most memories have embeddings, we can rank synchronously in the async version
+      // Fall through to default sort for now; the async builder handles ranking
+    } catch {}
+  }
+
+  // Default: sort by type priority, then recency
   const typePriority = { feedback: 0, user: 1, project: 2, reference: 3 };
   memories.sort((a, b) => {
     const pa = typePriority[a.type] ?? 4;
@@ -261,12 +367,75 @@ function buildMemoryContext(projectDir) {
   });
 
   const capped = memories.slice(0, MAX_MEMORIES_IN_CONTEXT);
+  return formatMemoryBlock(capped);
+}
 
+/**
+ * Async version of buildMemoryContext that uses embedding-based relevance ranking.
+ * Falls back to type-priority sort if embeddings aren't available.
+ */
+async function buildMemoryContextAsync(projectDir, query) {
+  const memories = getAllMemories(projectDir);
+  if (memories.length === 0) return '';
+
+  // Index any memories that lack embeddings (background, non-blocking)
+  indexMemoryEmbeddings(memories).catch(() => {});
+
+  if (query) {
+    const ranked = await rankMemoriesByRelevance(memories, query);
+    if (ranked) {
+      const capped = ranked.slice(0, MAX_MEMORIES_IN_CONTEXT);
+      return formatMemoryBlock(capped, true);
+    }
+  }
+
+  // Fallback: type priority sort
+  const typePriority = { feedback: 0, user: 1, project: 2, reference: 3 };
+  memories.sort((a, b) => {
+    const pa = typePriority[a.type] ?? 4;
+    const pb = typePriority[b.type] ?? 4;
+    if (pa !== pb) return pa - pb;
+    return b.mtimeMs - a.mtimeMs;
+  });
+
+  return formatMemoryBlock(memories.slice(0, MAX_MEMORIES_IN_CONTEXT));
+}
+
+/**
+ * Index embeddings for all memories that don't have cached vectors.
+ * Runs in the background; safe to call frequently.
+ */
+async function indexMemoryEmbeddings(memories) {
+  const cache = loadMemoryEmbeddings();
+  const unindexed = memories.filter(m => {
+    const cached = cache[m.filename];
+    return !cached?.vector || cached.mtimeMs < m.mtimeMs;
+  });
+  if (unindexed.length === 0) return;
+
+  // Batch embed up to 20 at a time
+  const batch = unindexed.slice(0, 20);
+  const texts = batch.map(m => `${m.name}: ${m.description}. ${m.body}`.slice(0, 512));
+  try {
+    const vectors = await embed(texts);
+    for (let i = 0; i < batch.length && i < vectors.length; i++) {
+      cache[batch[i].filename] = { vector: vectors[i], mtimeMs: batch[i].mtimeMs };
+    }
+    saveMemoryEmbeddings();
+  } catch {}
+}
+
+/**
+ * Format a list of memories into a context block string
+ */
+function formatMemoryBlock(memories, showRelevance = false) {
   let ctx = '<memory>\n';
-  for (const m of capped) {
+  for (const m of memories) {
     const age = memoryAge(m.mtimeMs);
+    const relevanceTag = (showRelevance && m.relevance !== undefined)
+      ? ` [relevance: ${m.relevance.toFixed(2)}]` : '';
     const bodyLines = m.body.split('\n').slice(0, MAX_BODY_LINES).join('\n');
-    ctx += `## ${m.name} [${m.type}] ${age}\n${bodyLines}\n\n`;
+    ctx += `## ${m.name} [${m.type}] ${age}${relevanceTag}\n${bodyLines}\n\n`;
   }
   ctx += '</memory>';
   return ctx;
@@ -534,7 +703,9 @@ module.exports = {
 
   // Context injection
   buildMemoryContext,
+  buildMemoryContextAsync,
   buildMemoryInstructions,
+  indexMemoryEmbeddings,
 
   // Auto-extraction
   autoExtract,

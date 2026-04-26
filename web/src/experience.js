@@ -319,9 +319,10 @@ async function searchExperiences(query) {
 
 /**
  * Build experience context for system prompt injection.
- * Returns the most relevant experiences for the current task.
+ * When a query is provided, returns semantically relevant experiences.
+ * Falls back to most recent experiences otherwise.
  */
-function buildExperienceContext() {
+function buildExperienceContext(query) {
   const experiences = listExperiences();
   if (experiences.length === 0) return '';
 
@@ -339,10 +340,45 @@ function buildExperienceContext() {
   return ctx;
 }
 
+/**
+ * Async version: ranks experiences by semantic relevance to the query,
+ * then includes the top matches plus recent entries for a blended context.
+ */
+async function buildExperienceContextAsync(query) {
+  const experiences = listExperiences();
+  if (experiences.length === 0) return '';
+
+  let selected = experiences.slice(0, 10); // default: recent
+
+  if (query) {
+    try {
+      const relevant = await searchExperiences(query);
+      if (relevant.length > 0) {
+        // Blend: top 5 relevant + top 5 recent (deduplicated)
+        const relevantNames = new Set(relevant.slice(0, 5).map(e => e.name));
+        const recentFiltered = experiences.filter(e => !relevantNames.has(e.name)).slice(0, 5);
+        selected = [...relevant.slice(0, 5), ...recentFiltered];
+      }
+    } catch {}
+  }
+
+  let ctx = '<experience_ledger>\n';
+  ctx += 'Lessons from past tasks (use these to inform your approach):\n\n';
+  for (const exp of selected) {
+    const age = Math.floor((Date.now() - exp.mtimeMs) / (1000 * 60 * 60 * 24));
+    const ageStr = age <= 1 ? 'today' : age <= 7 ? `${age}d ago` : `${Math.floor(age / 7)}w ago`;
+    const simTag = exp.similarity ? ` [match: ${exp.similarity.toFixed(2)}]` : '';
+    ctx += `- **${exp.name}** (${ageStr})${simTag}: ${exp.description}\n`;
+  }
+  ctx += '</experience_ledger>\n';
+  return ctx;
+}
+
 module.exports = {
   reflect,
   saveExperience,
   listExperiences,
   searchExperiences,
   buildExperienceContext,
+  buildExperienceContextAsync,
 };

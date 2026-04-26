@@ -1,20 +1,23 @@
 // PRE Web GUI — Event-Driven Trigger Engine
 // Extends the cron system with event-based execution: file watchers, webhooks,
-// and git commit detection. Triggers fire prompts through the same execution
-// pipeline as cron (session creation, tool loop, notifications).
+// polling monitors, and git commit detection. Triggers fire prompts through the
+// same execution pipeline as cron (session creation, tool loop, notifications).
 //
 // Storage: ~/.pre/triggers.json
-// Trigger types: file_watch, webhook
+// Trigger types: file_watch, webhook, polling
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { PRE_DIR } = require('./constants');
+const { PRE_DIR, CONNECTIONS_FILE } = require('./constants');
 
 const TRIGGERS_FILE = path.join(PRE_DIR, 'triggers.json');
 
 // Active file watchers keyed by trigger ID
 const activeWatchers = new Map();
+
+// Active polling intervals keyed by trigger ID
+const activePollers = new Map();
 
 // Debounce timers keyed by trigger ID
 const debounceTimers = new Map();
@@ -171,6 +174,9 @@ function fireTrigger(trigger, context = {}) {
   if (context.headers) {
     prompt = prompt.replace(/\{headers\}/gi, JSON.stringify(context.headers));
   }
+  if (context.services) {
+    prompt = prompt.replace(/\{services?\}/gi, context.services.join(', '));
+  }
 
   // Update trigger stats
   const triggers = loadTriggers();
@@ -192,6 +198,144 @@ function fireTrigger(trigger, context = {}) {
     cwd: context.watchPath || undefined,
   }).catch(err => {
     console.error(`[triggers] Execution error for ${trigger.id}: ${err.message}`);
+  });
+}
+
+// ── Polling Monitor ───────────────────────────────────────────────────────
+
+/**
+ * Available polling services and what they check.
+ * Each returns a summary string (or null if nothing changed).
+ */
+const POLLING_SERVICES = {
+  github: {
+    label: 'GitHub',
+    requires: 'github_key',
+    description: 'Check for new PRs, issues, and notifications',
+  },
+  gmail: {
+    label: 'Gmail',
+    requires: 'google_refresh_token',
+    description: 'Check for new unread emails',
+  },
+  jira: {
+    label: 'Jira',
+    requires: 'jira_token',
+    description: 'Check for assigned issue updates',
+  },
+  slack: {
+    label: 'Slack',
+    requires: 'slack_token',
+    description: 'Check for new unread messages',
+  },
+  calendar: {
+    label: 'Calendar',
+    requires: null,  // Native macOS — always available
+    description: 'Check for upcoming events',
+  },
+};
+
+/**
+ * Get currently connected services that support polling.
+ */
+function getAvailablePollingServices() {
+  let connections = {};
+  try {
+    connections = JSON.parse(fs.readFileSync(CONNECTIONS_FILE, 'utf-8'));
+  } catch {}
+
+  return Object.entries(POLLING_SERVICES).map(([key, svc]) => ({
+    service: key,
+    label: svc.label,
+    description: svc.description,
+    available: svc.requires === null || !!connections[svc.requires],
+  }));
+}
+
+/**
+ * Start a polling monitor for a trigger.
+ * Runs at the configured interval and fires when the model should be briefed.
+ */
+function startPoller(trigger) {
+  stopPoller(trigger.id);
+
+  const intervalMs = (trigger.config.interval_minutes || 60) * 60 * 1000;
+  const services = trigger.config.services || ['all'];
+
+  console.log(`[triggers] Polling ${services.join(', ')} every ${trigger.config.interval_minutes || 60}m (trigger: ${trigger.id})`);
+
+  // Fire immediately on start, then at intervals
+  runPollingCheck(trigger, services);
+
+  const interval = setInterval(() => {
+    runPollingCheck(trigger, services);
+  }, intervalMs);
+
+  activePollers.set(trigger.id, interval);
+  return true;
+}
+
+function stopPoller(triggerId) {
+  const interval = activePollers.get(triggerId);
+  if (interval) {
+    clearInterval(interval);
+    activePollers.delete(triggerId);
+  }
+}
+
+/**
+ * Run a single polling check: gather state from services and fire if there are changes.
+ */
+function runPollingCheck(trigger, services) {
+  // Build a dynamic prompt that asks the model to check the specified services
+  const serviceList = services.includes('all')
+    ? Object.keys(POLLING_SERVICES)
+    : services.filter(s => POLLING_SERVICES[s]);
+
+  if (serviceList.length === 0) return;
+
+  // Load connections to filter to only available services
+  let connections = {};
+  try {
+    connections = JSON.parse(fs.readFileSync(CONNECTIONS_FILE, 'utf-8'));
+  } catch {}
+
+  const available = serviceList.filter(s => {
+    const svc = POLLING_SERVICES[s];
+    return svc.requires === null || !!connections[svc.requires];
+  });
+
+  if (available.length === 0) return;
+
+  // Build a check prompt
+  const serviceInstructions = available.map(s => {
+    switch (s) {
+      case 'github': return '- GitHub: Check my notifications and any PRs/issues assigned to me. Use the github tool with action "notifications" and "my_issues".';
+      case 'gmail': return '- Gmail: Check for unread emails in my inbox. Use the gmail tool with action "list" and filter for unread messages.';
+      case 'jira': return '- Jira: Check for issues assigned to me that have been updated recently. Use the jira tool with action "my_issues".';
+      case 'slack': return '- Slack: Check for unread messages and mentions. Use the slack tool with action "unread".';
+      case 'calendar': return '- Calendar: Check for upcoming events in the next 4 hours. Use the apple_calendar tool with action "today".';
+      default: return '';
+    }
+  }).filter(Boolean).join('\n');
+
+  const briefingPrompt = `You are running a proactive monitoring check. Check the following services for noteworthy updates and compile a brief status report.
+
+${serviceInstructions}
+
+RULES:
+- Only report items that are NEW or CHANGED since you last checked.
+- Be concise: one line per item, grouped by service.
+- If nothing noteworthy has changed, simply respond: "No notable updates."
+- Format as a clean briefing the user can scan quickly.
+- Include actionable items (things that need attention) at the top.`;
+
+  // Use the trigger's custom prompt if provided, otherwise use the default briefing
+  const prompt = trigger.prompt || briefingPrompt;
+
+  fireTrigger(trigger, {
+    services: available,
+    checkType: 'polling',
   });
 }
 
@@ -239,22 +383,28 @@ function handleWebhook(triggerId, { body, headers }) {
 function init(executeFn) {
   executeCallback = executeFn;
 
-  // Start all enabled file watchers
+  // Start all enabled file watchers and pollers
   const triggers = loadTriggers();
   let watcherCount = 0;
+  let pollerCount = 0;
 
   for (const trigger of triggers) {
     if (!trigger.enabled) continue;
     if (trigger.type === 'file_watch') {
       if (startFileWatcher(trigger)) watcherCount++;
+    } else if (trigger.type === 'polling') {
+      if (startPoller(trigger)) pollerCount++;
     }
   }
 
   if (watcherCount > 0) {
     console.log(`  [triggers] ${watcherCount} file watcher(s) active`);
   }
+  if (pollerCount > 0) {
+    console.log(`  [triggers] ${pollerCount} polling monitor(s) active`);
+  }
 
-  return { watcherCount, total: triggers.length };
+  return { watcherCount, pollerCount, total: triggers.length };
 }
 
 /**
@@ -264,6 +414,9 @@ function shutdown() {
   for (const [id] of activeWatchers) {
     stopWatcher(id);
   }
+  for (const [id] of activePollers) {
+    stopPoller(id);
+  }
   console.log('[triggers] All watchers stopped');
 }
 
@@ -271,17 +424,17 @@ function shutdown() {
 
 function addTrigger(args) {
   const type = (args.type || '').toLowerCase();
-  if (!['file_watch', 'webhook'].includes(type)) {
-    return 'Error: type must be "file_watch" or "webhook"';
+  if (!['file_watch', 'webhook', 'polling'].includes(type)) {
+    return 'Error: type must be "file_watch", "webhook", or "polling"';
   }
-  if (!args.prompt) return 'Error: prompt is required';
+  if (!args.prompt && type !== 'polling') return 'Error: prompt is required';
 
   const config = {};
   const trigger = {
     id: generateId(),
     type,
-    name: args.name || args.prompt.slice(0, 60),
-    prompt: args.prompt,
+    name: args.name || (args.prompt || 'Proactive Monitor').slice(0, 60),
+    prompt: args.prompt || '',
     config,
     enabled: true,
     created_at: Date.now(),
@@ -303,13 +456,23 @@ function addTrigger(args) {
     if (args.secret) config.secret = args.secret;
   }
 
+  if (type === 'polling') {
+    config.services = args.services || ['all'];
+    config.interval_minutes = args.interval_minutes || 60;
+    if (Array.isArray(config.services)) {
+      config.services = config.services.map(s => s.toLowerCase().trim());
+    }
+  }
+
   const triggers = loadTriggers();
   triggers.push(trigger);
   saveTriggers(triggers);
 
-  // Start watcher immediately if file_watch
+  // Start watcher/poller immediately
   if (type === 'file_watch') {
     startFileWatcher(trigger);
+  } else if (type === 'polling') {
+    startPoller(trigger);
   }
 
   const lines = [`Trigger created:`, `  ID: ${trigger.id}`, `  Type: ${type}`, `  Name: ${trigger.name}`];
@@ -321,7 +484,11 @@ function addTrigger(args) {
     lines.push(`  Endpoint: POST /api/triggers/webhook/${trigger.id}`);
     if (config.secret) lines.push(`  Secret: configured`);
   }
-  lines.push(`  Prompt: ${trigger.prompt}`);
+  if (type === 'polling') {
+    lines.push(`  Services: ${config.services.join(', ')}`);
+    lines.push(`  Interval: every ${config.interval_minutes} minutes`);
+  }
+  if (trigger.prompt) lines.push(`  Prompt: ${trigger.prompt}`);
   return lines.join('\n');
 }
 
@@ -338,6 +505,12 @@ function listTriggers() {
     lines.push(`  Fires: ${t.fire_count || 0}, Last: ${lastFired}`);
     if (t.type === 'file_watch') lines.push(`  Path: ${t.config.path}${t.config.glob ? ` (${t.config.glob})` : ''}`);
     if (t.type === 'webhook') lines.push(`  Endpoint: POST /api/triggers/webhook/${t.id}`);
+    if (t.type === 'polling') {
+      const pollerStatus = activePollers.has(t.id) ? ' [polling]' : '';
+      lines[lines.length - 2] = lines[lines.length - 2].replace(watcherStatus, watcherStatus + pollerStatus);
+      lines.push(`  Services: ${(t.config.services || []).join(', ')}`);
+      lines.push(`  Interval: every ${t.config.interval_minutes || 60} minutes`);
+    }
     lines.push('');
   }
   return lines.join('\n');
@@ -350,6 +523,7 @@ function removeTrigger(args) {
   if (idx === -1) return `Error: no trigger with ID "${args.id}"`;
 
   stopWatcher(args.id);
+  stopPoller(args.id);
   const removed = triggers.splice(idx, 1)[0];
   saveTriggers(triggers);
   return `Removed trigger ${removed.id}: "${removed.name}"`;
@@ -365,6 +539,7 @@ function enableTrigger(args) {
   saveTriggers(triggers);
 
   if (trigger.type === 'file_watch') startFileWatcher(trigger);
+  if (trigger.type === 'polling') startPoller(trigger);
   return `Enabled trigger ${trigger.id}: "${trigger.name}"`;
 }
 
@@ -377,6 +552,7 @@ function disableTrigger(args) {
   trigger.enabled = false;
   saveTriggers(triggers);
   stopWatcher(args.id);
+  stopPoller(args.id);
   return `Disabled trigger ${trigger.id}: "${trigger.name}"`;
 }
 
@@ -429,4 +605,5 @@ module.exports = {
   saveTriggers,
   isWatching,
   restartWatcher,
+  getAvailablePollingServices,
 };

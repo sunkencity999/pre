@@ -5,8 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { PRE_DIR, CONNECTIONS_FILE, COMFYUI_FILE } = require('./constants');
-const { buildMemoryContext: buildMemCtx, buildMemoryInstructions } = require('./memory');
-const { buildExperienceContext } = require('./experience');
+const { buildMemoryContext: buildMemCtx, buildMemoryContextAsync, buildMemoryInstructions } = require('./memory');
+const { buildExperienceContext, buildExperienceContextAsync } = require('./experience');
 const { buildTemporalContext } = require('./chronos');
 
 /**
@@ -225,4 +225,49 @@ function buildSystemPrompt(cwd) {
   return prompt;
 }
 
-module.exports = { buildSystemPrompt, getActiveConnections, isComfyUIInstalled };
+/**
+ * Async version: uses embedding-based relevance ranking for memory and experience context.
+ * When a userQuery is provided, memories and experiences are ranked by semantic similarity
+ * to the current conversation, surfacing the most relevant context instead of dumping all.
+ */
+async function buildSystemPromptAsync(cwd, userQuery) {
+  // Build the base prompt synchronously (connections, rules, etc.)
+  const basePrompt = buildSystemPrompt(cwd);
+
+  if (!userQuery) return basePrompt;
+
+  // Replace the sync memory/experience blocks with relevance-ranked versions
+  try {
+    const [rankedMemory, rankedExperience] = await Promise.all([
+      buildMemoryContextAsync(null, userQuery),
+      buildExperienceContextAsync(userQuery),
+    ]);
+
+    let prompt = basePrompt;
+
+    // Replace the memory block if we got a ranked version
+    if (rankedMemory) {
+      const memStart = prompt.indexOf('<memory>');
+      const memEnd = prompt.indexOf('</memory>');
+      if (memStart >= 0 && memEnd >= 0) {
+        prompt = prompt.slice(0, memStart) + rankedMemory + prompt.slice(memEnd + '</memory>'.length);
+      }
+    }
+
+    // Replace the experience block if we got a ranked version
+    if (rankedExperience) {
+      const expStart = prompt.indexOf('<experience_ledger>');
+      const expEnd = prompt.indexOf('</experience_ledger>');
+      if (expStart >= 0 && expEnd >= 0) {
+        prompt = prompt.slice(0, expStart) + rankedExperience + prompt.slice(expEnd + '</experience_ledger>\n'.length);
+      }
+    }
+
+    return prompt;
+  } catch {
+    // If embedding fails, return the base prompt with default memory/experience
+    return basePrompt;
+  }
+}
+
+module.exports = { buildSystemPrompt, buildSystemPromptAsync, getActiveConnections, isComfyUIInstalled };

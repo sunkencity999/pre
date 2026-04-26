@@ -3,6 +3,7 @@
 
 const { getActiveConnections, isComfyUIInstalled } = require('./context');
 const mcp = require('./mcp');
+const { buildCustomToolDefs } = require('./custom-tools');
 
 function buildToolDefs() {
   const tools = [
@@ -537,16 +538,18 @@ function buildToolDefs() {
   }
 
   // Event-driven triggers
-  tools.push(tool('trigger', 'Event-driven triggers that fire prompts in response to events (file changes, webhooks). Like cron but reactive instead of scheduled. Actions: add, list, remove, enable, disable', {
+  tools.push(tool('trigger', 'Event-driven triggers that fire prompts in response to events (file changes, webhooks, polling). Like cron but reactive instead of scheduled. Actions: add, list, remove, enable, disable', {
     action: { type: 'string', description: 'Action: add (create trigger), list (show all), remove (delete), enable, disable' },
-    type: { type: 'string', description: 'Trigger type: file_watch (fires on file changes) or webhook (fires on HTTP POST)' },
+    type: { type: 'string', description: 'Trigger type: file_watch (fires on file changes), webhook (fires on HTTP POST), or polling (proactive service monitoring)' },
     name: { type: 'string', description: 'Human-readable name for the trigger' },
-    prompt: { type: 'string', description: 'Prompt to execute when triggered. Variables: {file} {event} {path} for file_watch; {payload} {headers} for webhook' },
+    prompt: { type: 'string', description: 'Prompt to execute when triggered. Variables: {file} {event} {path} for file_watch; {payload} {headers} for webhook; {services} for polling. For polling, leave empty to use default briefing prompt.' },
     path: { type: 'string', description: 'Directory or file to watch (for file_watch type)' },
     glob: { type: 'string', description: 'Glob pattern to filter watched files (e.g. "*.log", "*.py")' },
     recursive: { type: 'boolean', description: 'Watch subdirectories recursively (default: true)' },
     debounce: { type: 'integer', description: 'Debounce interval in ms — batches rapid changes (default: 3000)' },
     secret: { type: 'string', description: 'Secret for webhook authentication (X-Webhook-Secret header)' },
+    services: { type: 'array', items: { type: 'string' }, description: 'Services to monitor for polling type: github, gmail, jira, slack, calendar, or "all" (default: all connected)' },
+    interval_minutes: { type: 'integer', description: 'Polling interval in minutes (default: 60, minimum: 15)' },
     id: { type: 'string', description: 'Trigger ID (for remove/enable/disable)' },
   }, ['action']));
 
@@ -561,6 +564,24 @@ function buildToolDefs() {
     recursive: { type: 'boolean', description: 'Index subdirectories recursively (default: true)' },
     description: { type: 'string', description: 'Human-readable description for the index (for index action)' },
   }, ['action']));
+
+  // Custom tool management
+  tools.push(tool('custom_tool', 'Create, manage, and inspect self-defined virtual tools. These let you build reusable parameterized tools from prompt templates, workflows, or multi-step chains. Actions: create, list, show, delete, from_workflow', {
+    action: { type: 'string', description: 'Action: create (build a new tool), list (show all), show (inspect one), delete (remove), from_workflow (convert a workflow)' },
+    name: { type: 'string', description: 'Tool name (alphanumeric + underscores). Will be callable as "custom_<name>"' },
+    description: { type: 'string', description: 'What the tool does (shown in tool list)' },
+    parameters: { type: 'string', description: 'JSON array of parameter definitions: [{"name":"x","type":"string","description":"...","required":true}]' },
+    template: { type: 'string', description: 'For prompt-type tools: the prompt template. Use ${param_name} for parameter substitution' },
+    workflow_name: { type: 'string', description: 'For workflow-type tools: name of an existing workflow to replay' },
+    steps: { type: 'string', description: 'For chain-type tools: JSON array of [{tool:"tool_name", args:{...}}]. Use ${param} for substitution, ${step1} for previous results' },
+    speed: { type: 'number', description: 'Workflow replay speed multiplier (default: 1.0)' },
+  }, ['action']));
+
+  // Append dynamic custom tools (user-created virtual tools)
+  try {
+    const customTools = buildCustomToolDefs();
+    tools.push(...customTools);
+  } catch {}
 
   // Append MCP tools from all connected servers
   const mcpTools = mcp.getAllTools();

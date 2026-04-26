@@ -4,12 +4,13 @@
 const fs = require('fs');
 const path = require('path');
 const { streamChat, parseTextToolCalls, stripToolCallText } = require('./ollama');
-const { buildSystemPrompt } = require('./context');
+const { buildSystemPrompt, buildSystemPromptAsync } = require('./context');
 const { buildToolDefs } = require('./tools-defs');
 const { appendMessage, getSessionMessages, renameSession } = require('./sessions');
 const { MODEL_CTX, MAX_TOOL_TURNS } = require('./constants');
 const { autoExtract } = require('./memory');
 const mcp = require('./mcp');
+const customTools = require('./custom-tools');
 const hooks = require('./hooks');
 const experience = require('./experience');
 const chronos = require('./chronos');
@@ -393,6 +394,9 @@ async function executeTool(name, args, cwd, opts) {
     // Workflow capture and replay
     case 'workflow': return workflowTool.workflow(args);
 
+    // Custom tools (self-architected)
+    case 'custom_tool': return customTools.customTool(args);
+
     // Chronos
     case 'memory_health': {
       const summary = chronos.maintenanceSummary();
@@ -454,6 +458,10 @@ async function executeTool(name, args, cwd, opts) {
     }
 
     default:
+      // Check if this is a custom (self-architected) tool
+      if (customTools.isCustomTool(name)) {
+        return customTools.executeCustomTool(name.slice(7), args); // strip 'custom_' prefix
+      }
       // Check if this is an MCP tool
       if (mcp.isMCPTool(name)) {
         return mcp.callTool(name, args);
@@ -496,7 +504,11 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   for (let turn = 0; turn < turnLimit; turn++) {
     if (signal?.aborted) break;
 
-    const systemPrompt = buildSystemPrompt(cwd);
+    // First turn: use async relevance-ranked memory/experience context
+    // Subsequent turns: use sync version (faster, query hasn't changed)
+    const systemPrompt = (turn === 0 && userMessage)
+      ? await buildSystemPromptAsync(cwd, userMessage)
+      : buildSystemPrompt(cwd);
     const history = getSessionMessages(sessionId);
     const messages = [
       { role: 'system', content: systemPrompt },
