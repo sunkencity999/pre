@@ -8,8 +8,10 @@ const { MODEL, OLLAMA_PORT } = require('../constants');
 const { createSession, appendMessage: appendSessionMessage, renameSession } = require('../sessions');
 
 // Timeout defaults (ms)
-const AGENT_TIMEOUT = 5 * 60 * 1000;       // 5 minutes overall per agent
-const INFERENCE_TIMEOUT = 2 * 60 * 1000;    // 2 minutes per Ollama call
+// At 128K context, each inference takes 12-30s. With 10 tool turns + tool execution,
+// a full agent run can legitimately take 7-8 minutes. 10 minutes gives headroom.
+const AGENT_TIMEOUT = 10 * 60 * 1000;      // 10 minutes overall per agent
+const INFERENCE_TIMEOUT = 2 * 60 * 1000;    // 2 minutes per Ollama call (stuck-model guard)
 const MODEL_READY_TIMEOUT = 30 * 1000;      // 30 seconds to wait for model load
 
 /**
