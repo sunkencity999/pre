@@ -28,6 +28,7 @@ const MAX_WINDOW = 12;
 let currentUserMessage = '';  // the user's most recent prompt (for context)
 let recentResponseText = '';  // accumulates assistant response tokens
 let deferredReaction = null;  // pending tool_result reaction timer
+let toolLoopActive = false;   // true while the main tool loop is running (suppresses deferred reactions)
 
 // Reaction context store — keyed by reaction ID, holds context for reply-to-Argus (#8)
 const reactionContexts = new Map();
@@ -85,6 +86,12 @@ const INTERESTING_TOOLS = new Set([
   'image_generate', 'delegate',
 ]);
 
+// Tools that should NEVER trigger mid-loop reactions — they're long-running
+// and their Ollama calls would compete with the main tool loop's inference.
+const SUPPRESS_TOOLS = new Set([
+  'spawn_agent', 'spawn_multi', 'list_agents',
+]);
+
 function summarizeEvent(event) {
   const summary = { type: event.type, ts: Date.now() };
   if (event.name) summary.tool = event.name;
@@ -136,9 +143,13 @@ function shouldReact(event) {
   // sees all results before reacting. This also prevents Ollama serialization
   // from impacting the main response's time-to-first-token.
   if (event.type === 'tool_result') {
+    // Never react to long-running tools (agent spawns) — they compete for Ollama
+    if (SUPPRESS_TOOLS.has(event.name)) return false;
     const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output || '');
-    // Errors still fire immediately
-    if (event.status === 'error' || /error|failed|exception/i.test(out.slice(0, 500))) return 'immediate';
+    // Errors still fire immediately (but not during an active tool loop)
+    if (event.status === 'error' || /error|failed|exception/i.test(out.slice(0, 500))) {
+      return toolLoopActive ? 'deferred' : 'immediate';
+    }
     if (INTERESTING_TOOLS.has(event.name)) return 'deferred';
     // React to ~30% of other tool results for variety
     return Math.random() < 0.3 ? 'deferred' : false;
@@ -477,6 +488,8 @@ function observeEvent(event) {
     if (deferredReaction) clearTimeout(deferredReaction);
     deferredReaction = setTimeout(() => {
       deferredReaction = null;
+      // Don't fire if the tool loop is still active — wait for 'done'
+      if (toolLoopActive) return;
       // Build reaction from the full event window, not just the trigger
       const latest = eventWindow[eventWindow.length - 1] || summary;
       generateReaction(latest).catch(() => {});
@@ -494,6 +507,15 @@ function init(broadcast) {
   console.log(`[argus] Initialized — ${config.enabled ? 'enabled' : 'disabled'}, name: ${config.name}`);
 }
 
+/**
+ * Signal that the main tool loop has started or ended.
+ * While active, deferred Argus reactions are suppressed to avoid
+ * Ollama serialization contention with the main inference.
+ */
+function setToolLoopActive(active) {
+  toolLoopActive = active;
+}
+
 module.exports = {
   init,
   observeEvent,
@@ -503,4 +525,5 @@ module.exports = {
   getStatus,
   loadConfig,
   replyToReaction,
+  setToolLoopActive,
 };

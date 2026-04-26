@@ -494,6 +494,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     argus.observeEvent({ type: 'user_message', content: userMessage });
   }
 
+  // Signal Argus that the tool loop is active — suppresses deferred reactions
+  // that would compete with Ollama inference during the loop.
+  argus.setToolLoopActive(true);
+
   const turnLimit = maxTurns || MAX_TOOL_TURNS;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -631,6 +635,7 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       }).catch(err => {
         console.log(`[experience] Background error: ${err.message}`);
       });
+      argus.setToolLoopActive(false);
       return;
     }
 
@@ -823,6 +828,7 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   }
 
   // Loop ended without a natural `done` — either max turns or signal abort
+  argus.setToolLoopActive(false);
   if (signal?.aborted) {
     send({ type: 'done', stats: {}, context: { used: tokensIn + tokensOut, max: MODEL_CTX, pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX) }, aborted: true });
   } else {
