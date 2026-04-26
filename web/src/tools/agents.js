@@ -1,11 +1,82 @@
 // PRE Web GUI — Sub-agent spawning and management
 // Allows the model to spawn parallel research tasks as independent Ollama requests.
 
-const { streamChat } = require('../ollama');
-const { buildSystemPrompt } = require('../context');
+const http = require('http');
+const { streamChat, healthCheck } = require('../ollama');
 const { buildToolDefs } = require('../tools-defs');
-const { MODEL_CTX } = require('../constants');
+const { MODEL, OLLAMA_PORT } = require('../constants');
 const { createSession, appendMessage: appendSessionMessage, renameSession } = require('../sessions');
+
+// Timeout defaults (ms)
+const AGENT_TIMEOUT = 5 * 60 * 1000;       // 5 minutes overall per agent
+const INFERENCE_TIMEOUT = 2 * 60 * 1000;    // 2 minutes per Ollama call
+const MODEL_READY_TIMEOUT = 30 * 1000;      // 30 seconds to wait for model load
+
+/**
+ * Wrap a promise with a timeout. Rejects with a descriptive error if the
+ * promise doesn't settle within `ms` milliseconds.
+ */
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Verify Ollama is running and the model is loaded before spawning an agent.
+ * If the model isn't loaded, sends a lightweight request to trigger loading
+ * and waits up to MODEL_READY_TIMEOUT for it to become available.
+ */
+async function ensureModelReady() {
+  const healthy = await healthCheck();
+  if (!healthy) throw new Error('Ollama is not running — cannot spawn agent');
+
+  // Check if model is loaded via /api/ps
+  const loaded = await new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${OLLAMA_PORT}/api/ps`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const ps = JSON.parse(data);
+          const models = ps.models || [];
+          resolve(models.some(m => m.name && m.name.startsWith(MODEL)));
+        } catch { resolve(false); }
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.setTimeout(5000, () => { req.destroy(); resolve(false); });
+  });
+
+  if (!loaded) {
+    // Trigger a minimal inference to load the model
+    const loadReq = new Promise((resolve, reject) => {
+      const body = JSON.stringify({
+        model: MODEL,
+        prompt: 'hi',
+        stream: false,
+        options: { num_predict: 1, num_ctx: 8192 },
+      });
+      const req = http.request({
+        hostname: '127.0.0.1',
+        port: OLLAMA_PORT,
+        path: '/api/generate',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => resolve(true));
+      });
+      req.on('error', (err) => reject(err));
+      req.write(body);
+      req.end();
+    });
+    await withTimeout(loadReq, MODEL_READY_TIMEOUT, 'Model loading');
+  }
+}
 
 // Active agents: { id: { status, task, result, startedAt, ... } }
 const agents = {};
@@ -30,6 +101,13 @@ async function spawnAgent(args, cwd, onStatus, overrides) {
   const { task } = args;
   if (!task) return 'Error: task description is required';
 
+  // Verify Ollama is healthy and model is loaded before committing resources
+  try {
+    await ensureModelReady();
+  } catch (err) {
+    return `Error: Cannot spawn agent — ${err.message}. Try again in a moment.`;
+  }
+
   const id = `agent_${++agentCounter}`;
 
   // Create a dedicated session for this agent
@@ -53,7 +131,11 @@ async function spawnAgent(args, cwd, onStatus, overrides) {
   if (onStatus) onStatus({ type: 'agent_started', id, task, sessionId });
 
   try {
-    const result = await runAgent(agent, cwd, onStatus, overrides);
+    const result = await withTimeout(
+      runAgent(agent, cwd, onStatus, overrides),
+      AGENT_TIMEOUT,
+      `Agent "${id}"`,
+    );
     agent.status = 'completed';
     agent.result = result;
     agent.completedAt = Date.now();
@@ -115,15 +197,19 @@ RULES:
     turn++;
 
     let fullResponse = '';
-    const chatResult = await streamChat({
-      messages,
-      tools: tools.length > 0 ? tools : undefined,
-      onToken: (event) => {
-        if (event && event.type === 'token') fullResponse += event.content || '';
-        else if (event && event.type === 'thinking') { /* skip */ }
-        else if (event && event.type === 'tool_calls') { /* handled via chatResult */ }
-      },
-    });
+    const chatResult = await withTimeout(
+      streamChat({
+        messages,
+        tools: tools.length > 0 ? tools : undefined,
+        onToken: (event) => {
+          if (event && event.type === 'token') fullResponse += event.content || '';
+          else if (event && event.type === 'thinking') { /* skip */ }
+          else if (event && event.type === 'tool_calls') { /* handled via chatResult */ }
+        },
+      }),
+      INFERENCE_TIMEOUT,
+      `Agent inference (turn ${turn})`,
+    );
     // Prefer the resolved response string from the Promise
     if (chatResult && chatResult.response) fullResponse = chatResult.response;
 
@@ -197,14 +283,18 @@ RULES:
       content: 'Your tool turns are complete. Now summarize ALL findings from your research above. Include every specific fact, number, date, statistic, and source URL you gathered. Output raw findings only.',
     });
     let summary = '';
-    const summaryResult = await streamChat({
-      messages,
-      maxTokens: 16384, // Generous limit — agent summaries feed directly into report synthesis
-      // No tools — force a text response
-      onToken: (event) => {
-        if (event && event.type === 'token') summary += event.content || '';
-      },
-    });
+    const summaryResult = await withTimeout(
+      streamChat({
+        messages,
+        maxTokens: 16384, // Generous limit — agent summaries feed directly into report synthesis
+        // No tools — force a text response
+        onToken: (event) => {
+          if (event && event.type === 'token') summary += event.content || '';
+        },
+      }),
+      INFERENCE_TIMEOUT,
+      'Agent summary generation',
+    );
     summary = (summaryResult && summaryResult.response) || summary;
     if (summary.trim()) return summary.trim();
   }

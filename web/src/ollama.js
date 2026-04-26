@@ -16,6 +16,8 @@ const { MODEL, MODEL_CTX, OLLAMA_PORT } = require('./constants');
  */
 function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think, extraOptions }) {
   return new Promise((resolve, reject) => {
+    let aborted = false; // Shared across res and req error handlers
+
     const body = JSON.stringify({
       model: MODEL,
       stream: true,
@@ -47,7 +49,6 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       let toolCalls = null;
       let stats = {};
       let buffer = '';
-      let aborted = false;
 
       // Repetition loop detector — watches the last N characters for
       // repeating patterns.  If a short phrase (8-60 chars) repeats
@@ -168,7 +169,14 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
 
     // Handle abort
     if (signal) {
+      if (signal.aborted) {
+        aborted = true;
+        req.destroy();
+        reject(new Error('Request aborted'));
+        return;
+      }
       signal.addEventListener('abort', () => {
+        aborted = true;
         req.destroy();
         reject(new Error('Request aborted'));
       });
