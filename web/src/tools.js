@@ -541,8 +541,9 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     const tools = buildToolDefs();
 
     // Budget must be generous — Gemma 4 extended thinking consumes num_predict
-    // before producing visible response tokens
-    const maxTokens = turn === 0 ? 16384 : 24576;
+    // before producing visible response tokens. With 128K context and free local
+    // inference, we maximize output capacity so reports and research are thorough.
+    const maxTokens = turn === 0 ? 32768 : 49152;
 
     const result = await streamChat({
       messages,

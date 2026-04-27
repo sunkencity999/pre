@@ -163,13 +163,14 @@ async function spawnAgent(args, cwd, onStatus, overrides) {
  * @param {object} [overrides] - { maxTurns, allowedTools, systemPrompt }
  */
 async function runAgent(agent, cwd, onStatus, overrides) {
-  const systemPrompt = (overrides && overrides.systemPrompt) || `You are a research sub-agent spawned by PRE (Personal Reasoning Engine). Your task is to complete the following assignment and return a concise, factual summary of your findings.
+  const systemPrompt = (overrides && overrides.systemPrompt) || `You are a research sub-agent spawned by PRE (Personal Reasoning Engine). Your task is to complete the following assignment and return COMPREHENSIVE, DETAILED findings.
 
 RULES:
 - Focus only on the assigned task
 - Use tools to gather information (read files, search, fetch web pages)
-- Be thorough but concise
-- Return your findings as a clear summary
+- Be THOROUGH — gather specific facts, data points, statistics, named sources, dates, and dollar amounts
+- Conduct 5-8 web searches with different queries to build complete coverage of the topic
+- Return ALL gathered data in your findings — do NOT summarize or abbreviate. Raw detail is more valuable than brevity.
 - Do NOT ask follow-up questions — complete the task autonomously
 - Maximum 10 tool calls`;
 
@@ -203,6 +204,7 @@ RULES:
       streamChat({
         messages,
         tools: tools.length > 0 ? tools : undefined,
+        maxTokens: 16384,
         onToken: (event) => {
           if (event && event.type === 'token') fullResponse += event.content || '';
           else if (event && event.type === 'thinking') { /* skip */ }
@@ -288,7 +290,7 @@ RULES:
     const summaryResult = await withTimeout(
       streamChat({
         messages,
-        maxTokens: 16384, // Generous limit — agent summaries feed directly into report synthesis
+        maxTokens: 32768, // Must be large — agent findings feed directly into report synthesis
         // No tools — force a text response
         onToken: (event) => {
           if (event && event.type === 'token') summary += event.content || '';

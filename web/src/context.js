@@ -110,10 +110,10 @@ function buildSystemPrompt(cwd) {
     + `   NEVER output raw HTML, <artifact> tags, or code blocks in chat.\n`
     + `   NEVER use bash with printf/cat/echo to write files. Use the file_write tool.\n`
     + `3. One tool call per turn. STOP after each call and wait for the result.\n`
-    + `4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n`
+    + `4. For research: call web_search 5-8 times with DIFFERENT specific queries before writing. More searches = richer content.\n`
     + `5. For reports with images: web_search first, then image_generate for each image, then artifact last.\n`
     + `6. In HTML artifacts: load CDN scripts in <head>.\n`
-    + `7. For long reports: use append_to to add sections to an existing artifact.\n`;
+    + `7. For long reports: write the COMPLETE report in a single artifact call. Do NOT truncate — you have ample token budget.\n`;
 
   if (comfyui) {
     prompt += `8. image_generate is a WORKING native function call. It creates photorealistic images on the local GPU in ~30-45 seconds. `
@@ -173,12 +173,27 @@ function buildSystemPrompt(cwd) {
 
   // Report quality
   prompt += `\nREPORT QUALITY STANDARDS:\n`
-    + `When creating reports or documents:\n`
-    + `- USE SPECIFIC DATA from your web_search results: names, dates, numbers, quotes.\n`
+    + `You run locally with NO per-token cost. Output should be COMPREHENSIVE — never truncate, abbreviate, or summarize prematurely.\n`
+    + `When creating reports, analyses, or research documents:\n`
+    + `\n`
+    + `DEPTH & LENGTH:\n`
+    + `- Reports must be REFERENCE-QUALITY material — thorough enough to serve as a standalone briefing document.\n`
+    + `- Each major section needs 4-8 substantive paragraphs with specific facts, data points, named sources, dates, and figures.\n`
+    + `- Include analysis, not just description: explain WHY things matter, compare alternatives, assess implications, identify risks.\n`
+    + `- Add sub-sections, tables, and structured breakdowns where they add clarity.\n`
+    + `- A good report is 3,000-8,000 words. Short summaries are only acceptable if the user explicitly asks for a summary.\n`
+    + `- Do NOT stop early. Do NOT add "Further reading" or "For more information" cop-outs. Write the actual content.\n`
+    + `- When using spawn_agent for research, instruct each agent to gather DETAILED findings with specific data points, not brief summaries.\n`
+    + `\n`
+    + `RESEARCH RIGOR:\n`
+    + `- USE SPECIFIC DATA from web_search results: names, dates, dollar amounts, percentages, named sources.\n`
     + `- INCLUDE EVERY SECTION the user requested.\n`
     + `- CHARTS must use REAL DATA from research, not placeholder numbers.\n`
-    + `- Each section needs 2-3 substantive paragraphs minimum with specific facts.\n`
+    + `- Cross-reference multiple sources. Note conflicting data where it exists.\n`
+    + `- Include a timeline or chronology for evolving situations.\n`
     + `- End with pdf_export if the user requested PDF output.\n`
+    + `\n`
+    + `HTML QUALITY:\n`
     + `- Validate your HTML: matching quotes, no duplicate CSS keywords.\n`
     + `- STYLING: Use a clean, modern light theme. White/soft grey backgrounds (#fafafa, #ffffff), dark text (#1a1a2e), readable serif headings (Georgia), generous line-height (1.65+). NEVER use dark backgrounds or prefers-color-scheme:dark media queries. Tables: light header (#334155 or similar slate, white text), subtle striped rows (#f8fafc). Emphasize whitespace, typography, and readability.\n`;
 
