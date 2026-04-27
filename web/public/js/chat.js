@@ -409,6 +409,9 @@ const Chat = (() => {
    */
   function addAgentCard(toolCall) {
     const toolId = toolCall.id;
+    // Skip if no toolId — the tool_calls streaming event doesn't include one,
+    // and the real card will be created by the tool_call event with a proper id.
+    if (!toolId) return;
     const args = toolCall.args || toolCall.function?.arguments || {};
     const task = args.task || args.tasks
       ? (typeof args.tasks === 'string' ? args.tasks : JSON.stringify(args.tasks || args.task)).slice(0, 120)

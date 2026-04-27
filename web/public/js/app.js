@@ -81,9 +81,15 @@
 
       case 'tool_calls':
         if (msg.calls) {
+          // Agent tools (spawn_agent, spawn_multi) are skipped here because
+          // they'll get a proper card from the tool_call event with a tracking ID.
+          // Creating one here (without an id) would produce an orphan duplicate.
+          const AGENT_NAMES = new Set(['spawn_agent', 'spawn_multi']);
           for (const tc of msg.calls) {
+            const name = tc.function?.name || '';
+            if (AGENT_NAMES.has(name)) continue;
             Chat.addToolCall({
-              name: tc.function?.name,
+              name,
               args: tc.function?.arguments,
               status: 'pending',
             });
