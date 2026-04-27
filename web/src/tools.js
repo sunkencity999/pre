@@ -504,6 +504,7 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   let pendingScreenshots = []; // Screenshots from computer/browser tools, injected transiently
   let usedComputerUse = false; // Track if computer use was invoked for completion notification
   let pendingClickWarning = null; // Click-loop warning to inject with next screenshot
+  let emptyResponseNudged = false; // One-shot: nudge model if thinking consumed entire budget
 
   for (let turn = 0; turn < turnLimit; turn++) {
     if (signal?.aborted) break;
@@ -586,18 +587,31 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       appendMessage(sessionId, assistantMsg);
     }
 
-    // No tool calls — check for unfulfilled artifact intent before finishing.
-    // The model sometimes plans an artifact in text but stops before calling the tool.
-    // One-shot nudge: if this is the first turn and the response mentions creating HTML/artifact,
-    // push a continuation message and loop once more.
+    // No tool calls — check for cases where the model needs a nudge before finishing.
     if (!result.toolCalls || result.toolCalls.length === 0) {
-      if (turn === 1 && result.response) {
-        const resp = result.response.toLowerCase();
+      const responseText = (result.response || '').trim();
+      const thinkingLen = (result.thinking || '').length;
+
+      // (#A) Empty response after substantial thinking — the model put the entire
+      // analysis in the thinking block and produced no visible output. One-shot nudge
+      // to get it to write the actual response. Only fires once per conversation.
+      if (!responseText && thinkingLen > 500 && !emptyResponseNudged) {
+        emptyResponseNudged = true;
+        console.log(`[tool-loop] Empty response with ${thinkingLen} chars of thinking — nudging for visible output`);
+        messages.push({ role: 'assistant', content: '(thinking completed)' });
+        messages.push({ role: 'user', content: 'Please write your full response now. Your analysis should be visible to me, not just in your reasoning.' });
+        send({ type: 'done_partial', stats: result.stats });
+        continue;
+      }
+
+      // (#B) Unfulfilled artifact intent — model plans to create an artifact but stops.
+      if (turn === 1 && responseText) {
+        const resp = responseText.toLowerCase();
         const mentionsArtifact = /\b(artifact|dashboard|html|webpage|visualization)\b/.test(resp);
         const mentionsIntent = /\b(will (write|create|build|generate|produce|make)|let me (create|build|write)|now (create|write|build)|here'?s the)\b/.test(resp);
         if (mentionsArtifact && mentionsIntent) {
           console.log('[tool-loop] Detected unfulfilled artifact intent — sending continuation nudge');
-          messages.push({ role: 'assistant', content: result.response });
+          messages.push({ role: 'assistant', content: responseText });
           messages.push({ role: 'user', content: 'Go ahead — call the artifact tool now with the full HTML content.' });
           send({ type: 'done_partial', stats: result.stats });
           continue;
