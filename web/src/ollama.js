@@ -56,6 +56,7 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       const REPEAT_WINDOW = 600; // chars to scan
       const REPEAT_THRESHOLD = 6; // how many repeats trigger abort
       let repeatCheckCounter = 0;
+      let thinkRepeatCounter = 0;
 
       function detectRepetition(text) {
         if (text.length < REPEAT_WINDOW) return false;
@@ -98,6 +99,34 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
           if (msg.thinking) {
             thinking += msg.thinking;
             if (onToken) onToken({ type: 'thinking', content: msg.thinking });
+
+            // Check for repetition in thinking every ~50 tokens
+            thinkRepeatCounter++;
+            if (thinkRepeatCounter >= 50) {
+              thinkRepeatCounter = 0;
+              const repeatedPattern = detectRepetition(thinking);
+              if (repeatedPattern) {
+                console.warn(`[ollama] Thinking loop detected: "${repeatedPattern.slice(0, 40)}..." — aborting generation`);
+                aborted = true;
+                req.destroy();
+                // Trim the repeated tail from thinking
+                const cleanIdx = thinking.lastIndexOf(repeatedPattern);
+                if (cleanIdx > 100) {
+                  let trimPos = cleanIdx;
+                  while (trimPos > 0 && thinking.slice(trimPos - repeatedPattern.length, trimPos) === repeatedPattern) {
+                    trimPos -= repeatedPattern.length;
+                  }
+                  thinking = thinking.slice(0, trimPos).trimEnd();
+                }
+                // If the model already produced a response, keep it; otherwise flag it
+                if (!response.trim()) {
+                  response = '*(Generation stopped — thinking loop detected)*';
+                  if (onToken) onToken({ type: 'token', content: response });
+                }
+                resolve({ response, thinking, toolCalls, stats });
+                return;
+              }
+            }
           }
 
           // Regular content

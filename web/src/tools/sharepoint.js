@@ -11,7 +11,10 @@ const TOKEN_HOST = 'login.microsoftonline.com';
 
 // Encode folder path segments individually (preserves / separators)
 function encodePath(p) {
-  return p.split('/').map(s => encodeURIComponent(s)).join('/');
+  // Strip leading/trailing slashes — the caller embeds root:/{path}:/children
+  // Do NOT percent-encode here; graphRequest wraps the final URL in encodeURI
+  // which handles spaces etc. Pre-encoding causes double-encoding (%20 → %2520).
+  return p.replace(/^\/+/, '').replace(/\/+$/, '');
 }
 
 // ── Token management ──
@@ -232,13 +235,16 @@ async function listSites(query) {
 }
 
 async function listFiles(siteId, driveId, folderPath, top) {
+  // Normalize: strip slashes/whitespace so "/" or " " → empty → root listing
+  const cleanPath = folderPath ? folderPath.replace(/^\/+/, '').replace(/\/+$/, '').trim() : '';
+
   let apiPath;
-  if (driveId && folderPath) {
-    apiPath = `/sites/${siteId}/drives/${driveId}/root:/${encodePath(folderPath)}:/children`;
+  if (driveId && cleanPath) {
+    apiPath = `/sites/${siteId}/drives/${driveId}/root:/${encodePath(cleanPath)}:/children`;
   } else if (driveId) {
     apiPath = `/sites/${siteId}/drives/${driveId}/root/children`;
-  } else if (folderPath) {
-    apiPath = `/sites/${siteId}/drive/root:/${encodePath(folderPath)}:/children`;
+  } else if (cleanPath) {
+    apiPath = `/sites/${siteId}/drive/root:/${encodePath(cleanPath)}:/children`;
   } else {
     apiPath = `/sites/${siteId}/drive/root/children`;
   }
@@ -434,13 +440,15 @@ async function updateListItem(siteId, listId, itemId, fields) {
 }
 
 async function createFolder(siteId, folderName, parentPath, driveId) {
+  const cleanParent = parentPath ? parentPath.replace(/^\/+/, '').replace(/\/+$/, '').trim() : '';
+
   let apiPath;
-  if (driveId && parentPath) {
-    apiPath = `/sites/${siteId}/drives/${driveId}/root:/${encodePath(parentPath)}:/children`;
+  if (driveId && cleanParent) {
+    apiPath = `/sites/${siteId}/drives/${driveId}/root:/${encodePath(cleanParent)}:/children`;
   } else if (driveId) {
     apiPath = `/sites/${siteId}/drives/${driveId}/root/children`;
-  } else if (parentPath) {
-    apiPath = `/sites/${siteId}/drive/root:/${encodePath(parentPath)}:/children`;
+  } else if (cleanParent) {
+    apiPath = `/sites/${siteId}/drive/root:/${encodePath(cleanParent)}:/children`;
   } else {
     apiPath = `/sites/${siteId}/drive/root/children`;
   }
