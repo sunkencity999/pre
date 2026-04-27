@@ -735,13 +735,25 @@ function parseCalendarText(text) {
   return text.split('\n').filter(Boolean).map(line => {
     // UID:xxx | YYYY-MM-DD HH:MM-HH:MM | Title | [Calendar]
     const parts = line.split(' | ');
-    const time = parts[1] || '';
-    return {
-      title: parts[2] || line,
-      time,
-      start: time.replace(/^\d{4}-\d{2}-\d{2}\s*/, ''),
-      calendar: (parts[3] || '').replace(/[[\]]/g, ''),
-    };
+    const timeStr = parts[1] || '';
+    const title = parts[2] || line;
+    const calendar = (parts[3] || '').replace(/[[\]]/g, '');
+
+    // Parse "2026-04-27 11:50-12:05" into date + start/end ISO datetimes
+    const m = timeStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+    if (m) {
+      return {
+        title,
+        date: m[1],
+        start: `${m[1]}T${m[2]}:00`,   // ISO: "2026-04-27T11:50:00"
+        end: `${m[1]}T${m[3]}:00`,
+        start_time: m[2],               // "11:50"
+        end_time: m[3],                 // "12:05"
+        calendar,
+      };
+    }
+    // Fallback for unparseable time
+    return { title, date: timeStr, start: timeStr, end: '', start_time: '', end_time: '', calendar };
   });
 }
 

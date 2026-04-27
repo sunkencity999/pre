@@ -197,7 +197,7 @@ function buildSystemPrompt(cwd) {
     + `- Create an HTML artifact with JavaScript that fetches from PRE's live data API endpoints.\n`
     + `- Each endpoint returns { data: <structured JSON>, timestamp: ISO8601 }.\n`
     + `- Endpoints and their data shapes:\n`
-    + `  /api/live/calendar → data: [{title, time, start, calendar}, ...]\n`
+    + `  /api/live/calendar → data: [{title, date ("YYYY-MM-DD"), start (ISO datetime), end (ISO datetime), start_time ("HH:MM"), end_time ("HH:MM"), calendar}, ...]\n`
     + `  /api/live/calendar/week → same shape as /calendar\n`
     + `  /api/live/mail?count=N → data: [{unread, date, from, subject}, ...]\n`
     + `  /api/live/reminders → data: [{title, due, list, priority}, ...]\n`
