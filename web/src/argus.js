@@ -244,6 +244,15 @@ function isQualityReaction(text, trigger) {
   // Instruction echoing — model repeating its own prompt constraints
   if (lower.includes('one sentence') || lower.includes('no preamble') || lower.includes('terse')) return false;
 
+  // Pseudo-philosophical meta-commentary about AI behavior
+  if (lower.includes('computational drift') || lower.includes('structural boundary') || lower.includes('structural boundar')) return false;
+  if (/\b(you have transitioned|you('ve| have) (moved|shifted|evolved)|by (explicitly |carefully )?(defining|establishing|setting))\b/.test(lower)) return false;
+  if (/\b(ai('s|s)? tendency|an ai|the (model|system|agent) (is|has|tends|will))\b/.test(lower)) return false;
+  if (/\b(methodology|paradigm|framework|ontolog|epistem|heuristic)\b/.test(lower) && !/\b(jira|api|config|code|file|error)\b/.test(lower)) return false;
+
+  // Generic "suggests that" speculation about tool behavior
+  if (/\b(this |the )?(suggests?|implies?|indicates?) (that )?(your|the|a) (definition|understanding|approach|methodology|concept)\b/.test(lower)) return false;
+
   // Silence signals
   if (/^[.…—\-*\s]+$/.test(text)) return false;
 
@@ -306,11 +315,11 @@ async function generateReaction(trigger) {
     // (#5) Error reactions get a diagnostic prompt that asks for root cause + fix suggestions
     let systemPrompt;
     if (isError) {
-      systemPrompt = `You are Argus, a sharp diagnostic advisor. An error just occurred. Analyze the error and provide ONE actionable response: identify the likely root cause and suggest a specific fix or next step. Don't just acknowledge the error — diagnose it. If you can see what the user was trying to accomplish, frame your suggestion in terms of achieving that goal. No labels, no preamble.${groundingRule}`;
+      systemPrompt = `You are Argus, a terse diagnostic advisor. An error just occurred. Provide ONE actionable sentence: the likely root cause and a specific fix. No philosophy, no meta-commentary about how AI works. Just diagnose and prescribe. No labels, no preamble.${groundingRule}`;
     } else if (isContentTrigger) {
-      systemPrompt = `You are Argus, a wise and perceptive advisor. The user just received a response. Offer ONE brief insight that deepens understanding — a connection they might miss, a question worth considering, a broader implication, or a practical next step. If you can see the user's original intent, comment on progress toward that goal rather than just the mechanics of what happened. Speak to the substance. No labels, no preamble.${groundingRule}`;
+      systemPrompt = `You are Argus, a practical technical advisor. The user just received a response. Offer ONE concrete, specific observation: a fact they might not know, a risk to watch for, or a concrete next step. Comment on the CONTENT of the work, not on methodology or how AI thinks. Never philosophize about "structural boundaries", "computational drift", or abstract AI concepts. No labels, no preamble.${groundingRule}`;
     } else {
-      systemPrompt = `You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a useful tip. If you can see the user's goal, relate your observation to their progress — e.g., "Auth module is taking shape" beats "File written." No labels, no preamble.${groundingRule}`;
+      systemPrompt = `You are Argus, a sharp technical observer. Respond with ONE brief, specific observation about what just happened — a fact worth knowing, a potential issue, or a practical tip. Comment on the work itself, not on how the AI is approaching it. "The SharePoint token expires in 45 min" beats "By defining constraints you establish boundaries." No labels, no preamble.${groundingRule}`;
     }
 
     const contextText = buildReactionContext(trigger);
