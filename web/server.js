@@ -727,21 +727,82 @@ const mailTool = require('./src/tools/mail');
 const remindersTool = require('./src/tools/reminders');
 const systemTool = require('./src/tools/system');
 
+// ── Live Data API helpers ──
+// Parse pipe-delimited tool output into structured JSON for artifact consumption.
+
+function parseCalendarText(text) {
+  if (!text || typeof text !== 'string') return [];
+  return text.split('\n').filter(Boolean).map(line => {
+    // UID:xxx | YYYY-MM-DD HH:MM-HH:MM | Title | [Calendar]
+    const parts = line.split(' | ');
+    const time = parts[1] || '';
+    return {
+      title: parts[2] || line,
+      time,
+      start: time.replace(/^\d{4}-\d{2}-\d{2}\s*/, ''),
+      calendar: (parts[3] || '').replace(/[[\]]/g, ''),
+    };
+  });
+}
+
+function parseMailText(text) {
+  if (!text || typeof text !== 'string') return [];
+  return text.split('\n').filter(Boolean).map(line => {
+    // [UNREAD] ID:xxx | YYYY-MM-DD HH:MM | From: xxx | Subject: xxx
+    const unread = line.startsWith('[UNREAD]');
+    const clean = line.replace(/^\[UNREAD\]\s*/, '');
+    const parts = clean.split(' | ');
+    return {
+      unread,
+      date: parts[1] || '',
+      from: (parts[2] || '').replace(/^From:\s*/, ''),
+      subject: (parts[3] || '').replace(/^Subject:\s*/, ''),
+    };
+  });
+}
+
+function parseRemindersText(text) {
+  if (!text || typeof text !== 'string') return [];
+  // Split on "ID:" at line start (reminders can have multi-line notes)
+  return text.split(/\n(?=ID:)/).filter(Boolean).map(block => {
+    const firstLine = block.split('\n')[0];
+    const parts = firstLine.split(' | ');
+    const obj = { title: parts[1] || block };
+    for (let i = 2; i < parts.length; i++) {
+      const p = parts[i];
+      if (p.startsWith('Due:')) obj.due = p.replace('Due: ', '');
+      else if (p.startsWith('Priority:')) obj.priority = p.replace('Priority: ', '');
+      else if (p.startsWith('[')) obj.list = p.replace(/[[\]]/g, '');
+    }
+    return obj;
+  });
+}
+
+function parseSystemText(text) {
+  if (!text || typeof text !== 'string') return {};
+  const obj = {};
+  for (const line of text.split('\n')) {
+    const m = line.match(/^([^:]+):\s*(.+)$/);
+    if (m) obj[m[1].trim().toLowerCase().replace(/\s+/g, '_')] = m[2].trim();
+  }
+  return obj;
+}
+
 app.get('/api/live/calendar', async (_req, res) => {
   try {
     const result = await calendarTool.calendar({ action: 'today' });
-    res.json({ data: result, timestamp: new Date().toISOString() });
+    res.json({ data: parseCalendarText(result), timestamp: new Date().toISOString() });
   } catch (err) {
-    res.json({ data: 'Calendar unavailable', error: err.message, timestamp: new Date().toISOString() });
+    res.json({ data: [], error: err.message, timestamp: new Date().toISOString() });
   }
 });
 
 app.get('/api/live/calendar/week', async (_req, res) => {
   try {
     const result = await calendarTool.calendar({ action: 'week' });
-    res.json({ data: result, timestamp: new Date().toISOString() });
+    res.json({ data: parseCalendarText(result), timestamp: new Date().toISOString() });
   } catch (err) {
-    res.json({ data: 'Calendar unavailable', error: err.message, timestamp: new Date().toISOString() });
+    res.json({ data: [], error: err.message, timestamp: new Date().toISOString() });
   }
 });
 
@@ -749,27 +810,77 @@ app.get('/api/live/mail', async (req, res) => {
   try {
     const count = parseInt(req.query.count) || 10;
     const result = await mailTool.mail({ action: 'list_recent', count });
-    res.json({ data: result, timestamp: new Date().toISOString() });
+    res.json({ data: parseMailText(result), timestamp: new Date().toISOString() });
   } catch (err) {
-    res.json({ data: 'Mail unavailable', error: err.message, timestamp: new Date().toISOString() });
+    res.json({ data: [], error: err.message, timestamp: new Date().toISOString() });
   }
 });
 
 app.get('/api/live/reminders', async (_req, res) => {
   try {
     const result = await remindersTool.reminders({ action: 'list' });
-    res.json({ data: result, timestamp: new Date().toISOString() });
+    res.json({ data: parseRemindersText(result), timestamp: new Date().toISOString() });
   } catch (err) {
-    res.json({ data: 'Reminders unavailable', error: err.message, timestamp: new Date().toISOString() });
+    res.json({ data: [], error: err.message, timestamp: new Date().toISOString() });
   }
 });
 
 app.get('/api/live/system', async (_req, res) => {
   try {
-    const result = await systemTool.systemInfo();
-    res.json({ data: result, timestamp: new Date().toISOString() });
+    const { execSync } = require('child_process');
+    const base = parseSystemText(await systemTool.systemInfo());
+
+    // Compute memory usage % from vm_stat pages — include inactive/speculative as available
+    // (macOS reclaims these under pressure; counting only "free" pages hugely overstates usage)
+    const pageSize = 16384;
+    const totalBytes = parseFloat(base.memory) * 1024 * 1024 * 1024 || 0;
+    const freePages = parseFloat(base.pages_free) || 0;
+    const inactivePages = parseFloat(base.pages_inactive) || 0;
+    const speculativePages = parseFloat(base.pages_speculative) || 0;
+    const availableBytes = (freePages + inactivePages + speculativePages) * pageSize;
+    const memUsage = totalBytes > 0 ? ((1 - (availableBytes / totalBytes)) * 100) : 0;
+
+    // Disk usage % — use Data volume (APFS root shows only system volume, not user data)
+    let diskUsage = 0;
+    try {
+      const df = execSync("df -h /System/Volumes/Data 2>/dev/null || df -h /", { timeout: 3000 }).toString();
+      const lastLine = df.trim().split('\n').pop();
+      const pctMatch = lastLine.match(/(\d+)%/);
+      if (pctMatch) diskUsage = parseInt(pctMatch[1]);
+    } catch {}
+
+    // CPU usage % — aggregate from ps, normalized by core count
+    let cpuUsage = 0;
+    try {
+      const ps = execSync("ps -A -o %cpu | awk '{s+=$1} END {print s}'", { timeout: 3000 }).toString().trim();
+      const cores = parseInt(execSync("sysctl -n hw.ncpu", { timeout: 1000 }).toString().trim()) || 1;
+      cpuUsage = (parseFloat(ps) || 0) / cores;
+    } catch {}
+
+    // Parse battery: "-InternalBattery-0 (id=xxx)\t92%; discharging; ..."
+    const batteryRaw = base.battery || '';
+    const batteryPctMatch = batteryRaw.match(/(\d+)%/);
+    const batteryPercent = batteryPctMatch ? parseInt(batteryPctMatch[1]) : null;
+    const batteryCharging = /charging/.test(batteryRaw) && !/discharging/.test(batteryRaw);
+    const batteryState = /discharging/.test(batteryRaw) ? 'discharging' : batteryCharging ? 'charging' : 'unknown';
+
+    res.json({
+      data: {
+        hostname: base.hostname || '',
+        os: base.os || '',
+        cpu: base.cpu || '',
+        cpu_usage: Math.round(cpuUsage * 10) / 10,
+        memory: base.memory || '',
+        memory_usage: Math.round(memUsage * 10) / 10,
+        disk_usage: diskUsage,
+        uptime: base.uptime || '',
+        battery_percent: batteryPercent,
+        battery_state: batteryState,
+      },
+      timestamp: new Date().toISOString(),
+    });
   } catch (err) {
-    res.json({ data: 'System info unavailable', error: err.message, timestamp: new Date().toISOString() });
+    res.json({ data: {}, error: err.message, timestamp: new Date().toISOString() });
   }
 });
 

@@ -105,12 +105,9 @@ function buildSystemPrompt(cwd) {
   // Rules
   prompt += `RULES (follow these exactly):\n`
     + `1. NEVER output code, HTML, or file contents in chat. Use tools instead.\n`
-    + `2. artifact uses text-based <tool_call> tags (not function calls):\n`
-    + `   <tool_call>\n`
-    + `   {"name": "artifact", "arguments": {"title": "...", "content": "...HTML...", "type": "html"}}\n`
-    + `   </tool_call>\n`
-    + `   NEVER output raw HTML, <artifact> tags, or code blocks in chat. ALWAYS wrap artifact content in <tool_call> tags.\n`
-    + `   All other tools (including file_write) are native function calls.\n`
+    + `2. ALL tools (including artifact) are native function calls. Call the artifact tool directly with title, content, and type.\n`
+    + `   Do NOT describe or plan what you will build — call the artifact tool IMMEDIATELY with the full HTML content.\n`
+    + `   NEVER output raw HTML, <artifact> tags, or code blocks in chat.\n`
     + `   NEVER use bash with printf/cat/echo to write files. Use the file_write tool.\n`
     + `3. One tool call per turn. STOP after each call and wait for the result.\n`
     + `4. For research: call web_search 3-5 times with DIFFERENT specific queries before writing.\n`
@@ -197,18 +194,18 @@ function buildSystemPrompt(cwd) {
   // Live artifacts
   prompt += `\nLIVE ARTIFACTS (auto-refreshing dashboards):\n`
     + `When the user asks for a dashboard, status board, or any artifact that should show CURRENT data:\n`
-    + `- Create an HTML artifact with JavaScript that fetches from PRE's live data API endpoints:\n`
-    + `  /api/live/calendar — today's events\n`
-    + `  /api/live/calendar/week — this week's events\n`
-    + `  /api/live/mail?count=N — recent emails (default 10)\n`
-    + `  /api/live/reminders — pending reminders\n`
-    + `  /api/live/system — system info (CPU, memory, disk, uptime)\n`
-    + `  /api/live/sessions — recent PRE sessions\n`
-    + `- Each endpoint returns { data: string, timestamp: ISO8601 }.\n`
+    + `- Create an HTML artifact with JavaScript that fetches from PRE's live data API endpoints.\n`
+    + `- Each endpoint returns { data: <structured JSON>, timestamp: ISO8601 }.\n`
+    + `- Endpoints and their data shapes:\n`
+    + `  /api/live/calendar → data: [{title, time, start, calendar}, ...]\n`
+    + `  /api/live/calendar/week → same shape as /calendar\n`
+    + `  /api/live/mail?count=N → data: [{unread, date, from, subject}, ...]\n`
+    + `  /api/live/reminders → data: [{title, due, list, priority}, ...]\n`
+    + `  /api/live/system → data: {hostname, os, cpu, cpu_usage (number %), memory, memory_usage (number %), disk_usage (number %), uptime, battery_percent (number or null), battery_state ("charging"|"discharging"|"unknown")}\n`
+    + `  /api/live/sessions → data: [{id, name, modified, turns}, ...]\n`
     + `- Include a refresh button AND an auto-refresh interval (e.g. every 60s).\n`
     + `- Show a "Last updated: <timestamp>" indicator.\n`
-    + `- Parse the text data from each endpoint and render it in styled HTML (tables, cards, lists).\n`
-    + `- Example fetch: fetch("/api/live/calendar").then(r=>r.json()).then(d=> /* render d.data */)\n`
+    + `- Example: fetch("/api/live/calendar").then(r=>r.json()).then(d=> d.data.forEach(e=> /* e.title, e.start */))\n`
     + `- The artifact is served from the same origin (localhost:7749), so no CORS issues.\n`;
 
   // Connection status

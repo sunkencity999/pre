@@ -586,8 +586,24 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       appendMessage(sessionId, assistantMsg);
     }
 
-    // No tool calls — we're done
+    // No tool calls — check for unfulfilled artifact intent before finishing.
+    // The model sometimes plans an artifact in text but stops before calling the tool.
+    // One-shot nudge: if this is the first turn and the response mentions creating HTML/artifact,
+    // push a continuation message and loop once more.
     if (!result.toolCalls || result.toolCalls.length === 0) {
+      if (turn === 1 && result.response) {
+        const resp = result.response.toLowerCase();
+        const mentionsArtifact = /\b(artifact|dashboard|html|webpage|visualization)\b/.test(resp);
+        const mentionsIntent = /\b(will (write|create|build|generate|produce|make)|let me (create|build|write)|now (create|write|build)|here'?s the)\b/.test(resp);
+        if (mentionsArtifact && mentionsIntent) {
+          console.log('[tool-loop] Detected unfulfilled artifact intent — sending continuation nudge');
+          messages.push({ role: 'assistant', content: result.response });
+          messages.push({ role: 'user', content: 'Go ahead — call the artifact tool now with the full HTML content.' });
+          send({ type: 'done_partial', stats: result.stats });
+          continue;
+        }
+      }
+
       send({
         type: 'done',
         stats: { ...result.stats },
