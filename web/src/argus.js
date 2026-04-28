@@ -131,6 +131,12 @@ function shouldReact(event) {
   if (generating) return false;
   if (!TRIGGER_TYPES.has(event.type)) return false;
 
+  // While the main tool loop is active (multi-turn tool use, deep research,
+  // agent spawns), suppress ALL Argus reactions. Argus competes for Ollama
+  // and adds noise during long automated pipelines. It will react to the
+  // final 'done' event once the loop completes.
+  if (toolLoopActive && event.type !== 'done') return false;
+
   // 'done' events get a reduced cooldown — they're the best trigger for
   // content-level insight since the full response is available.
   const cooldown = event.type === 'done' ? Math.min(cfg.cooldownMs, 10000) : cfg.cooldownMs;
@@ -146,9 +152,8 @@ function shouldReact(event) {
     // Never react to long-running tools (agent spawns) — they compete for Ollama
     if (SUPPRESS_TOOLS.has(event.name)) return false;
     const out = typeof event.output === 'string' ? event.output : JSON.stringify(event.output || '');
-    // Errors still fire immediately (but not during an active tool loop)
     if (event.status === 'error' || /error|failed|exception/i.test(out.slice(0, 500))) {
-      return toolLoopActive ? 'deferred' : 'immediate';
+      return 'deferred';
     }
     if (INTERESTING_TOOLS.has(event.name)) return 'deferred';
     // React to ~30% of other tool results for variety
@@ -159,7 +164,7 @@ function shouldReact(event) {
   if (event.type === 'done' || event.type === 'artifact' ||
       event.type === 'image_generated' || event.type === 'document') return 'immediate';
 
-  // React to sub-agent events occasionally
+  // React to sub-agent events occasionally (only when tool loop is NOT active — guarded above)
   if (event.type === 'agent_status') return Math.random() < 0.5 ? 'immediate' : false;
 
   return false;
