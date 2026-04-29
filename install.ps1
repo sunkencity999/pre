@@ -410,6 +410,184 @@ if (Test-Path (Join-Path $WEB_DIR "package.json")) {
 }
 
 # ============================================================================
+# Step 5b: MCP Integration (Claude Desktop / Claude Code / Codex / Antigravity)
+# ============================================================================
+Step "MCP Integration (use PRE from Claude, Codex, Antigravity, or other AI tools)"
+
+$MCP_STDIO_PATH = Join-Path $WEB_DIR "mcp-stdio.js"
+$MCP_STDIO_PATH_FWD = $MCP_STDIO_PATH -replace '\\', '/'
+$MCP_SNIPPET = '{"mcpServers":{"pre":{"command":"node","args":["' + ($MCP_STDIO_PATH -replace '\\', '\\\\') + '"]}}}'
+$MCP_TOOLS_CONFIGURED = 0
+
+$PRE_DELEGATION_BLOCK = @"
+## PRE -- Local AI Agent (MCP)
+
+PRE is a local AI agent running on this machine (Ollama + Gemma 4, $CTX_HUMAN context).
+It is available as an MCP tool to offload execution-heavy tasks at zero API token cost.
+
+### When to delegate to PRE (``pre_agent`` or ``pre_chat``):
+- System info, disk, network, process checks
+- File search, reading, and directory listing
+- Git operations and status checks
+- Shell command execution
+- Summarization, translation, data formatting
+- Simple factual questions
+- Memory search (``pre_memory_search``)
+
+### When to handle directly (do NOT delegate):
+- Complex code generation and software architecture
+- Security reviews and vulnerability analysis
+- Nuanced multi-factor analysis and bug reasoning
+- Any task where frontier reasoning quality is critical
+
+### MCP tools:
+- ``pre_agent`` -- Full agentic task with 63+ tools (file I/O, shell, web, macOS apps, RAG, etc.)
+- ``pre_chat`` -- Quick Q&A without tools (fastest)
+- ``pre_memory_search`` -- Search PRE's persistent memory store
+- ``pre_sessions`` -- List recent PRE sessions
+"@
+
+function Write-DelegationInstructions {
+    param([string]$TargetFile, [string]$ToolName)
+    if ((Test-Path $TargetFile) -and (Select-String -Path $TargetFile -Pattern "## PRE -- Local AI Agent" -Quiet)) {
+        Ok "PRE delegation instructions already in $ToolName instructions."
+    } else {
+        if ((Test-Path $TargetFile) -and (Get-Item $TargetFile).Length -gt 0) {
+            Add-Content -Path $TargetFile -Value "`n`n$PRE_DELEGATION_BLOCK"
+        } else {
+            Set-Content -Path $TargetFile -Value $PRE_DELEGATION_BLOCK
+        }
+        Ok "Wrote PRE delegation guidelines to $ToolName instructions."
+    }
+}
+
+# ── Claude ──────────────────────────────────────────────────────────────────
+
+$CLAUDE_DESKTOP_CONFIG = Join-Path $env:APPDATA "Claude\claude_desktop_config.json"
+$CLAUDE_DETECTED = $false
+
+# Claude Desktop (Windows)
+if (Test-Path (Join-Path $env:APPDATA "Claude")) {
+    $CLAUDE_DETECTED = $true
+    Write-Host "  Claude Desktop detected."
+    Write-Host ""
+    Write-Host "  PRE can serve as an MCP tool for Claude, letting Claude delegate"
+    Write-Host "  execution-heavy tasks to your local model at zero token cost."
+    Write-Host ""
+    if (Ask-YN "  Add PRE to Claude Desktop? [Y/n]" "Y") {
+        if (Test-Path $CLAUDE_DESKTOP_CONFIG) {
+            $cfgText = Get-Content $CLAUDE_DESKTOP_CONFIG -Raw
+            if ($cfgText -match '"pre"') {
+                Ok "PRE already configured in Claude Desktop."
+            } else {
+                $cfg = $cfgText | ConvertFrom-Json
+                if (-not $cfg.mcpServers) { $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{}) }
+                $cfg.mcpServers | Add-Member -NotePropertyName pre -NotePropertyValue ([pscustomobject]@{
+                    command = "node"
+                    args    = @($MCP_STDIO_PATH)
+                }) -Force
+                $cfg | ConvertTo-Json -Depth 10 | Set-Content $CLAUDE_DESKTOP_CONFIG
+                Ok "PRE added to Claude Desktop config."
+                Warn "Restart Claude Desktop to activate."
+            }
+        } else {
+            New-Item -ItemType Directory -Force -Path (Split-Path $CLAUDE_DESKTOP_CONFIG) | Out-Null
+            $newCfg = [pscustomobject]@{ mcpServers = [pscustomobject]@{ pre = [pscustomobject]@{ command = "node"; args = @($MCP_STDIO_PATH) } } }
+            $newCfg | ConvertTo-Json -Depth 10 | Set-Content $CLAUDE_DESKTOP_CONFIG
+            Ok "Created Claude Desktop config with PRE."
+            Warn "Restart Claude Desktop to activate."
+        }
+        $MCP_TOOLS_CONFIGURED++
+    } else {
+        Write-Host "  Skipped. You can add it later -- see the README."
+    }
+}
+
+# Claude Code
+if (Test-Path (Join-Path $env:USERPROFILE ".claude")) {
+    $CLAUDE_DETECTED = $true
+    Ok "Claude Code detected."
+    Write-Host ""
+    Write-Host "  To use PRE from Claude Code, add to your project .mcp.json or global settings:"
+    Write-Host ""
+    Write-Host "    {`"mcpServers`":{`"pre`":{`"command`":`"node`",`"args`":[`"$MCP_STDIO_PATH_FWD`"]}}}"
+    Write-Host ""
+}
+
+# Write delegation instructions for Claude (CLAUDE.md in home dir)
+if ($CLAUDE_DETECTED) {
+    $CLAUDE_MD = Join-Path $env:USERPROFILE "CLAUDE.md"
+    Write-DelegationInstructions $CLAUDE_MD "CLAUDE.md"
+}
+
+# ── Codex (OpenAI) ──────────────────────────────────────────────────────────
+
+$CODEX_CONFIG = Join-Path $env:USERPROFILE ".codex\config.toml"
+if ((Test-Path (Join-Path $env:USERPROFILE ".codex")) -or (Get-Command codex -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "  Codex detected."
+    Write-Host ""
+    if (Ask-YN "  Add PRE as an MCP server for Codex? [Y/n]" "Y") {
+        if ((Test-Path $CODEX_CONFIG) -and (Select-String -Path $CODEX_CONFIG -Pattern '\[mcp_servers\.pre\]' -Quiet)) {
+            Ok "PRE already configured in Codex."
+        } else {
+            $tomlBlock = "`r`n[mcp_servers.pre]`r`ncommand = `"node`"`r`nargs = [`"$MCP_STDIO_PATH_FWD`"]`r`n"
+            if (-not (Test-Path (Split-Path $CODEX_CONFIG))) { New-Item -ItemType Directory -Force -Path (Split-Path $CODEX_CONFIG) | Out-Null }
+            Add-Content -Path $CODEX_CONFIG -Value $tomlBlock
+            Ok "PRE added to Codex config ($CODEX_CONFIG)."
+            $MCP_TOOLS_CONFIGURED++
+        }
+        $CODEX_INSTRUCTIONS = Join-Path $env:USERPROFILE ".codex\instructions.md"
+        Write-DelegationInstructions $CODEX_INSTRUCTIONS "Codex (instructions.md)"
+    } else {
+        Write-Host "  Skipped. Add manually to ~/.codex/config.toml -- see the README."
+    }
+}
+
+# ── Antigravity (Google) ────────────────────────────────────────────────────
+
+$ANTIGRAVITY_SETTINGS = Join-Path $env:USERPROFILE ".gemini\settings.json"
+if ((Test-Path (Join-Path $env:USERPROFILE ".gemini")) -or (Test-Path (Join-Path $env:USERPROFILE ".antigravity")) -or (Get-Command agy -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "  Antigravity detected."
+    Write-Host ""
+    if (Ask-YN "  Add PRE as an MCP server for Antigravity? [Y/n]" "Y") {
+        $alreadyConfigured = $false
+        if (Test-Path $ANTIGRAVITY_SETTINGS) {
+            $agText = Get-Content $ANTIGRAVITY_SETTINGS -Raw -ErrorAction SilentlyContinue
+            if ($agText -match '"pre"') { $alreadyConfigured = $true }
+        }
+        if ($alreadyConfigured) {
+            Ok "PRE already configured in Antigravity."
+        } else {
+            $agCfg = @{}
+            if (Test-Path $ANTIGRAVITY_SETTINGS) {
+                try { $agCfg = Get-Content $ANTIGRAVITY_SETTINGS -Raw | ConvertFrom-Json -AsHashtable } catch {}
+            }
+            if (-not $agCfg.ContainsKey('mcpServers')) { $agCfg['mcpServers'] = @{} }
+            $agCfg['mcpServers']['pre'] = @{ command = "node"; args = @($MCP_STDIO_PATH) }
+            if (-not (Test-Path (Split-Path $ANTIGRAVITY_SETTINGS))) { New-Item -ItemType Directory -Force -Path (Split-Path $ANTIGRAVITY_SETTINGS) | Out-Null }
+            $agCfg | ConvertTo-Json -Depth 10 | Set-Content $ANTIGRAVITY_SETTINGS
+            Ok "PRE added to Antigravity settings ($ANTIGRAVITY_SETTINGS)."
+            $MCP_TOOLS_CONFIGURED++
+        }
+        $GEMINI_MD = Join-Path $env:USERPROFILE ".gemini\GEMINI.md"
+        Write-DelegationInstructions $GEMINI_MD "Antigravity (GEMINI.md)"
+    } else {
+        Write-Host "  Skipped. Add manually to ~/.gemini/settings.json -- see the README."
+    }
+}
+
+# ── Summary ─────────────────────────────────────────────────────────────────
+
+Write-Host ""
+if ($MCP_TOOLS_CONFIGURED -gt 0) {
+    Ok "Configured PRE as MCP tool for $MCP_TOOLS_CONFIGURED AI tool(s)."
+}
+Write-Host "  The MCP server auto-starts Ollama and PRE -- no manual launch needed."
+Write-Host "  See web\README.md for delegation guidelines and cost savings data."
+
+# ============================================================================
 # Step 6: Set up ~/.pre/ directories
 # ============================================================================
 Step "Setting up PRE data directories"
@@ -527,13 +705,10 @@ Step "Pre-warming model"
 
 Write-Host "  Loading model into GPU memory (this may take 30-60 seconds)..."
 try {
-    $body = @{
-        model = "pre-gemma4"
-        prompt = "hi"
-        stream = $false
-        options = @{ num_predict = 1; num_ctx = $OPTIMAL_CTX }
-    } | ConvertTo-Json
-    $null = Invoke-RestMethod -Uri "http://127.0.0.1:${PORT}/api/generate" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 120
+    # Use /api/chat (not /api/generate) — Gemma 4 is an instruction model and the
+    # chat endpoint forces Ollama to allocate the full KV cache at the requested num_ctx.
+    $body = '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":"24h","options":{"num_predict":1,"num_ctx":' + $OPTIMAL_CTX + '}}'
+    $null = Invoke-RestMethod -Uri "http://127.0.0.1:${PORT}/api/chat" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 300
     Ok "Model loaded and ready."
 } catch {
     Warn "Pre-warm failed (model will load on first request): $($_.Exception.Message)"

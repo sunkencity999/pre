@@ -108,13 +108,10 @@ if (-not $ollamaRunning) {
 if ($ollamaRunning) {
     Write-Host "  Pre-warming model..."
     try {
-        $body = @{
-            model = "pre-gemma4"
-            prompt = "hi"
-            stream = $false
-            options = @{ num_predict = 1; num_ctx = $NUM_CTX }
-        } | ConvertTo-Json
-        Invoke-RestMethod -Uri "http://127.0.0.1:$OLLAMA_PORT/api/generate" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 120 | Out-Null
+        # Use /api/chat (not /api/generate) — Gemma 4 is an instruction model and the
+        # chat endpoint forces Ollama to allocate the full KV cache at the requested num_ctx.
+        $body = '{"model":"pre-gemma4","messages":[{"role":"user","content":"hi"}],"stream":false,"keep_alive":"24h","options":{"num_predict":1,"num_ctx":' + $NUM_CTX + '}}'
+        Invoke-RestMethod -Uri "http://127.0.0.1:$OLLAMA_PORT/api/chat" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 300 | Out-Null
         Write-Host "  Model ready"
     } catch {
         Write-Host "  WARNING: model pre-warm failed (will load on first request)"
