@@ -3,10 +3,21 @@
 const fs = require('fs');
 const path = require('path');
 const { SESSIONS_DIR } = require('./constants');
+const { IS_WIN } = require('./platform');
 
 // Ensure sessions directory exists
 if (!fs.existsSync(SESSIONS_DIR)) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+}
+
+// On Windows, ':' is illegal in filenames. Use '--' as the file separator,
+// but keep ':' in logical session IDs for API/UI compatibility.
+function idToFilename(id) {
+  return IS_WIN ? id.replace(/:/g, '--') : id;
+}
+function filenameToId(name) {
+  // On Windows, convert '--' back to ':'. On macOS, files already use ':'.
+  return IS_WIN ? name.replace(/--/g, ':') : name;
 }
 
 // Session display names stored in a metadata file
@@ -35,7 +46,7 @@ function listSessions(filterProjectSlug) {
     .map(f => {
       const fullPath = path.join(SESSIONS_DIR, f);
       const stat = fs.statSync(fullPath);
-      const id = f.replace('.jsonl', '');
+      const id = filenameToId(f.replace('.jsonl', ''));
       // Parse ID format: project:channel
       const [project, channel] = id.includes(':') ? id.split(':') : ['global', id];
       // Get first user message as preview
@@ -172,7 +183,7 @@ function moveSessionToProject(sessionId, projectSlug) {
  * Get full session history as messages array
  */
 function getSession(sessionId) {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   if (!fs.existsSync(filePath)) return [];
 
   const content = fs.readFileSync(filePath, 'utf-8');
@@ -190,7 +201,7 @@ function getSession(sessionId) {
  * Append a message to session JSONL
  */
 function appendMessage(sessionId, message) {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   const line = JSON.stringify(message) + '\n';
   fs.appendFileSync(filePath, line);
 }
@@ -200,12 +211,12 @@ function appendMessage(sessionId, message) {
  */
 function createSession(project = 'web', channel = 'general', forceNew = false, projectSlug = null) {
   let id = `${project}:${channel}`;
-  let filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
+  let filePath = path.join(SESSIONS_DIR, `${idToFilename(id)}.jsonl`);
   // If forceNew and base ID exists, append a timestamp to make it unique
   if (forceNew && fs.existsSync(filePath)) {
     const suffix = Date.now().toString(36);
     id = `${project}:${channel}-${suffix}`;
-    filePath = path.join(SESSIONS_DIR, `${id}.jsonl`);
+    filePath = path.join(SESSIONS_DIR, `${idToFilename(id)}.jsonl`);
   }
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, '');
@@ -235,7 +246,7 @@ function renameSession(sessionId, newName) {
  * Delete a session file
  */
 function deleteSession(sessionId) {
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
   // Clean up display name and project mapping
@@ -255,7 +266,7 @@ function rewindSession(sessionId, turns = 1) {
   // Remove last N*2 entries (user + assistant)
   const removeCount = turns * 2;
   const kept = messages.slice(0, Math.max(0, messages.length - removeCount));
-  const filePath = path.join(SESSIONS_DIR, `${sessionId}.jsonl`);
+  const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   fs.writeFileSync(filePath, kept.map(m => JSON.stringify(m)).join('\n') + (kept.length ? '\n' : ''));
   return kept;
 }

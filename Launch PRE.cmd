@@ -90,8 +90,8 @@ if not exist "%WEB_DIR%\server.js" (
 echo   Starting PRE web server on port %PRE_WEB_PORT%...
 echo.
 
-:: Open browser after a short delay
-start "" /b cmd /c "timeout /t 3 /nobreak >nul && start "" "%PRE_URL%""
+:: Open browser after a short delay (suppress all error output)
+start "" /b cmd /c "timeout /t 3 /nobreak >nul 2>nul && start "" "%PRE_URL%" >nul 2>nul"
 
 :: Run server in foreground so closing the window stops it
 cd /d "%WEB_DIR%"
