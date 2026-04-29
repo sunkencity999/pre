@@ -267,10 +267,6 @@ if ($gpuName) {
     $envVars["OLLAMA_FLASH_ATTENTION"] = "1"        # CUDA Flash Attention — faster + less VRAM for KV cache
     $envVars["OLLAMA_KV_CACHE_TYPE"] = $kvCacheType  # Quantized KV cache — matched to model precision
     $envVars["OLLAMA_GPU_OVERHEAD"] = "256000000"    # 256MB (default 512MB) — free ~256MB for model layers
-
-    # Persist KV cache type so runtime scripts can read it without re-detecting
-    $kvFile = Join-Path $env:USERPROFILE ".pre\kv_cache_type"
-    Set-Content -Path $kvFile -Value $kvCacheType -NoNewline
 }
 
 foreach ($key in $envVars.Keys) {

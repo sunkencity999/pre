@@ -58,21 +58,12 @@ $env:OLLAMA_MAX_LOADED_MODELS = "1"
 $hasNvidia = $false
 try { $hasNvidia = [bool](& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) } catch {}
 if ($hasNvidia) {
-    # Determine KV cache type: read persisted file, or auto-detect from model
-    $kvFile = Join-Path $env:USERPROFILE ".pre\kv_cache_type"
-    $kvType = ""
-    if (Test-Path $kvFile) {
-        $kvType = (Get-Content $kvFile -Raw).Trim()
-    }
-    if (-not $kvType) {
-        # Auto-detect from Ollama model list: if pre-gemma4 is based on q4, use q4_0
-        try {
-            $modelInfo = & ollama show pre-gemma4 --modelfile 2>$null
-            if ($modelInfo -match 'q4') { $kvType = "q4_0" } else { $kvType = "q8_0" }
-        } catch { $kvType = "q8_0" }
-        # Persist for next launch
-        Set-Content -Path $kvFile -Value $kvType -NoNewline -ErrorAction SilentlyContinue
-    }
+    # Detect KV cache type from the actual model (fast, no server needed)
+    $kvType = "q8_0"
+    try {
+        $modelInfo = & ollama show pre-gemma4 --modelfile 2>$null
+        if ($modelInfo -match 'q4') { $kvType = "q4_0" }
+    } catch {}
     $env:OLLAMA_FLASH_ATTENTION = "1"
     $env:OLLAMA_KV_CACHE_TYPE = $kvType
     $env:OLLAMA_GPU_OVERHEAD = "256000000"
