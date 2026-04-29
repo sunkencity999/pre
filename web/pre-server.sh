@@ -63,6 +63,14 @@ fi
 
 # --- Startup sequence ---
 
+# Set Ollama env vars here so manual invocations (outside LaunchAgent) also get
+# the optimized settings. The LaunchAgent plist carries them too, but exporting
+# here means `pre-server.sh` works correctly however it's launched.
+export OLLAMA_FLASH_ATTENTION=0   # Gemma 4 hybrid attention is slower/unstable with FA
+export OLLAMA_KEEP_ALIVE=24h
+export OLLAMA_NUM_PARALLEL=1
+export OLLAMA_MAX_LOADED_MODELS=1
+
 # Ensure Ollama is running
 if ! curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
     # Try starting Ollama.app first (preferred — handles updates, UI icon)
