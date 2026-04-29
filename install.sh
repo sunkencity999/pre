@@ -675,11 +675,11 @@ if [ ! -f "$HOME/.pre/mcp.json" ]; then
     ok "  Created ~/.pre/mcp.json"
 fi
 if [ ! -f "$HOME/.pre/cron.json" ]; then
-    echo '{"jobs":[]}' > "$HOME/.pre/cron.json"
+    echo '[]' > "$HOME/.pre/cron.json"
     ok "  Created ~/.pre/cron.json"
 fi
 if [ ! -f "$HOME/.pre/triggers.json" ]; then
-    echo '{"triggers":[]}' > "$HOME/.pre/triggers.json"
+    echo '[]' > "$HOME/.pre/triggers.json"
     ok "  Created ~/.pre/triggers.json"
 fi
 

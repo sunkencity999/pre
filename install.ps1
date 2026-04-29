@@ -420,8 +420,8 @@ Ok "Context window: $CTX_HUMAN -> ~/.pre/context"
 $defaultConfigs = @{
     "hooks.json"    = '{"hooks":[]}'
     "mcp.json"      = '{"servers":{}}'
-    "cron.json"     = '{"jobs":[]}'
-    "triggers.json" = '{"triggers":[]}'
+    "cron.json"     = '[]'
+    "triggers.json" = '[]'
 }
 
 foreach ($file in $defaultConfigs.Keys) {
