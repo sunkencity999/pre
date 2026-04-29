@@ -329,6 +329,26 @@ powershell -File web\pre-server.ps1 --stop    # Stop the server
 
 The Windows launcher starts Ollama if needed, pre-warms the model, and starts the Web GUI on port 7749. Open `http://localhost:7749` in your browser.
 
+### Updating
+
+PRE includes update scripts that detect your install type (git clone vs. zip download) and update accordingly. User data in `~/.pre/` is never touched.
+
+**macOS:**
+```bash
+# Double-click "Update PRE.command" in Finder, or from a terminal:
+bash update.sh
+bash update.sh --yes   # Non-interactive
+```
+
+**Windows:**
+```powershell
+# Double-click "Update PRE.cmd", or from a terminal:
+powershell -ExecutionPolicy Bypass -File update.ps1
+powershell -ExecutionPolicy Bypass -File update.ps1 -Yes   # Non-interactive
+```
+
+The update script compares your local `VERSION` file against the latest release on GitHub, stops the server if running, pulls changes (git) or downloads a fresh zip (non-git installs), runs `npm install`, detects Modelfile changes, and restarts the server if it was running.
+
 ---
 
 ## Documentation
@@ -1413,6 +1433,11 @@ pre/
 ├── Launch PRE.command      # macOS double-click launcher (Finder)
 ├── Launch PRE.cmd          # Windows double-click launcher
 ├── PRE Tray.cmd            # Windows system tray launcher
+├── VERSION                 # Version tracking for update scripts
+├── update.sh               # macOS update script (git or zip)
+├── update.ps1              # Windows update script (PowerShell)
+├── Update PRE.command      # macOS double-click updater (Finder)
+├── Update PRE.cmd          # Windows double-click updater
 ├── system.md               # Model system prompt reference
 ├── benchmark.sh            # Performance benchmarking tool
 ├── engine/
