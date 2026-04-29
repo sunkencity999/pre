@@ -34,6 +34,20 @@ if !errorlevel!==0 (
     exit /b 0
 )
 
+:: ---- Set Ollama environment ----
+set "OLLAMA_KEEP_ALIVE=24h"
+set "OLLAMA_NUM_PARALLEL=1"
+set "OLLAMA_MAX_LOADED_MODELS=1"
+
+:: NVIDIA GPU optimizations: reduce KV cache VRAM so more layers fit on GPU
+where nvidia-smi >nul 2>&1
+if !errorlevel!==0 (
+    set "OLLAMA_FLASH_ATTENTION=1"
+    set "OLLAMA_KV_CACHE_TYPE=q8_0"
+    set "OLLAMA_GPU_OVERHEAD=256000000"
+    echo   NVIDIA GPU: Flash Attention + q8_0 KV cache enabled
+)
+
 :: ---- Start Ollama ----
 echo   Checking Ollama...
 powershell -NoProfile -Command "try { $null = Invoke-RestMethod -Uri 'http://127.0.0.1:%PRE_PORT%/v1/models' -TimeoutSec 2; exit 0 } catch { exit 1 }" >nul 2>&1

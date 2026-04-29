@@ -257,6 +257,14 @@ $envVars = @{
     "OLLAMA_MAX_LOADED_MODELS" = "1"
 }
 
+# NVIDIA GPU optimizations: squeeze more model layers onto the GPU
+# by reducing KV cache VRAM and overhead reservation
+if ($gpuName) {
+    $envVars["OLLAMA_FLASH_ATTENTION"] = "1"        # CUDA Flash Attention — faster + less VRAM for KV cache
+    $envVars["OLLAMA_KV_CACHE_TYPE"] = "q8_0"       # Quantized KV cache — ~half the VRAM vs fp16
+    $envVars["OLLAMA_GPU_OVERHEAD"] = "256000000"    # 256MB (default 512MB) — free ~256MB for model layers
+}
+
 foreach ($key in $envVars.Keys) {
     $current = [Environment]::GetEnvironmentVariable($key, "User")
     if ($current -ne $envVars[$key]) {
@@ -264,7 +272,11 @@ foreach ($key in $envVars.Keys) {
         [Environment]::SetEnvironmentVariable($key, $envVars[$key], "Process")
     }
 }
-Ok "Ollama environment set (KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
+if ($gpuName) {
+    Ok "Ollama environment set (KEEP_ALIVE=24h, FLASH_ATTENTION=1, KV_CACHE=q8_0)"
+} else {
+    Ok "Ollama environment set (KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
+}
 
 # ============================================================================
 # Step 2: Pull base model

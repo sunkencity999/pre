@@ -49,9 +49,24 @@ if ($stop) {
     exit
 }
 
+# ── Set Ollama environment variables (before starting Ollama) ──
+$env:OLLAMA_KEEP_ALIVE = "24h"
+$env:OLLAMA_NUM_PARALLEL = "1"
+$env:OLLAMA_MAX_LOADED_MODELS = "1"
+
+# NVIDIA GPU optimizations: reduce KV cache VRAM so more model layers fit on GPU
+$hasNvidia = $false
+try { $hasNvidia = [bool](& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) } catch {}
+if ($hasNvidia) {
+    $env:OLLAMA_FLASH_ATTENTION = "1"
+    $env:OLLAMA_KV_CACHE_TYPE = "q8_0"
+    $env:OLLAMA_GPU_OVERHEAD = "256000000"
+}
+
 # ── Start Ollama if not running ──
 Write-Host "PRE Server starting..."
 Write-Host "  Context window: $NUM_CTX tokens"
+if ($hasNvidia) { Write-Host "  NVIDIA GPU: Flash Attention + q8_0 KV cache enabled" }
 
 $ollamaRunning = $false
 try {
@@ -102,11 +117,6 @@ if ($ollamaRunning) {
         Write-Host "  WARNING: model pre-warm failed (will load on first request)"
     }
 }
-
-# ── Set Ollama environment variables ──
-$env:OLLAMA_KEEP_ALIVE = "24h"
-$env:OLLAMA_NUM_PARALLEL = "1"
-$env:OLLAMA_MAX_LOADED_MODELS = "1"
 
 # ── Start the Node.js web server ──
 Write-Host "  Starting web server on port $WEB_PORT..."
