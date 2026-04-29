@@ -44,10 +44,11 @@ where nvidia-smi >nul 2>&1
 if !errorlevel!==0 (
     set "OLLAMA_FLASH_ATTENTION=1"
     set "OLLAMA_GPU_OVERHEAD=256000000"
-    :: Detect KV cache type from the actual model (q4 model -> q4_0 cache)
+    :: Match KV cache to model quant: <32GB RAM uses q4_K_M model -> q4_0 cache
     set "OLLAMA_KV_CACHE_TYPE=q8_0"
-    powershell -NoProfile -Command "try { if ((ollama show pre-gemma4 --modelfile 2>$null) -match 'q4') { exit 4 } else { exit 8 } } catch { exit 8 }" >nul 2>&1
-    if !errorlevel!==4 set "OLLAMA_KV_CACHE_TYPE=q4_0"
+    for /f "usebackq" %%R in (`powershell -NoProfile -Command "[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)"`) do (
+        if %%R lss 32 set "OLLAMA_KV_CACHE_TYPE=q4_0"
+    )
     echo   NVIDIA GPU: Flash Attention + !OLLAMA_KV_CACHE_TYPE! KV cache enabled
 )
 

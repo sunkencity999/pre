@@ -58,12 +58,9 @@ $env:OLLAMA_MAX_LOADED_MODELS = "1"
 $hasNvidia = $false
 try { $hasNvidia = [bool](& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) } catch {}
 if ($hasNvidia) {
-    # Detect KV cache type from the actual model (fast, no server needed)
-    $kvType = "q8_0"
-    try {
-        $modelInfo = & ollama show pre-gemma4 --modelfile 2>$null
-        if ($modelInfo -match 'q4') { $kvType = "q4_0" }
-    } catch {}
+    # Match KV cache to model quant: <32GB RAM uses q4_K_M model -> q4_0 cache
+    $ramGB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    $kvType = if ($ramGB -lt 32) { "q4_0" } else { "q8_0" }
     $env:OLLAMA_FLASH_ATTENTION = "1"
     $env:OLLAMA_KV_CACHE_TYPE = $kvType
     $env:OLLAMA_GPU_OVERHEAD = "256000000"
