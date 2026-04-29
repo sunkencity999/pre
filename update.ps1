@@ -243,67 +243,70 @@ if ($IS_GIT) {
         Fail "Could not find extracted files."
     }
 
-    # Copy files, preserving user data
+    Ok "Extracted to: $EXTRACT_DIR"
+
+    # Copy files using robocopy (built into Windows, reliable recursive copy)
     Write-Host "  Updating files..."
 
-    # Update engine/ (source code, Modelfile, scripts)
+    # Update engine/ (source code, Modelfile, scripts -- exclude compiled binaries)
     $srcEngine = Join-Path $EXTRACT_DIR "engine"
     if (Test-Path $srcEngine) {
-        # Copy engine files, excluding compiled binaries
-        $engineFiles = Get-ChildItem -Path $srcEngine -Recurse -File | Where-Object {
-            $_.Extension -notin @('.o', '.exe') -and $_.Name -ne 'pre' -and $_.Name -ne 'telegram'
+        # /E = recursive, /IS = include same files, /IT = include tweaked files
+        # /XF = exclude files, /NFL /NDL /NJH /NJS /NP = quiet output
+        $roboArgs = @(
+            "`"$srcEngine`"", "`"$ENGINE_DIR`"",
+            "/E", "/IS", "/IT",
+            "/XF", "*.o", "*.exe", "pre", "telegram",
+            "/NFL", "/NDL", "/NJH", "/NJS", "/NP"
+        )
+        $roboResult = Start-Process -FilePath "robocopy" -ArgumentList $roboArgs -NoNewWindow -Wait -PassThru
+        # robocopy exit codes: 0=no change, 1=files copied, 2=extra files, 3=both -- all OK
+        # Exit codes >= 8 indicate errors
+        if ($roboResult.ExitCode -ge 8) {
+            Warn "Engine copy had issues (robocopy exit code $($roboResult.ExitCode))"
+        } else {
+            Ok "Engine files updated"
         }
-        $copyCount = 0
-        foreach ($file in $engineFiles) {
-            $relativePath = $file.FullName.Substring($srcEngine.Length).TrimStart('\', '/')
-            $destPath = Join-Path $ENGINE_DIR $relativePath
-            $destDir = Split-Path -Parent $destPath
-            if (-not (Test-Path $destDir)) {
-                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            }
-            Copy-Item -Path $file.FullName -Destination $destPath -Force
-            $copyCount++
-        }
-        Write-Host "    Copied $copyCount engine files"
     }
 
-    # Update web/ (server, tools, frontend)
+    # Update web/ (server, tools, frontend -- exclude node_modules)
     $srcWeb = Join-Path $EXTRACT_DIR "web"
     if (Test-Path $srcWeb) {
-        # Copy web files, excluding node_modules
-        $webFiles = Get-ChildItem -Path $srcWeb -Recurse -File | Where-Object {
-            $_.FullName -notlike "*node_modules*"
+        $roboArgs = @(
+            "`"$srcWeb`"", "`"$WEB_DIR`"",
+            "/E", "/IS", "/IT",
+            "/XD", "node_modules",
+            "/NFL", "/NDL", "/NJH", "/NJS", "/NP"
+        )
+        $roboResult = Start-Process -FilePath "robocopy" -ArgumentList $roboArgs -NoNewWindow -Wait -PassThru
+        if ($roboResult.ExitCode -ge 8) {
+            Warn "Web copy had issues (robocopy exit code $($roboResult.ExitCode))"
+        } else {
+            Ok "Web files updated"
         }
-        $copyCount = 0
-        foreach ($file in $webFiles) {
-            # Build relative path by removing the source prefix + separator
-            $relativePath = $file.FullName.Substring($srcWeb.Length).TrimStart('\', '/')
-            $destPath = Join-Path $WEB_DIR $relativePath
-            $destDir = Split-Path -Parent $destPath
-            if (-not (Test-Path $destDir)) {
-                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            }
-            Copy-Item -Path $file.FullName -Destination $destPath -Force
-            $copyCount++
-        }
-        Write-Host "    Copied $copyCount web files"
     } else {
         Warn "web/ directory not found in downloaded archive"
+        # List what was extracted for debugging
+        Write-Host "    Contents of extracted archive:"
+        Get-ChildItem -Path $EXTRACT_DIR -Name | ForEach-Object { Write-Host "      $_" }
     }
 
     # Update root files (scripts, README, VERSION, etc.)
     $rootFiles = @(
-        "VERSION", "README.md", "install.sh", "install.ps1", "install.cmd",
+        "VERSION", "README.md", "CLAUDE.md", "install.sh", "install.ps1", "install.cmd",
         "Launch PRE.command", "Launch PRE.cmd", "PRE Tray.cmd",
         "Install PRE.command", "Update PRE.command", "Update PRE.cmd",
         "update.sh", "update.ps1", "system.md", "benchmark.sh"
     )
+    $rootCount = 0
     foreach ($f in $rootFiles) {
         $srcFile = Join-Path $EXTRACT_DIR $f
         if (Test-Path $srcFile) {
             Copy-Item -Path $srcFile -Destination (Join-Path $REPO_DIR $f) -Force
+            $rootCount++
         }
     }
+    Ok "$rootCount root files updated"
 
     # Clean up
     Remove-Item -Recurse -Force $TEMP_DIR -ErrorAction SilentlyContinue
