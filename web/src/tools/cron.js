@@ -11,7 +11,9 @@ const { CRON_FILE } = require('../constants');
  */
 function loadJobs() {
   try {
-    return JSON.parse(fs.readFileSync(CRON_FILE, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(CRON_FILE, 'utf-8'));
+    // Handle both formats: plain array or {jobs: [...]}
+    return Array.isArray(data) ? data : Array.isArray(data.jobs) ? data.jobs : [];
   } catch {
     return [];
   }

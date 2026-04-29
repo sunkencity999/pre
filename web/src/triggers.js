@@ -29,7 +29,9 @@ let executeCallback = null;
 
 function loadTriggers() {
   try {
-    return JSON.parse(fs.readFileSync(TRIGGERS_FILE, 'utf-8'));
+    const data = JSON.parse(fs.readFileSync(TRIGGERS_FILE, 'utf-8'));
+    // Handle both formats: plain array or {triggers: [...]}
+    return Array.isArray(data) ? data : Array.isArray(data.triggers) ? data.triggers : [];
   } catch {
     return [];
   }
