@@ -532,10 +532,11 @@ $preCmdPath = Join-Path $env:USERPROFILE ".local\bin\pre.cmd"
 $preCmdDir = Split-Path $preCmdPath
 if (-not (Test-Path $preCmdDir)) { New-Item -ItemType Directory -Path $preCmdDir -Force | Out-Null }
 
+$serverPs1 = Join-Path $WEB_DIR "pre-server.ps1"
 $preCmdContent = @"
 @echo off
 :: PRE launcher - starts Ollama + web server, opens browser
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$($ps1Path -replace '/', '\')"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$($serverPs1 -replace '/', '\')"
 "@
 Set-Content -Path $preCmdPath -Value $preCmdContent
 Ok "Created $preCmdPath"

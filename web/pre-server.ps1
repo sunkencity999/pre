@@ -9,8 +9,6 @@ param(
     [switch]$stop
 )
 
-$ErrorActionPreference = "SilentlyContinue"
-
 $WEB_PORT = 7749
 $OLLAMA_PORT = if ($env:PRE_PORT) { $env:PRE_PORT } else { 11434 }
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -115,6 +113,38 @@ Write-Host "  Starting web server on port $WEB_PORT..."
 
 Set-Location $SCRIPT_DIR
 
-# Start Node.js and redirect output to log file
+# Verify node_modules exist
+if (-not (Test-Path (Join-Path $SCRIPT_DIR "node_modules"))) {
+    Write-Host "  ERROR: node_modules not found. Running npm install..." -ForegroundColor Red
+    & npm install 2>&1
+    if (-not (Test-Path (Join-Path $SCRIPT_DIR "node_modules"))) {
+        Write-Host "  FATAL: npm install failed. Cannot start server." -ForegroundColor Red
+        Write-Host "  Try running manually: cd $SCRIPT_DIR && npm install" -ForegroundColor Yellow
+        Read-Host "  Press Enter to exit"
+        exit 1
+    }
+}
+
 $env:PRE_PORT = $OLLAMA_PORT
-node server.js 2>&1 | Tee-Object -FilePath $LOG_FILE
+
+# Verify node is available
+$nodeExe = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeExe) {
+    Write-Host "  FATAL: node not found in PATH. Install Node.js 18+ from https://nodejs.org" -ForegroundColor Red
+    Read-Host "  Press Enter to exit"
+    exit 1
+}
+
+# Run Node.js in foreground. Use Start-Process -NoNewWindow -Wait so PowerShell
+# blocks until Node exits and all stdout/stderr goes to this console window.
+$proc = Start-Process -FilePath "node" -ArgumentList "server.js" `
+    -WorkingDirectory $SCRIPT_DIR -NoNewWindow -Wait -PassThru
+
+# If we get here, the server exited
+if ($proc.ExitCode -ne 0) {
+    Write-Host ""
+    Write-Host "  Server exited with code $($proc.ExitCode)" -ForegroundColor Red
+    Write-Host "  Try running manually: cd $SCRIPT_DIR && node server.js" -ForegroundColor Yellow
+    Write-Host ""
+    Read-Host "  Press Enter to exit"
+}
