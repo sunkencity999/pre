@@ -250,34 +250,45 @@ if ($IS_GIT) {
     $srcEngine = Join-Path $EXTRACT_DIR "engine"
     if (Test-Path $srcEngine) {
         # Copy engine files, excluding compiled binaries
-        Get-ChildItem -Path $srcEngine -Recurse -File | Where-Object {
+        $engineFiles = Get-ChildItem -Path $srcEngine -Recurse -File | Where-Object {
             $_.Extension -notin @('.o', '.exe') -and $_.Name -ne 'pre' -and $_.Name -ne 'telegram'
-        } | ForEach-Object {
-            $relativePath = $_.FullName.Substring($srcEngine.Length)
+        }
+        $copyCount = 0
+        foreach ($file in $engineFiles) {
+            $relativePath = $file.FullName.Substring($srcEngine.Length).TrimStart('\', '/')
             $destPath = Join-Path $ENGINE_DIR $relativePath
             $destDir = Split-Path -Parent $destPath
             if (-not (Test-Path $destDir)) {
                 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
             }
-            Copy-Item -Path $_.FullName -Destination $destPath -Force
+            Copy-Item -Path $file.FullName -Destination $destPath -Force
+            $copyCount++
         }
+        Write-Host "    Copied $copyCount engine files"
     }
 
     # Update web/ (server, tools, frontend)
     $srcWeb = Join-Path $EXTRACT_DIR "web"
     if (Test-Path $srcWeb) {
         # Copy web files, excluding node_modules
-        Get-ChildItem -Path $srcWeb -Recurse -File | Where-Object {
-            $_.FullName -notmatch [regex]::Escape("node_modules")
-        } | ForEach-Object {
-            $relativePath = $_.FullName.Substring($srcWeb.Length)
+        $webFiles = Get-ChildItem -Path $srcWeb -Recurse -File | Where-Object {
+            $_.FullName -notlike "*node_modules*"
+        }
+        $copyCount = 0
+        foreach ($file in $webFiles) {
+            # Build relative path by removing the source prefix + separator
+            $relativePath = $file.FullName.Substring($srcWeb.Length).TrimStart('\', '/')
             $destPath = Join-Path $WEB_DIR $relativePath
             $destDir = Split-Path -Parent $destPath
             if (-not (Test-Path $destDir)) {
                 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
             }
-            Copy-Item -Path $_.FullName -Destination $destPath -Force
+            Copy-Item -Path $file.FullName -Destination $destPath -Force
+            $copyCount++
         }
+        Write-Host "    Copied $copyCount web files"
+    } else {
+        Warn "web/ directory not found in downloaded archive"
     }
 
     # Update root files (scripts, README, VERSION, etc.)
