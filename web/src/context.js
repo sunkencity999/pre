@@ -85,7 +85,7 @@ function buildSystemPrompt(cwd) {
     'July','August','September','October','November','December'];
   const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
 
-  const { IS_WIN } = require('./platform');
+  const { IS_WIN, IS_MAC } = require('./platform');
   const platformDesc = IS_WIN
     ? 'running locally on Windows with GPU acceleration'
     : 'running on Apple Silicon';
@@ -226,6 +226,19 @@ function buildSystemPrompt(cwd) {
     + `- Show a "Last updated: <timestamp>" indicator.\n`
     + `- Example: fetch("/api/live/calendar").then(r=>r.json()).then(d=> d.data.forEach(e=> /* e.title, e.start */))\n`
     + `- The artifact is served from the same origin (localhost:7749), so no CORS issues.\n`;
+
+  // Native app preference guidance
+  if (IS_MAC) {
+    prompt += `\nNATIVE APP PREFERENCE:\n`
+      + `When the user asks about email, calendar, contacts, reminders, or notes, ALWAYS use the native macOS tools FIRST:\n`
+      + `- Email → apple_mail (accesses ALL accounts: iCloud, Exchange, Gmail, Outlook — whatever is configured in Mail.app)\n`
+      + `- Calendar → apple_calendar (accesses all calendars in Calendar.app)\n`
+      + `- Contacts → apple_contacts (accesses all contacts in Contacts.app)\n`
+      + `- Reminders → apple_reminders (accesses all lists in Reminders.app)\n`
+      + `- Notes → apple_notes (accesses all notes in Notes.app)\n`
+      + `Only use gmail/gdrive/gdocs when the user SPECIFICALLY asks about their Google account, or when a native tool is not available.\n`
+      + `The native tools are faster, require no API keys, and cover ALL the user's accounts — not just Google.\n`;
+  }
 
   // Connection status
   const hasAny = connections.brave || connections.github || connections.google || connections.wolfram;

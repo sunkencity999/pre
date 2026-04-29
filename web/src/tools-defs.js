@@ -299,7 +299,7 @@ function buildToolDefs() {
   }
 
   if (conns.google) {
-    tools.push(tool('gmail', 'Gmail operations', {
+    tools.push(tool('gmail', 'Gmail API operations (Google account only — on macOS prefer apple_mail which covers all accounts)', {
       action: { type: 'string', description: 'Action: search|read|send|draft|trash|labels|profile' },
       query: { type: 'string', description: 'Search query' },
       id: { type: 'string', description: 'Message/thread ID' },
