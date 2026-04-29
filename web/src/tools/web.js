@@ -5,6 +5,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { CONNECTIONS_FILE, ARTIFACTS_DIR } = require('../constants');
+const { htmlToText } = require('../platform');
 
 function getConnectionKey(name) {
   try {
@@ -68,10 +69,13 @@ function webFetch(args) {
       return `Image downloaded and saved locally.\nPath: /artifacts/downloads/${fname}\nSize: ${sizeFmt}\nUse this path in HTML artifacts: <img src="/artifacts/downloads/${fname}">`;
     }
 
-    // Try HTML-to-text conversion first, fall back to raw
-    const cmd = `curl -sL --max-time 15 ${authHeader}'${url}' | textutil -stdin -format html -convert txt -stdout 2>/dev/null || curl -sL --max-time 15 ${authHeader}'${url}'`;
-    const output = execSync(cmd, { encoding: 'utf-8', maxBuffer: 256 * 1024, timeout: 20000 }).trim();
-    return output || `Error: no content fetched from ${url}`;
+    // Fetch HTML and convert to readable text
+    const rawHtml = execSync(`curl -sL --max-time 15 ${authHeader}'${url}'`, {
+      encoding: 'utf-8', maxBuffer: 256 * 1024, timeout: 20000,
+    }).trim();
+    if (!rawHtml) return `Error: no content fetched from ${url}`;
+    const output = htmlToText(rawHtml);
+    return output || rawHtml.slice(0, 50000);
   } catch (err) {
     return `Error: failed to fetch ${url}: ${err.message}`;
   }

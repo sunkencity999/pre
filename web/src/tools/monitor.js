@@ -3,6 +3,8 @@
 // Output is captured and can be read by the model or observed by Argus.
 
 const { spawn } = require('child_process');
+const os = require('os');
+const { getShell } = require('../platform');
 
 // Active monitors: id → { process, name, output[], startedAt, exitCode }
 const monitors = new Map();
@@ -22,8 +24,9 @@ function startMonitor(args) {
   const id = `mon_${++monitorCounter}`;
   const displayName = name || command.slice(0, 60);
 
-  const proc = spawn('sh', ['-c', command], {
-    cwd: process.env.HOME || '/tmp',
+  const shell = getShell();
+  const proc = spawn(shell.cmd, [...shell.args, command], {
+    cwd: os.homedir() || os.tmpdir(),
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

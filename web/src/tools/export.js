@@ -7,13 +7,9 @@ const { ARTIFACTS_DIR } = require('../constants');
 
 // ── Chrome discovery ──
 
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-];
-
 function findChrome() {
-  const found = CHROME_PATHS.find(p => fs.existsSync(p));
+  const { getChromePaths } = require('../platform');
+  const found = getChromePaths().find(p => fs.existsSync(p));
   if (!found) throw new Error('Chrome not found — install Google Chrome for export features');
   return found;
 }

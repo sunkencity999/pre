@@ -431,12 +431,13 @@ app.post('/api/artifacts/reveal', (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
 
-  // Use osascript to reveal in Finder (non-blocking)
-  const { exec } = require('child_process');
-  exec(`open -R "${resolved.replace(/"/g, '\\"')}"`, (err) => {
-    if (err) return res.status(500).json({ error: err.message });
+  // Reveal in file manager (cross-platform)
+  try {
+    require('./src/platform').revealInFileManager(resolved);
     res.json({ ok: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Export an artifact to PDF, PNG, or self-contained HTML
@@ -725,7 +726,6 @@ app.post('/api/argus/reply', async (req, res) => {
 const calendarTool = require('./src/tools/calendar');
 const mailTool = require('./src/tools/mail');
 const remindersTool = require('./src/tools/reminders');
-const systemTool = require('./src/tools/system');
 
 // ── Live Data API helpers ──
 // Parse pipe-delimited tool output into structured JSON for artifact consumption.
@@ -790,16 +790,6 @@ function parseRemindersText(text) {
   });
 }
 
-function parseSystemText(text) {
-  if (!text || typeof text !== 'string') return {};
-  const obj = {};
-  for (const line of text.split('\n')) {
-    const m = line.match(/^([^:]+):\s*(.+)$/);
-    if (m) obj[m[1].trim().toLowerCase().replace(/\s+/g, '_')] = m[2].trim();
-  }
-  return obj;
-}
-
 app.get('/api/live/calendar', async (_req, res) => {
   try {
     const result = await calendarTool.calendar({ action: 'today' });
@@ -839,55 +829,23 @@ app.get('/api/live/reminders', async (_req, res) => {
 
 app.get('/api/live/system', async (_req, res) => {
   try {
-    const { execSync } = require('child_process');
-    const base = parseSystemText(await systemTool.systemInfo());
-
-    // Compute memory usage % from vm_stat pages — include inactive/speculative as available
-    // (macOS reclaims these under pressure; counting only "free" pages hugely overstates usage)
-    const pageSize = 16384;
-    const totalBytes = parseFloat(base.memory) * 1024 * 1024 * 1024 || 0;
-    const freePages = parseFloat(base.pages_free) || 0;
-    const inactivePages = parseFloat(base.pages_inactive) || 0;
-    const speculativePages = parseFloat(base.pages_speculative) || 0;
-    const availableBytes = (freePages + inactivePages + speculativePages) * pageSize;
-    const memUsage = totalBytes > 0 ? ((1 - (availableBytes / totalBytes)) * 100) : 0;
-
-    // Disk usage % — use Data volume (APFS root shows only system volume, not user data)
-    let diskUsage = 0;
-    try {
-      const df = execSync("df -h /System/Volumes/Data 2>/dev/null || df -h /", { timeout: 3000 }).toString();
-      const lastLine = df.trim().split('\n').pop();
-      const pctMatch = lastLine.match(/(\d+)%/);
-      if (pctMatch) diskUsage = parseInt(pctMatch[1]);
-    } catch {}
-
-    // CPU usage % — aggregate from ps, normalized by core count
-    let cpuUsage = 0;
-    try {
-      const ps = execSync("ps -A -o %cpu | awk '{s+=$1} END {print s}'", { timeout: 3000 }).toString().trim();
-      const cores = parseInt(execSync("sysctl -n hw.ncpu", { timeout: 1000 }).toString().trim()) || 1;
-      cpuUsage = (parseFloat(ps) || 0) / cores;
-    } catch {}
-
-    // Parse battery: "-InternalBattery-0 (id=xxx)\t92%; discharging; ..."
-    const batteryRaw = base.battery || '';
-    const batteryPctMatch = batteryRaw.match(/(\d+)%/);
-    const batteryPercent = batteryPctMatch ? parseInt(batteryPctMatch[1]) : null;
-    const batteryCharging = /charging/.test(batteryRaw) && !/discharging/.test(batteryRaw);
-    const batteryState = /discharging/.test(batteryRaw) ? 'discharging' : batteryCharging ? 'charging' : 'unknown';
+    const plat = require('./src/platform');
+    const cpuInfo = plat.getCpuInfo();
+    const memInfo = plat.getMemoryInfo();
+    const battery = plat.getBatteryInfo();
 
     res.json({
       data: {
-        hostname: base.hostname || '',
-        os: base.os || '',
-        cpu: base.cpu || '',
-        cpu_usage: Math.round(cpuUsage * 10) / 10,
-        memory: base.memory || '',
-        memory_usage: Math.round(memUsage * 10) / 10,
-        disk_usage: diskUsage,
-        uptime: base.uptime || '',
-        battery_percent: batteryPercent,
-        battery_state: batteryState,
+        hostname: os.hostname(),
+        os: `${os.type()} ${os.release()} (${os.arch()})`,
+        cpu: cpuInfo.name || '',
+        cpu_usage: Math.round(plat.getCpuUsage() * 10) / 10,
+        memory: memInfo.totalGB,
+        memory_usage: memInfo.usagePct,
+        disk_usage: plat.getDiskUsage(),
+        uptime: `${(os.uptime() / 3600).toFixed(1)} hours`,
+        battery_percent: battery.percent,
+        battery_state: battery.state,
       },
       timestamp: new Date().toISOString(),
     });

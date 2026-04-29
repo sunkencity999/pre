@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const pathMod = require('path');
-const { execSync } = require('child_process');
+const { nodeGlob, nodeGrep } = require('../platform');
 
 const MAX_FILE_SIZE = 512 * 1024; // 512KB read limit
 
@@ -59,16 +59,8 @@ function glob(args, cwd) {
   if (!pattern) return 'Error: no pattern provided';
 
   const basePath = resolvePath(args.path, cwd);
-  try {
-    // Use find + shell globbing for cross-platform compatibility
-    const output = execSync(
-      `find "${basePath}" -path "*${pattern.replace(/\*/g, '*')}" -maxdepth 5 2>/dev/null | head -100`,
-      { encoding: 'utf-8', timeout: 10000 }
-    ).trim();
-    return output || 'No matches found';
-  } catch {
-    return 'No matches found';
-  }
+  const results = nodeGlob(basePath, pattern, 5, 100);
+  return results.length > 0 ? results.join('\n') : 'No matches found';
 }
 
 function grep(args, cwd) {
@@ -76,18 +68,7 @@ function grep(args, cwd) {
   if (!pattern) return 'Error: no pattern provided';
 
   const searchPath = resolvePath(args.path, cwd);
-  const include = args.include;
-
-  try {
-    let cmd = `grep -rn`;
-    if (include) cmd += ` --include='${include}'`;
-    cmd += ` '${pattern.replace(/'/g, "'\\''")}' '${searchPath}' 2>/dev/null | head -100`;
-
-    const output = execSync(cmd, { encoding: 'utf-8', timeout: 15000 }).trim();
-    return output || 'No matches found';
-  } catch {
-    return 'No matches found';
-  }
+  return nodeGrep(pattern, searchPath, args.include, 100);
 }
 
 function fileWrite(args, cwd) {

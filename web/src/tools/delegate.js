@@ -79,7 +79,7 @@ function checkAvailability() {
   const result = {};
   for (const [key, config] of Object.entries(DELEGATES)) {
     try {
-      const cmdPath = execSync(`which ${config.command} 2>/dev/null`, { encoding: 'utf-8' }).trim();
+      const cmdPath = require('../platform').whichCmd(config.command);
       let version = '';
       try {
         version = execSync(`${config.command} --version 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n')[0];
@@ -132,9 +132,7 @@ function execute(target, prompt, { onToken, signal, timeout = 300000 } = {}) {
     if (!config) return reject(new Error(`Unknown delegate: ${target}`));
 
     // Verify CLI is available
-    try {
-      execSync(`which ${config.command} 2>/dev/null`, { encoding: 'utf-8' });
-    } catch {
+    if (!require('../platform').whichCmd(config.command)) {
       return reject(new Error(`${config.name} CLI not installed. Install with: ${getInstallHint(target)}`));
     }
 

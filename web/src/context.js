@@ -85,7 +85,11 @@ function buildSystemPrompt(cwd) {
     'July','August','September','October','November','December'];
   const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
 
-  let prompt = `You are PRE (Personal Reasoning Engine), a fully local agentic assistant running on Apple Silicon. `
+  const { IS_WIN } = require('./platform');
+  const platformDesc = IS_WIN
+    ? 'running locally on Windows with GPU acceleration'
+    : 'running on Apple Silicon';
+  let prompt = `You are PRE (Personal Reasoning Engine), a fully local agentic assistant ${platformDesc}. `
     + `All data stays on this machine. You have persistent memory across sessions.\n\n`;
 
   if (memory) prompt += memory + '\n';

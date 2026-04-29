@@ -6,20 +6,13 @@ const puppeteer = require('puppeteer-core');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-
-// Find Chrome on macOS
-const CHROME_PATHS = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  path.join(os.homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
-];
+const { getChromePaths } = require('../platform');
 
 let browser = null;
 let page = null;
 
 function findChrome() {
-  for (const p of CHROME_PATHS) {
+  for (const p of getChromePaths()) {
     if (fs.existsSync(p)) return p;
   }
   return null;

@@ -3,6 +3,7 @@
 
 const { execSync } = require('child_process');
 const path = require('path');
+const { getShellPath } = require('../platform');
 
 const MAX_OUTPUT = 65536;
 
@@ -17,7 +18,7 @@ function bash(args, cwd) {
       encoding: 'utf-8',
       maxBuffer: MAX_OUTPUT,
       timeout: 60000, // 60s timeout
-      shell: '/bin/zsh',
+      shell: getShellPath(),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return output || '(no output)';
