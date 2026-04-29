@@ -296,7 +296,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Yes   # Non-interactive
 
 The installer checks system requirements, installs Ollama and Node.js via `winget`, pulls the model, creates `~/.pre/` directories, auto-sizes the context window based on RAM, configures Ollama environment variables, and optionally enables auto-start at login.
 
-> **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) and Telegram bot are Objective-C applications that require macOS.
+> **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) is an Objective-C application that requires macOS. The Telegram bot is included in the Web GUI and works on both macOS and Windows.
 
 ### Launch (macOS)
 
@@ -1200,7 +1200,7 @@ The model will:
 
 ## Telegram Integration
 
-PRE includes a built-in Telegram bot for full agent access from your phone.
+PRE includes a built-in Telegram bot for full agent access from your phone. The bot runs as part of the Web GUI and works on both macOS and Windows — no additional setup required beyond adding your bot token.
 
 ### Setup
 
