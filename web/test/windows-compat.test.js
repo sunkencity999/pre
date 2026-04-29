@@ -79,23 +79,38 @@ describe('Windows compatibility — module loading', () => {
     }
   });
 
-  test('macOS tools present on macOS, absent on Windows', () => {
-    const { IS_MAC } = require('../src/platform');
+  test('native app tools present on macOS AND Windows', () => {
+    const { IS_MAC, IS_WIN } = require('../src/platform');
     const { buildToolDefs } = require('../src/tools-defs');
     const names = buildToolDefs().map(t => t.function.name);
-    const macOnlyTools = [
+    // These tools are registered when IS_MAC || IS_WIN (both platforms)
+    const nativeAppTools = [
       'apple_mail', 'apple_calendar', 'apple_contacts',
       'apple_reminders', 'apple_notes',
     ];
 
-    if (IS_MAC) {
-      for (const t of macOnlyTools) {
+    if (IS_MAC || IS_WIN) {
+      for (const t of nativeAppTools) {
         expect(names).toContain(t);
       }
     } else {
-      for (const t of macOnlyTools) {
+      for (const t of nativeAppTools) {
         expect(names).not.toContain(t);
       }
+    }
+  });
+
+  test('applescript only on macOS, powershell_script only on Windows', () => {
+    const { IS_MAC, IS_WIN } = require('../src/platform');
+    const { buildToolDefs } = require('../src/tools-defs');
+    const names = buildToolDefs().map(t => t.function.name);
+
+    if (IS_MAC) {
+      expect(names).toContain('applescript');
+      expect(names).not.toContain('powershell_script');
+    } else if (IS_WIN) {
+      expect(names).toContain('powershell_script');
+      expect(names).not.toContain('applescript');
     }
   });
 });
@@ -376,13 +391,27 @@ describe('Windows compatibility — cross-platform patterns', () => {
     const filesToCheck = [
       '../src/tools/voice.js',
       '../src/tools/spotlight.js',
+      '../src/tools/delegate.js',
+      '../src/tools/system.js',
+      '../src/tools/monitor.js',
     ];
 
-    test.each(filesToCheck)('%s does not use 2>/dev/null in execSync calls', (mod) => {
+    test.each(filesToCheck)('%s does not use bare 2>/dev/null in execSync calls', (mod) => {
       const source = fs.readFileSync(require.resolve(mod), 'utf-8');
-      // Check that execSync calls don't embed 2>/dev/null (use stdio: 'pipe' instead)
-      const execCalls = source.match(/execSync\([^)]*2>\/dev\/null[^)]*\)/g);
-      expect(execCalls || []).toEqual([]);
+      // Bare 2>/dev/null inside execSync is not cross-platform. Allowed patterns:
+      //   - Platform-branched: process.platform === 'win32' ? '2>NUL' : '2>/dev/null'
+      //   - stdio: 'pipe' (captures stderr without redirects)
+      const execCalls = source.match(/execSync\([^)]*2>\/dev\/null[^)]*\)/g) || [];
+      // Filter out platform-branched patterns (those are fine)
+      const bare = execCalls.filter(c => !c.includes('process.platform') && !c.includes('IS_WIN'));
+      expect(bare).toEqual([]);
+    });
+
+    test('web.js uses no shell commands at all (native https)', () => {
+      const source = fs.readFileSync(require.resolve('../src/tools/web.js'), 'utf-8');
+      expect(source).not.toContain('execSync');
+      expect(source).not.toContain('child_process');
+      expect(source).toContain("require('https')");
     });
   });
 
