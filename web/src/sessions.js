@@ -20,6 +20,10 @@ function filenameToId(name) {
   return IS_WIN ? name.replace(/--/g, ':') : name;
 }
 
+if (IS_WIN) {
+  console.log(`[sessions] Windows mode: using '--' separator in filenames`);
+}
+
 // Session display names stored in a metadata file
 const META_FILE = path.join(SESSIONS_DIR, '.meta.json');
 
