@@ -1,6 +1,6 @@
 # PRE Web GUI
 
-A local AI operating system for macOS. 70+ tools, desktop automation, document intelligence, voice interface, 16 enterprise integrations, event-driven triggers, self-architecting virtual tools, relevance-ranked memory, and a full management GUI — all running on your Apple Silicon Mac with zero cloud dependency.
+A local AI operating system for macOS and Windows. 70+ tools, desktop automation, document intelligence, voice interface, 16 enterprise integrations, event-driven triggers, self-architecting virtual tools, relevance-ranked memory, and a full management GUI — all running on your hardware with zero cloud dependency.
 
 PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated AI platform** that controls your desktop, reads your email, searches your documents semantically, reacts to file changes, speaks and listens, records and replays workflows, schedules autonomous tasks, and connects to every enterprise tool your team uses — through a single conversational interface backed by Google Gemma 4 26B running locally at ~73 tokens/second.
 
@@ -13,13 +13,13 @@ PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated
 | **Data sovereignty** | Every token, prompt, screenshot, and tool result stays on your machine. Nothing leaves. ITAR-safe, HIPAA-compatible, zero exposure. |
 | **Desktop automation** | Computer Use + Workflow recording: PRE sees your screen and operates any application. Record actions, replay on demand. |
 | **Document intelligence** | Local RAG indexes your files and searches by meaning, not keywords. Powered by `nomic-embed-text` embeddings. |
-| **Voice interface** | Hold-to-record microphone in the GUI. Whisper transcribes locally; macOS `say` speaks responses. No audio leaves your machine. |
+| **Voice interface** | Hold-to-record microphone in the GUI. Whisper transcribes locally; TTS speaks responses (macOS `say` / Windows SAPI). No audio leaves your machine. |
 | **Event-driven triggers** | File watchers, webhooks, and polling monitors that fire prompts automatically. PRE reacts to your environment without being asked. |
 | **Enterprise integrations** | 16 services (Jira, Confluence, SharePoint, Slack, Linear, Zoom, Figma, Asana, Gmail, Drive, GitHub, Smartsheet, Dynamics 365, Telegram, Brave, Wolfram) in one interface. |
 | **Autonomous scheduling** | Cron jobs run server-side — daily briefings, monitoring, reports — even when you're not at the computer. |
 | **Persistent memory** | Auto-extracted from conversations, age-tracked, relevance-ranked via embeddings. PRE gets smarter over weeks and months. |
 | **Self-architecting tools** | Create reusable parameterized tools at runtime from prompt templates, recorded workflows, or multi-step chains. PRE extends its own capabilities. |
-| **Live artifacts** | HTML dashboards that auto-refresh with real-time data from your Mac — calendar, email, system stats, reminders — no manual updates. |
+| **Live artifacts** | HTML dashboards that auto-refresh with real-time data — calendar, email, system stats, reminders — no manual updates. |
 | **Parallel sub-agents** | Spawn multiple research agents that run concurrently, each with their own session and tools. Results collected and synthesized automatically. |
 | **Background process monitor** | Start long-running commands (builds, servers, watchers), check their output periodically, and stop them when done — without blocking the conversation. |
 | **Zero marginal cost** | No API pricing, no rate limits, no seat fees. Every prompt, every scheduled job, every sub-agent loop — free. |
@@ -30,21 +30,30 @@ PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated
 
 ## Quick Start
 
-The fastest path is the one-touch installer — double-click `install.sh` (or run it from a terminal) and it handles everything: Ollama, model pull, CLI build, npm install, ComfyUI, context sizing, and optional auto-start at login.
+### macOS
 
 ```bash
 ./install.sh           # Interactive — prompts for optional steps
 ./install.sh --yes     # Non-interactive — accepts all defaults
 ```
 
-Or start the web GUI manually:
+The `pre-launch` command also starts the web GUI automatically in the background when you launch the CLI.
+
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1       # Interactive
+powershell -ExecutionPolicy Bypass -File install.ps1 -Yes  # Non-interactive
+```
+
+Then launch with `powershell -File web\pre-server.ps1`.
+
+### Manual (any platform)
 
 ```bash
 cd web && npm install   # First time only
 node server.js          # http://localhost:7749
 ```
-
-The `pre-launch` command also starts the web GUI automatically in the background when you launch the CLI.
 
 ## Features
 
@@ -52,19 +61,19 @@ The `pre-launch` command also starts the web GUI automatically in the background
 - **Real-time streaming** via WebSocket — tokens appear as the model generates them
 - **Full tool execution** — 70+ tools run server-side with multi-turn agentic loop (up to 35 tool calls per prompt)
 - **Local image generation** — ComfyUI + Stable Diffusion XL on Apple Silicon GPU, inline image preview in chat
-- **Auto-start at login** — optional macOS LaunchAgent keeps the web GUI running in the background; toggle from Settings
+- **Auto-start at login** — optional auto-start keeps the web GUI running in the background (macOS LaunchAgent / Windows Startup folder); toggle from Settings
 - **Local RAG** — index directories and search by meaning using `nomic-embed-text` embeddings; incremental re-indexing, paragraph-aware chunking
 - **Event-driven triggers** — file watchers, webhooks, and polling monitors that fire prompts automatically when things change
 - **Self-architecting virtual tools** — create reusable parameterized tools at runtime from prompt templates, recorded workflows, or multi-step tool chains
 - **Relevance-ranked memory** — embedding-based semantic ranking ensures the most relevant memories and experiences are injected into context, not just the most recent
 - **Graceful cancellation** — Stop button immediately cancels hung tool execution via abort signals; 30-second HTTP timeouts prevent indefinite hangs on cloud API calls
-- **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say`; all audio stays on your machine
+- **Voice interface** — speech-to-text via local Whisper, text-to-speech via macOS `say` or Windows SAPI; all audio stays on your machine
 - **Workflow capture and replay** — record Computer Use action sequences and replay them at configurable speed
 - **Live artifacts** — HTML dashboards that auto-refresh with real-time data from Calendar, Mail, Reminders, and system stats via built-in `/api/live/*` endpoints
 - **Parallel sub-agents** — spawn multiple research agents that run concurrently via `Promise.all`; tool execution (web fetches, file reads) runs in parallel
 - **Background process monitor** — start, read output from, and stop long-running commands without blocking the conversation
 - **Argus companion** — an interactive session observer that watches PRE work, diagnoses errors with actionable fixes, relates observations to your stated goal, and supports reply-to-reaction micro-conversations
-- **Auto-sized context window** — the installer detects your Mac's RAM and sets the optimal context window (8K–128K); no manual tuning needed
+- **Auto-sized context window** — the installer detects your system's RAM and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
@@ -77,9 +86,9 @@ The `pre-launch` command also starts the web GUI automatically in the background
 - **Auto-generated titles** — sessions are named from the first message
 - **Responsive** — three-panel desktop, hamburger drawer on mobile
 
-## Native macOS Integrations (Zero Config)
+## Native macOS Integrations (Zero Config, macOS only)
 
-These tools work immediately with no setup — they use the native macOS apps and whatever accounts you've already configured on your Mac.
+These tools work immediately with no setup — they use the native macOS apps and whatever accounts you've already configured on your Mac. On Windows, these tools are automatically hidden; use the cloud integrations (Gmail, Google Calendar, etc.) instead.
 
 | Tool | App | Actions |
 |------|-----|---------|
@@ -453,15 +462,15 @@ Click the **lightning icon** in the sidebar footer to open the Triggers manageme
 
 ## Voice Interface
 
-PRE supports speech-to-text and text-to-speech, all running locally. Transcribe audio with OpenAI Whisper, speak responses with macOS `say`.
+PRE supports speech-to-text and text-to-speech, all running locally. Transcribe audio with OpenAI Whisper, speak responses with macOS `say` or Windows SAPI.
 
 ### Requirements
 
 | Component | Install | Purpose |
 |-----------|---------|---------|
 | **Whisper** | `pip install openai-whisper` | Speech-to-text (local, no API) |
-| **macOS `say`** | Built-in | Text-to-speech (25+ English voices) |
-| **FFmpeg** (optional) | `brew install ffmpeg` | Audio format conversion (WebM→WAV, AIFF→MP3) |
+| **TTS** | Built-in | Text-to-speech — macOS `say` (25+ voices) or Windows SAPI |
+| **FFmpeg** (optional) | `brew install ffmpeg` (macOS) or `winget install ffmpeg` (Windows) | Audio format conversion (WebM→WAV, AIFF→MP3) |
 
 ### Available Actions
 
@@ -469,7 +478,7 @@ PRE supports speech-to-text and text-to-speech, all running locally. Transcribe 
 |--------|-------------|
 | `transcribe` | Transcribe audio from a file path or base64-encoded buffer |
 | `speak` / `say` / `tts` | Speak text aloud or save to audio file (AIFF or MP3) |
-| `voices` | List available macOS English voices |
+| `voices` | List available TTS voices |
 | `status` | Check which voice capabilities are installed |
 
 ### GUI: Microphone Button
@@ -852,7 +861,7 @@ Click the **clock icon** to manage scheduled jobs:
 - Each job shows: status dot, description, schedule, run count, last run time
 - **Run Now** executes immediately; **Result** opens the output session
 - **Enable/Disable** toggles; **Delete** removes the job
-- Results are delivered via macOS notification, Telegram, and in-browser toast
+- Results are delivered via desktop notification (macOS/Windows), Telegram, and in-browser toast
 
 ---
 
@@ -958,17 +967,19 @@ ComfyUI runs as a background process, started on-demand by either the CLI or web
 
 ## Auto-Start at Login
 
-PRE can optionally start the web GUI server automatically when you log in to your Mac, so it's always available at `http://localhost:7749` without manually running anything.
+PRE can optionally start the web GUI server automatically when you log in, so it's always available at `http://localhost:7749` without manually running anything.
 
 ### How It Works
 
-A macOS LaunchAgent (`com.pre.server`) runs `pre-server.sh` at login. The launcher ensures Ollama is running, pre-warms the model into GPU memory, and starts the Node.js server. If the server crashes, launchd restarts it automatically.
+**macOS:** A LaunchAgent (`com.pre.server`) runs `pre-server.sh` at login. The launcher ensures Ollama is running, pre-warms the model into GPU memory, and starts the Node.js server. If the server crashes, launchd restarts it automatically.
+
+**Windows:** A VBScript wrapper in the Startup folder launches `pre-server.ps1` hidden at login. It starts Ollama, pre-warms the model, and runs the Node.js server.
 
 ### Enabling Auto-Start
 
 **From the GUI:** Open Settings (gear icon) → scroll to the **System** section → toggle **Start at Login**.
 
-**From the installer:** The install script (`install.sh`) offers to enable auto-start during installation (Step 10).
+**From the installer:** Both `install.sh` (macOS) and `install.ps1` (Windows) offer to enable auto-start during installation.
 
 **Manually:**
 
@@ -1002,7 +1013,7 @@ web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
 
 ## Context Window Auto-Sizing
 
-The install script detects your Mac's unified memory and sets the optimal context window size. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
+The install script detects your system's RAM and sets the optimal context window size. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
 
 | RAM | Context Window | Tokens |
 |-----|---------------|--------|
@@ -2086,6 +2097,7 @@ src/
   mcp-server.js            MCP server definition (pre_agent, pre_chat, pre_memory_search, pre_sessions)
   argus.js                 Interactive session companion (event observation, goal-aware reactions, reply-to-Argus)
   connections.js            Connection management, Google/Microsoft OAuth, Telegram setup
+  platform.js              Cross-platform abstraction (IS_WIN, IS_MAC, shell, clipboard, TTS, etc.)
   constants.js             MODEL_CTX (from ~/.pre/context), paths
   triggers.js              Event-driven trigger engine (file watchers, webhooks, polling)
   custom-tools.js          Dynamic virtual tool system (create, execute, manage runtime tools)
@@ -2098,12 +2110,13 @@ src/
     system.js              17 system tools (info, processes, clipboard, etc.)
     artifact.js            Interactive HTML artifacts
     export.js              Artifact sharing (PDF, PNG, self-contained HTML via Puppeteer)
-    mail.js                macOS Mail.app (AppleScript, zero-config)
-    calendar.js            macOS Calendar.app (EventKit via compiled Swift binary)
-    contacts.js            macOS Contacts.app (AppleScript, zero-config)
-    spotlight.js           macOS Spotlight/mdfind (full-text file search)
-    reminders.js           macOS Reminders.app (EventKit via compiled Swift binary)
-    notes.js               macOS Notes.app (AppleScript, zero-config)
+    mail.js                macOS Mail.app (AppleScript, zero-config, macOS only)
+    calendar.js            macOS Calendar.app (EventKit via compiled Swift binary, macOS only)
+    contacts.js            macOS Contacts.app (AppleScript, zero-config, macOS only)
+    spotlight.js           File search (macOS: Spotlight/mdfind; Windows: Windows Search)
+    reminders.js           macOS Reminders.app (EventKit via compiled Swift binary, macOS only)
+    notes.js               macOS Notes.app (AppleScript, zero-config, macOS only)
+    computer-win32.js      Windows desktop automation helpers (PowerShell + .NET)
     image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)
     google.js              Gmail, Google Drive, Google Docs
@@ -2125,7 +2138,7 @@ src/
     agents.js              Sub-agent spawning (parallel via Promise.all)
     monitor.js             Background process monitor (start, read, stop, list)
     rag.js                 Local RAG (directory indexing + semantic search)
-    voice.js               Voice interface (Whisper STT + macOS say TTS)
+    voice.js               Voice interface (Whisper STT + TTS: macOS say / Windows SAPI)
     workflow.js            Workflow capture and replay (Computer Use sequences)
 public/
   index.html               SPA shell

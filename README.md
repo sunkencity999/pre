@@ -1,10 +1,12 @@
 # PRE — Personal Reasoning Engine
 
-> A local AI operating system for macOS. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on Apple Silicon. No cloud. No API keys required. No data leaves your machine.
+> A local AI operating system for macOS and Windows. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on your hardware. No cloud. No API keys required. No data leaves your machine.
 
-PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your MacBook.
+PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your hardware.
 
-The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**.
+PRE has two interfaces: a **CLI** (macOS-only, Objective-C) optimized for Apple Silicon, and a **Web GUI** (Node.js) that runs on both **macOS and Windows**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
+
+The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU** with 32+ GB system RAM.
 
 ---
 
@@ -51,7 +53,7 @@ This means PRE can:
 - Read a stack trace, search the codebase, identify the bug, edit the fix, run the tests, and report the result — all from a single prompt
 - Search your Gmail, summarize a thread, draft a reply, and save it — without you touching a browser
 - Generate images locally, create documents, build artifacts, and export PDFs
-- Run recurring tasks on a schedule — morning briefings, system checks, report generation — and deliver results via macOS notification and Telegram
+- Run recurring tasks on a schedule — morning briefings, system checks, report generation — and deliver results via desktop notification and Telegram
 - Manage Jira tickets, search Confluence wikis, update Smartsheet rows, and send Slack messages
 - Delegate prompts to frontier AI models (Claude, Codex, Gemini) when cloud-level intelligence is needed — PRE becomes an agentic orchestration layer
 
@@ -92,17 +94,31 @@ This means PRE can:
 
 ## Quick Start
 
+### macOS
+
 ```bash
-# Full automated install (checks requirements, installs dependencies, pulls model, builds PRE)
 git clone https://github.com/sunkencity999/pre.git
 cd pre
 ./install.sh
 
-# Launch
+# Launch (starts Ollama, CLI, and Web GUI)
 pre-launch
 ```
 
 The installer checks system requirements, installs Ollama if needed, pulls the base model (~28 GB), creates the optimized `pre-gemma4` model, builds the PRE binary, sets up the web GUI, installs `terminal-notifier` for clickable notifications, creates data directories, auto-sizes the context window based on your Mac's RAM, configures Ollama performance optimizations, pre-warms the model into GPU memory, and optionally enables auto-start at login. Pass `--yes` for a fully non-interactive install.
+
+### Windows
+
+```powershell
+git clone https://github.com/sunkencity999/pre.git
+cd pre
+powershell -ExecutionPolicy Bypass -File install.ps1
+
+# Launch the Web GUI
+powershell -File web\pre-server.ps1
+```
+
+The Windows installer checks system requirements (Windows 10+, NVIDIA GPU, 32+ GB RAM), installs Ollama and Node.js via `winget` if needed, pulls the model, creates data directories, auto-sizes the context window, and optionally enables auto-start at login. Pass `-Yes` for non-interactive mode. The Web GUI runs at `http://localhost:7749`.
 
 PRE detects your project, loads memories, and drops you into an interactive prompt:
 
@@ -145,7 +161,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 ### Voice & Natural Input
 
-**Talk to PRE** — Hold the microphone button in the GUI to record; release to transcribe via local Whisper. Text appears in the input box, ready to send. macOS `say` speaks responses aloud. No audio leaves your machine.
+**Talk to PRE** — Hold the microphone button in the GUI to record; release to transcribe via local Whisper. Text appears in the input box, ready to send. TTS speaks responses aloud (macOS `say` or Windows SAPI). No audio leaves your machine.
 
 **Upload files and images** — Drag-and-drop, clipboard paste, or file picker. Gemma 4's native vision analyzes screenshots, diagrams, photos, CSVs, and code files.
 
@@ -153,7 +169,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 **React to events** — File watchers, webhooks, and polling monitors fire prompts automatically when files change, HTTP requests arrive, or connected services have new activity. PRE handles it with the same tool loop it uses for everything else. Manage triggers from the GUI panel.
 
-**Schedule recurring tasks** — Cron jobs with natural language input ("every weekday at 9am") run server-side even when the browser is closed. Results delivered via macOS notification, Telegram, and in-browser toast. Manage jobs from the GUI panel.
+**Schedule recurring tasks** — Cron jobs with natural language input ("every weekday at 9am") run server-side even when the browser is closed. Results delivered via desktop notification, Telegram, and in-browser toast. Manage jobs from the GUI panel.
 
 **Spawn sub-agents** — Delegate research tasks to autonomous sub-agents that run in parallel, each with restricted tool access and up to 10 tool calls.
 
@@ -167,7 +183,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 **16 services in one interface** — Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Dynamics 365, Gmail, Google Drive, Google Docs, GitHub, Telegram, Brave Search, and Wolfram Alpha. Search Jira, cross-reference Confluence, pull a file from SharePoint, and post a summary to Slack — in one conversation.
 
-**Native macOS apps (zero config)** — Mail, Calendar, Contacts, Reminders, Notes, and Spotlight work immediately with whatever accounts you've configured on your Mac. No API keys, no OAuth.
+**Native macOS apps (zero config)** — Mail, Calendar, Contacts, Reminders, Notes, and Spotlight work immediately with whatever accounts you've configured on your Mac. No API keys, no OAuth. On Windows, Spotlight is replaced by Windows Search; the five Apple app integrations are macOS-only.
 
 ### Memory & Intelligence
 
@@ -201,7 +217,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 ## Installation
 
-### Prerequisites
+### macOS Prerequisites
 
 | Component | Required |
 |-----------|----------|
@@ -214,7 +230,18 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 | **Node.js 18+** | For web GUI (`brew install node`) |
 | **Python 3.10-3.13** | Optional — for ComfyUI image generation |
 
-### Install
+### Windows Prerequisites
+
+| Component | Required |
+|-----------|----------|
+| **Windows** | 10 or 11 |
+| **GPU** | NVIDIA (for Ollama GPU inference) |
+| **RAM** | 32 GB minimum, 64+ GB recommended |
+| **Disk** | ~28 GB for model |
+| **Ollama** | [ollama.ai](https://ollama.ai) or installed via `winget` by the installer |
+| **Node.js 18+** | Installed via `winget` by the installer |
+
+### macOS Install
 
 ```bash
 git clone https://github.com/sunkencity999/pre.git
@@ -252,7 +279,23 @@ make install
 # or: ln -sf "$(pwd)/pre-launch" ~/.local/bin/pre-launch
 ```
 
-### Launch
+### Windows Install
+
+```powershell
+git clone https://github.com/sunkencity999/pre.git
+cd pre
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+The installer checks system requirements, installs Ollama and Node.js via `winget`, pulls the model, creates `~/.pre/` directories, auto-sizes the context window based on RAM, configures Ollama environment variables, and optionally enables auto-start at login.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -Yes   # Non-interactive
+```
+
+> **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) and Telegram bot are Objective-C applications that require macOS.
+
+### Launch (macOS)
 
 ```bash
 pre-launch                         # From any directory
@@ -262,6 +305,16 @@ pre-launch --max-tokens 16384      # Allow longer responses
 ```
 
 The launcher checks Ollama, creates `pre-gemma4` if needed, pre-warms the model into GPU memory, starts the web GUI on port 7749, and launches the PRE CLI.
+
+### Launch (Windows)
+
+```powershell
+powershell -File web\pre-server.ps1           # Start Web GUI server
+powershell -File web\pre-server.ps1 --status  # Check if running
+powershell -File web\pre-server.ps1 --stop    # Stop the server
+```
+
+The Windows launcher starts Ollama if needed, pre-warms the model, and starts the Web GUI on port 7749. Open `http://localhost:7749` in your browser.
 
 ---
 
@@ -376,17 +429,17 @@ PRE has 70+ tools that the model calls autonomously. Nearly all auto-execute wit
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `computer` | `action`, `coordinate`?, `text`?, `key`? | Desktop automation via screenshot → vision → click/type/scroll loop (requires `cliclick`) |
+| `computer` | `action`, `coordinate`?, `text`?, `key`? | Desktop automation via screenshot → vision → click/type/scroll loop (macOS: `cliclick`; Windows: user32.dll) |
 | `screenshot` | `region`? | Capture screen (full/window/region/x,y,w,h) |
 | `window_list` | *(none)* | List open windows with positions |
 | `window_focus` | `app` | Bring an app to front |
 | `clipboard_read` | *(none)* | Read clipboard contents |
 | `clipboard_write` | `content` | Write to clipboard |
-| `open_app` | `target` | Open files/apps/URLs via macOS `open` |
-| `notify` | `title`, `message` | Show a macOS notification |
-| `applescript` | `script` | Run arbitrary AppleScript *(confirm always)* |
+| `open_app` | `target` | Open files/apps/URLs (macOS `open` / Windows `start`) |
+| `notify` | `title`, `message` | Show a desktop notification (macOS osascript / Windows PowerShell toast) |
+| `applescript` | `script` | Run arbitrary AppleScript *(confirm always, macOS only)* |
 
-#### Native macOS Apps
+#### Native macOS Apps *(macOS only)*
 
 | Tool | Args | Description |
 |------|------|-------------|
@@ -395,7 +448,14 @@ PRE has 70+ tools that the model calls autonomously. Nearly all auto-execute wit
 | `apple_contacts` | `action`, `query`? | Contacts.app — search, read contacts via AppleScript |
 | `apple_reminders` | `action`, `title`?, `list`? | Reminders.app — list, create, complete, delete via EventKit/Swift |
 | `apple_notes` | `action`, `title`?, `body`? | Notes.app — search, read, create notes via AppleScript |
-| `spotlight` | `query`, `kind`?, `scope`? | Full-text file search via mdfind (no AppleScript) |
+
+> These five tools are automatically hidden on Windows. They use macOS-specific AppleScript and EventKit APIs.
+
+#### File Search
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `spotlight` | `query`, `kind`?, `scope`? | Full-text file search (macOS: Spotlight/mdfind; Windows: Windows Search with Get-ChildItem fallback) |
 
 #### Web
 
@@ -499,9 +559,9 @@ File watchers monitor directories for changes (debounced, glob-filtered). Webhoo
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `voice` | `action`, `text`?, `path`?, `audio_base64`?, `voice`?, `rate`? | Speech-to-text via Whisper (local) and text-to-speech via macOS `say`. Actions: `transcribe`, `speak`, `voices`, `status` |
+| `voice` | `action`, `text`?, `path`?, `audio_base64`?, `voice`?, `rate`? | Speech-to-text via Whisper (local) and text-to-speech (macOS `say` / Windows SAPI). Actions: `transcribe`, `speak`, `voices`, `status` |
 
-Requires `pip install openai-whisper` for STT. TTS uses macOS built-in `say` with 25+ English voices. Browser-side recording via Web Audio API → base64 → local Whisper transcription.
+Requires `pip install openai-whisper` for STT. TTS uses macOS built-in `say` (25+ English voices) or Windows SAPI (`System.Speech.Synthesis`). Browser-side recording via Web Audio API → base64 → local Whisper transcription.
 
 #### Workflow Capture and Replay
 
@@ -644,7 +704,7 @@ PRE includes a full cron scheduling system for recurring autonomous tasks. Jobs 
 
 | Channel | Behavior |
 |---------|----------|
-| **macOS notification** | Always sent. Click to open the result in the web GUI. Uses `terminal-notifier` for clickable notifications (installed automatically). |
+| **Desktop notification** | Always sent. On macOS, uses `terminal-notifier` for clickable notifications. On Windows, uses PowerShell toast notifications. |
 | **Telegram** | Sent if bot token is configured. Full result preview in your Telegram chat. |
 | **GUI toast** | Shown if the browser is open. Slide-in notification with "View Result" button. |
 
@@ -836,17 +896,24 @@ The web GUI starts automatically when you run `pre-launch` (requires Node.js 18+
 
 ### Auto-Start at Login
 
-PRE can optionally start the web GUI server when you log in to your Mac, so it's always available at `http://localhost:7749` without manually running anything.
+PRE can optionally start the web GUI server at login, so it's always available at `http://localhost:7749` without manually running anything.
 
 **Enable from the GUI:** Settings (gear icon) → **System** section → toggle **Start at Login**.
 
-**Enable from the installer:** `install.sh` offers auto-start during installation (Step 10).
+**Enable from the installer:** Both `install.sh` and `install.ps1` offer auto-start during installation.
 
-**How it works:** A macOS LaunchAgent (`com.pre.server`) runs `web/pre-server.sh` at login. It ensures Ollama is running, pre-warms the model, and starts the Node.js server. If the server crashes, launchd restarts it automatically.
+**macOS:** A LaunchAgent (`com.pre.server`) runs `web/pre-server.sh` at login. It ensures Ollama is running, pre-warms the model, and starts the Node.js server. If the server crashes, launchd restarts it automatically.
 
 ```bash
 web/pre-server.sh --status   # Check if server and model are running
 web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
+```
+
+**Windows:** A VBScript wrapper in the Startup folder launches `web/pre-server.ps1` hidden at login. It starts Ollama, pre-warms the model, and runs the Node.js server.
+
+```powershell
+powershell -File web\pre-server.ps1 --status   # Check if running
+powershell -File web\pre-server.ps1 --stop     # Stop the server
 ```
 
 ### Manual Launch
@@ -1088,7 +1155,7 @@ PRE includes a vision-aware browser automation tool powered by headless Chrome (
 
 ### Requirements
 
-- Google Chrome installed (standard macOS location)
+- Google Chrome installed (auto-detected on macOS and Windows)
 - `puppeteer-core` npm package (installed with the web GUI)
 
 ### How It Works
@@ -1234,9 +1301,10 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Ctrl+V image paste for multimodal queries
 - linenoise-based line editor with tab completion
 
-**Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA:
+**Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA (**cross-platform: macOS + Windows**):
 - NDJSON streaming client for Ollama
 - Server-side tool execution (same tool loop as CLI)
+- Cross-platform abstraction layer (`platform.js`) — all OS-specific operations route through a single module
 - GUI management panels: triggers, RAG indexes, workflows, memory, cron, settings
 - Voice input: hold-to-record microphone with local Whisper transcription
 - MCP client manager with stdio/HTTP transports and auto-discovery
@@ -1325,7 +1393,8 @@ All PRE data lives in `~/.pre/`:
 ```
 pre/
 ├── README.md               # This file
-├── install.sh              # Automated installer
+├── install.sh              # macOS automated installer
+├── install.ps1             # Windows automated installer (PowerShell)
 ├── system.md               # Model system prompt reference
 ├── benchmark.sh            # Performance benchmarking tool
 ├── engine/
@@ -1338,7 +1407,8 @@ pre/
 │   └── launch-telegram      # Standalone Telegram launcher
 ├── web/                     # Web GUI (Node.js + vanilla JS)
 │   ├── server.js            # Express + WebSocket + MCP server
-│   ├── pre-server.sh        # Headless launcher for LaunchAgent auto-start
+│   ├── pre-server.sh        # macOS headless launcher for LaunchAgent auto-start
+│   ├── pre-server.ps1       # Windows headless launcher for Startup folder auto-start
 │   ├── package.json
 │   ├── src/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client
@@ -1348,6 +1418,7 @@ pre/
 │   │   ├── context.js       # System prompt builder
 │   │   ├── memory.js        # Auto-extraction engine
 │   │   ├── connections.js   # Credential management
+│   │   ├── platform.js      # Cross-platform abstraction (IS_WIN, IS_MAC, shell, clipboard, etc.)
 │   │   ├── constants.js     # MODEL_CTX (from ~/.pre/context), paths
 │   │   ├── cron-runner.js   # Headless cron execution + notifications
 │   │   ├── mcp.js           # MCP client manager (stdio + HTTP)
@@ -1366,14 +1437,15 @@ pre/
 │   │       ├── document.js  # DOCX/XLSX/PDF/TXT/CSV generation
 │   │       ├── image.js     # ComfyUI image generation
 │   │       ├── cron.js      # Cron job management
-│   │       ├── computer.js  # Desktop automation (cliclick + vision loop)
+│   │       ├── computer.js  # Desktop automation (macOS: cliclick; Windows: user32.dll)
+│       ├── computer-win32.js # Windows desktop automation helpers (PowerShell + .NET)
 │   │       ├── browser.js   # Headless Chrome automation (Puppeteer)
 │   │       ├── mail.js      # Mail.app via AppleScript
 │   │       ├── calendar.js  # Calendar.app via EventKit/Swift
 │   │       ├── contacts.js  # Contacts.app via AppleScript
 │   │       ├── reminders.js # Reminders.app via EventKit/Swift
 │   │       ├── notes.js     # Notes.app via AppleScript
-│   │       ├── spotlight.js # mdfind full-text search
+│   │       ├── spotlight.js # File search (macOS: mdfind; Windows: Windows Search)
 │   │       ├── github.js    # GitHub API
 │   │       ├── google.js    # Gmail, Drive, Docs
 │   │       ├── telegram.js  # Telegram Bot API
@@ -1391,7 +1463,7 @@ pre/
 │   │       ├── monitor.js   # Background process monitor (start, read, stop, list)
 │   │       ├── delegate.js  # Frontier AI delegation (Claude/Codex/Gemini)
 │   │       ├── rag.js       # Local RAG (directory indexing + semantic search)
-│   │       ├── voice.js     # Voice interface (Whisper STT + macOS say TTS)
+│   │       ├── voice.js     # Voice interface (Whisper STT + TTS: macOS say / Windows SAPI)
 │   │       └── workflow.js  # Workflow capture and replay
 │   └── public/
 │       ├── index.html       # SPA shell
@@ -1424,6 +1496,7 @@ PRE is built and maintained by **Christopher Bradford** — systems administrato
 - **Google** for the Gemma 4 model family
 - **Ollama** for making local model serving effortless
 - **Apple** for unified memory architecture that makes this possible
+- **NVIDIA** for GPU acceleration on Windows
 
 ## License
 
