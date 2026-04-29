@@ -1,4 +1,4 @@
-# PRE Web GUI — Windows Server Launcher
+# PRE Web GUI - Windows Server Launcher
 # PowerShell equivalent of pre-server.sh
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File pre-server.ps1
 #        powershell -File pre-server.ps1 --status

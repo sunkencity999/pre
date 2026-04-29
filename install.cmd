@@ -1,10 +1,10 @@
 @echo off
-:: PRE Installer Launcher — double-click this file to install PRE on Windows.
+:: PRE Installer Launcher - double-click this file to install PRE on Windows.
 :: This wrapper bypasses PowerShell's execution policy so install.ps1 can run.
 :: It also keeps the window open if something goes wrong.
 
 echo.
-echo   PRE (Personal Reasoning Engine) — Windows Installer
+echo   PRE (Personal Reasoning Engine) - Windows Installer
 echo   ====================================================
 echo.
 

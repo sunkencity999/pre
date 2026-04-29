@@ -1,4 +1,4 @@
-# install.ps1 — Full setup for PRE (Personal Reasoning Engine) on Windows
+# install.ps1 - Full setup for PRE (Personal Reasoning Engine) on Windows
 #
 # This script handles everything from Ollama to ready-to-run:
 #   0. Checks system requirements (Windows 10/11, NVIDIA GPU, RAM, disk)
@@ -35,7 +35,7 @@ param(
 # policy blocks unsigned scripts. Detect this and re-launch with Bypass.
 if ($MyInvocation.Line -notmatch '-ExecutionPolicy') {
     try {
-        # Test if we can actually run — if this param block parsed, we're fine.
+        # Test if we can actually run - if this param block parsed, we're fine.
         # But if the policy would block, PowerShell never gets here. The real
         # fix is the wrapper below for the right-click scenario.
     } catch {}
@@ -130,13 +130,13 @@ if ($ramGB -ge 32) {
     $QUANT = "q8_0"
     $MODEL_SIZE_GB = 28
     $MODEL_SIZE_LABEL = "~28GB"
-    Ok "RAM: ${ramGB}GB — using q8_0 quantization (near-lossless, ${MODEL_SIZE_LABEL})"
+    Ok "RAM: ${ramGB}GB - using q8_0 quantization (near-lossless, ${MODEL_SIZE_LABEL})"
 } else {
     $BASE_MODEL = "gemma4:26b-a4b-it-q4_K_M"
     $QUANT = "q4_K_M"
     $MODEL_SIZE_GB = 15
     $MODEL_SIZE_LABEL = "~15GB"
-    Warn "RAM: ${ramGB}GB — using q4_K_M quantization (${MODEL_SIZE_LABEL}, good quality)"
+    Warn "RAM: ${ramGB}GB - using q4_K_M quantization (${MODEL_SIZE_LABEL}, good quality)"
     Warn "Upgrade to 32GB+ RAM to use the higher-quality q8_0 quantization."
 }
 
@@ -433,7 +433,7 @@ foreach ($file in $defaultConfigs.Keys) {
 }
 
 # ============================================================================
-# Step 7: Optional — Whisper + FFmpeg for voice interface
+# Step 7: Optional - Whisper + FFmpeg for voice interface
 # ============================================================================
 Step "Voice Interface Setup (optional)"
 
@@ -464,7 +464,7 @@ if ($hasWhisper -and $hasFfmpeg) {
 }
 
 # ============================================================================
-# Step 8: Optional — Auto-start at login
+# Step 8: Optional - Auto-start at login
 # ============================================================================
 Step "Auto-start Setup (optional)"
 
@@ -521,7 +521,7 @@ if (-not (Test-Path $preCmdDir)) { New-Item -ItemType Directory -Path $preCmdDir
 
 $preCmdContent = @"
 @echo off
-:: PRE launcher — starts Ollama + web server, opens browser
+:: PRE launcher - starts Ollama + web server, opens browser
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$($ps1Path -replace '/', '\')"
 "@
 Set-Content -Path $preCmdPath -Value $preCmdContent
