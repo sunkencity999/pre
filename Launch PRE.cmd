@@ -43,9 +43,11 @@ set "OLLAMA_MAX_LOADED_MODELS=1"
 where nvidia-smi >nul 2>&1
 if !errorlevel!==0 (
     set "OLLAMA_FLASH_ATTENTION=1"
-    set "OLLAMA_KV_CACHE_TYPE=q8_0"
     set "OLLAMA_GPU_OVERHEAD=256000000"
-    echo   NVIDIA GPU: Flash Attention + q8_0 KV cache enabled
+    :: Read KV cache type set by installer (q4_0 for q4 models, q8_0 for q8)
+    set "OLLAMA_KV_CACHE_TYPE=q8_0"
+    if exist "%USERPROFILE%\.pre\kv_cache_type" set /p OLLAMA_KV_CACHE_TYPE=<"%USERPROFILE%\.pre\kv_cache_type"
+    echo   NVIDIA GPU: Flash Attention + !OLLAMA_KV_CACHE_TYPE! KV cache enabled
 )
 
 :: ---- Start Ollama ----

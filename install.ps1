@@ -260,9 +260,17 @@ $envVars = @{
 # NVIDIA GPU optimizations: squeeze more model layers onto the GPU
 # by reducing KV cache VRAM and overhead reservation
 if ($gpuName) {
+    # Match KV cache quantization to model quantization:
+    #   q8_0 model → q8_0 KV cache (lossless match, ~half VRAM vs fp16)
+    #   q4_K_M model → q4_0 KV cache (maximum VRAM savings, matched precision)
+    $kvCacheType = if ($QUANT -match '^q4') { "q4_0" } else { "q8_0" }
     $envVars["OLLAMA_FLASH_ATTENTION"] = "1"        # CUDA Flash Attention — faster + less VRAM for KV cache
-    $envVars["OLLAMA_KV_CACHE_TYPE"] = "q8_0"       # Quantized KV cache — ~half the VRAM vs fp16
+    $envVars["OLLAMA_KV_CACHE_TYPE"] = $kvCacheType  # Quantized KV cache — matched to model precision
     $envVars["OLLAMA_GPU_OVERHEAD"] = "256000000"    # 256MB (default 512MB) — free ~256MB for model layers
+
+    # Persist KV cache type so runtime scripts can read it without re-detecting
+    $kvFile = Join-Path $env:USERPROFILE ".pre\kv_cache_type"
+    Set-Content -Path $kvFile -Value $kvCacheType -NoNewline
 }
 
 foreach ($key in $envVars.Keys) {
@@ -273,7 +281,7 @@ foreach ($key in $envVars.Keys) {
     }
 }
 if ($gpuName) {
-    Ok "Ollama environment set (KEEP_ALIVE=24h, FLASH_ATTENTION=1, KV_CACHE=q8_0)"
+    Ok "Ollama environment set (KEEP_ALIVE=24h, FLASH_ATTENTION=1, KV_CACHE=$kvCacheType)"
 } else {
     Ok "Ollama environment set (KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
 }

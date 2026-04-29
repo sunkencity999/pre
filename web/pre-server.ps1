@@ -58,15 +58,19 @@ $env:OLLAMA_MAX_LOADED_MODELS = "1"
 $hasNvidia = $false
 try { $hasNvidia = [bool](& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) } catch {}
 if ($hasNvidia) {
+    # Read KV cache type set by installer (q4_0 for q4 models, q8_0 for q8 models)
+    $kvFile = Join-Path $env:USERPROFILE ".pre\kv_cache_type"
+    $kvType = "q8_0"
+    if (Test-Path $kvFile) { $kvType = (Get-Content $kvFile -Raw).Trim() }
     $env:OLLAMA_FLASH_ATTENTION = "1"
-    $env:OLLAMA_KV_CACHE_TYPE = "q8_0"
+    $env:OLLAMA_KV_CACHE_TYPE = $kvType
     $env:OLLAMA_GPU_OVERHEAD = "256000000"
 }
 
 # ── Start Ollama if not running ──
 Write-Host "PRE Server starting..."
 Write-Host "  Context window: $NUM_CTX tokens"
-if ($hasNvidia) { Write-Host "  NVIDIA GPU: Flash Attention + q8_0 KV cache enabled" }
+if ($hasNvidia) { Write-Host "  NVIDIA GPU: Flash Attention + $($env:OLLAMA_KV_CACHE_TYPE) KV cache enabled" }
 
 $ollamaRunning = $false
 try {
