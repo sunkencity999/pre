@@ -46,14 +46,19 @@ describe('tools-defs', () => {
       expect(names).toContain('memory_save');
     });
 
-    test('includes Apple tools', () => {
+    test('includes native app tools on macOS/Windows', () => {
+      const { IS_MAC, IS_WIN } = require('../src/platform');
       const names = toolsDefs.buildToolDefs().map(t => t.function.name);
-      expect(names).toContain('apple_mail');
-      expect(names).toContain('apple_calendar');
-      expect(names).toContain('apple_contacts');
-      expect(names).toContain('apple_reminders');
-      expect(names).toContain('apple_notes');
+      // Spotlight is always registered (cross-platform)
       expect(names).toContain('spotlight');
+      // Native app tools only on macOS or Windows (not Linux CI)
+      if (IS_MAC || IS_WIN) {
+        expect(names).toContain('apple_mail');
+        expect(names).toContain('apple_calendar');
+        expect(names).toContain('apple_contacts');
+        expect(names).toContain('apple_reminders');
+        expect(names).toContain('apple_notes');
+      }
     });
 
     test('includes scheduling tools', () => {

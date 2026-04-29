@@ -182,31 +182,45 @@ describe('powershellScript tool', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('native app tools — dispatcher routing', () => {
+  const { IS_MAC, IS_WIN } = require('../src/platform');
+  const isSupported = IS_MAC || IS_WIN;
+
   beforeEach(() => {
     fs.writeFileSync(CONNECTIONS_FILE, '{}');
   });
 
+  // On Linux CI, native app tools return "only supported on macOS/Windows"
+  // before reaching the action dispatcher. Skip behavioral tests on Linux.
+
   describe('calendar', () => {
     const { calendar } = require('../src/tools/calendar');
 
-    test('returns error without action', async () => {
-      const result = await calendar({});
-      expect(result).toContain('Error');
-      expect(result).toContain('action required');
-    });
+    if (isSupported) {
+      test('returns error without action', async () => {
+        const result = await calendar({});
+        expect(result).toContain('Error');
+        expect(result).toContain('action required');
+      });
 
-    test('returns error for unknown action', async () => {
-      const result = await calendar({ action: 'nonexistent' });
-      expect(result).toContain('Error');
-      expect(result).toContain('unknown action');
-    });
+      test('returns error for unknown action', async () => {
+        const result = await calendar({ action: 'nonexistent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('unknown action');
+      });
 
-    test('all expected actions are listed in error message', async () => {
-      const result = await calendar({});
-      for (const action of ['list_events', 'create_event', 'search', 'list_calendars', 'delete_event', 'today', 'week']) {
-        expect(result).toContain(action);
-      }
-    });
+      test('all expected actions are listed in error message', async () => {
+        const result = await calendar({});
+        for (const action of ['list_events', 'create_event', 'search', 'list_calendars', 'delete_event', 'today', 'week']) {
+          expect(result).toContain(action);
+        }
+      });
+    } else {
+      test('returns unsupported platform error on Linux', async () => {
+        const result = await calendar({ action: 'today' });
+        expect(result).toContain('Error');
+        expect(result).toContain('only supported');
+      });
+    }
 
     test('source has IS_WIN dispatch branch', () => {
       const source = fs.readFileSync(require.resolve('../src/tools/calendar.js'), 'utf-8');
@@ -222,22 +236,29 @@ describe('native app tools — dispatcher routing', () => {
   describe('mail', () => {
     const { mail } = require('../src/tools/mail');
 
-    test('returns error without action', async () => {
-      const result = await mail({});
-      expect(result).toContain('Error');
-      expect(result).toContain('action required');
-    });
+    if (isSupported) {
+      test('returns error without action', async () => {
+        const result = await mail({});
+        expect(result).toContain('Error');
+        expect(result).toContain('action required');
+      });
 
-    test('returns error for unknown action', async () => {
-      const result = await mail({ action: 'nonexistent' });
-      expect(result).toContain('Error');
-      expect(result).toContain('unknown');
-    });
+      test('returns error for unknown action', async () => {
+        const result = await mail({ action: 'nonexistent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('unknown');
+      });
+    } else {
+      test('returns unsupported platform error on Linux', async () => {
+        const result = await mail({ action: 'list_recent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('only supported');
+      });
+    }
 
     test('source has IS_WIN dispatch branch', () => {
       const source = fs.readFileSync(require.resolve('../src/tools/mail.js'), 'utf-8');
       expect(source).toContain('if (IS_WIN)');
-      // Check for at least some Windows functions
       expect(source).toMatch(/function win\w+/);
     });
   });
@@ -245,24 +266,32 @@ describe('native app tools — dispatcher routing', () => {
   describe('notes', () => {
     const { notes } = require('../src/tools/notes');
 
-    test('returns error without action', async () => {
-      const result = await notes({});
-      expect(result).toContain('Error');
-      expect(result).toContain('action required');
-    });
+    if (isSupported) {
+      test('returns error without action', async () => {
+        const result = await notes({});
+        expect(result).toContain('Error');
+        expect(result).toContain('action required');
+      });
 
-    test('returns error for unknown action', async () => {
-      const result = await notes({ action: 'nonexistent' });
-      expect(result).toContain('Error');
-      expect(result).toContain('unknown');
-    });
+      test('returns error for unknown action', async () => {
+        const result = await notes({ action: 'nonexistent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('unknown');
+      });
 
-    test('all expected actions are listed', async () => {
-      const result = await notes({});
-      for (const action of ['search', 'read', 'create', 'list_recent', 'list_folders']) {
-        expect(result).toContain(action);
-      }
-    });
+      test('all expected actions are listed', async () => {
+        const result = await notes({});
+        for (const action of ['search', 'read', 'create', 'list_recent', 'list_folders']) {
+          expect(result).toContain(action);
+        }
+      });
+    } else {
+      test('returns unsupported platform error on Linux', async () => {
+        const result = await notes({ action: 'list_recent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('only supported');
+      });
+    }
 
     test('source has IS_WIN dispatch branch', () => {
       const source = fs.readFileSync(require.resolve('../src/tools/notes.js'), 'utf-8');
@@ -274,17 +303,25 @@ describe('native app tools — dispatcher routing', () => {
   describe('contacts', () => {
     const { contacts } = require('../src/tools/contacts');
 
-    test('returns error without action', async () => {
-      const result = await contacts({});
-      expect(result).toContain('Error');
-      expect(result).toContain('action required');
-    });
+    if (isSupported) {
+      test('returns error without action', async () => {
+        const result = await contacts({});
+        expect(result).toContain('Error');
+        expect(result).toContain('action required');
+      });
 
-    test('returns error for unknown action', async () => {
-      const result = await contacts({ action: 'nonexistent' });
-      expect(result).toContain('Error');
-      expect(result).toContain('unknown');
-    });
+      test('returns error for unknown action', async () => {
+        const result = await contacts({ action: 'nonexistent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('unknown');
+      });
+    } else {
+      test('returns unsupported platform error on Linux', async () => {
+        const result = await contacts({ action: 'search' });
+        expect(result).toContain('Error');
+        expect(result).toContain('only supported');
+      });
+    }
 
     test('source has IS_WIN dispatch branch', () => {
       const source = fs.readFileSync(require.resolve('../src/tools/contacts.js'), 'utf-8');
@@ -296,24 +333,32 @@ describe('native app tools — dispatcher routing', () => {
   describe('reminders', () => {
     const { reminders } = require('../src/tools/reminders');
 
-    test('returns error without action', async () => {
-      const result = await reminders({});
-      expect(result).toContain('Error');
-      expect(result).toContain('action required');
-    });
+    if (isSupported) {
+      test('returns error without action', async () => {
+        const result = await reminders({});
+        expect(result).toContain('Error');
+        expect(result).toContain('action required');
+      });
 
-    test('returns error for unknown action', async () => {
-      const result = await reminders({ action: 'nonexistent' });
-      expect(result).toContain('Error');
-      expect(result).toContain('unknown');
-    });
+      test('returns error for unknown action', async () => {
+        const result = await reminders({ action: 'nonexistent' });
+        expect(result).toContain('Error');
+        expect(result).toContain('unknown');
+      });
 
-    test('all expected actions are listed', async () => {
-      const result = await reminders({});
-      for (const action of ['add', 'list', 'complete', 'search', 'delete']) {
-        expect(result).toContain(action);
-      }
-    });
+      test('all expected actions are listed', async () => {
+        const result = await reminders({});
+        for (const action of ['add', 'list', 'complete', 'search', 'delete']) {
+          expect(result).toContain(action);
+        }
+      });
+    } else {
+      test('returns unsupported platform error on Linux', async () => {
+        const result = await reminders({ action: 'list' });
+        expect(result).toContain('Error');
+        expect(result).toContain('only supported');
+      });
+    }
 
     test('source has IS_WIN dispatch branch', () => {
       const source = fs.readFileSync(require.resolve('../src/tools/reminders.js'), 'utf-8');
