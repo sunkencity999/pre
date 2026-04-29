@@ -1,15 +1,16 @@
-// PRE Web GUI — Voice Interface
-// Speech-to-text via Whisper (local), text-to-speech via macOS `say`.
+// PRE Web GUI — Voice Interface (cross-platform)
+// Speech-to-text via Whisper (local), text-to-speech via macOS `say` / Windows SAPI.
 // Two modes:
 //   1. Server-side: record via sox/rec, transcribe via Whisper CLI
 //   2. Browser-side: record via Web Audio API, POST audio to /api/voice/transcribe
 //
 // All processing happens locally — no audio leaves the machine.
 
-const { execSync, exec } = require('child_process');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { whichCmd, hasTTS, ttsSpeak, ttsListVoices, IS_WIN } = require('../platform');
 
 const VOICE_DIR = path.join(os.tmpdir(), 'pre-voice');
 if (!fs.existsSync(VOICE_DIR)) fs.mkdirSync(VOICE_DIR, { recursive: true });
@@ -17,26 +18,13 @@ if (!fs.existsSync(VOICE_DIR)) fs.mkdirSync(VOICE_DIR, { recursive: true });
 // ── Configuration ──────────────────────────────────────────────────────────
 
 const WHISPER_MODEL = 'base.en';  // Good balance of speed and accuracy for English
-const TTS_VOICE = 'Samantha';     // Default macOS voice (clear, natural)
-const TTS_RATE = 185;             // Words per minute (default ~175, slightly faster)
 // Max recording: 120s (enforced browser-side)
 
 // Check what's available
-const hasWhisper = (() => {
-  try { execSync('which whisper', { stdio: 'pipe' }); return true; } catch { return false; }
-})();
-
-const hasSox = (() => {
-  try { execSync('which rec', { stdio: 'pipe' }); return true; } catch { return false; }
-})();
-
-const hasSay = (() => {
-  try { execSync('which say', { stdio: 'pipe' }); return true; } catch { return false; }
-})();
-
-const hasFfmpeg = (() => {
-  try { execSync('which ffmpeg', { stdio: 'pipe' }); return true; } catch { return false; }
-})();
+const hasWhisper = !!whichCmd('whisper');
+const hasSox = !!whichCmd(IS_WIN ? 'sox' : 'rec');
+const hasSay = hasTTS();
+const hasFfmpeg = !!whichCmd('ffmpeg');
 
 // ── Speech-to-Text ─────────────────────────────────────────────────────────
 
@@ -63,7 +51,7 @@ async function transcribe(audioPath, opts = {}) {
   if (audioPath.endsWith('.webm') && hasFfmpeg) {
     const wavPath = audioPath.replace('.webm', '.wav');
     try {
-      execSync(`ffmpeg -y -i "${audioPath}" -ar 16000 -ac 1 "${wavPath}" 2>/dev/null`, { timeout: 30000 });
+      execSync(`ffmpeg -y -i "${audioPath}" -ar 16000 -ac 1 "${wavPath}"`, { timeout: 30000, stdio: 'pipe' });
       inputPath = wavPath;
     } catch {
       // Fall through — Whisper might handle it
@@ -71,8 +59,8 @@ async function transcribe(audioPath, opts = {}) {
   }
 
   try {
-    const cmd = `whisper "${inputPath}" --model ${model} --language ${language} --output_format txt --output_dir "${outputDir}" --fp16 False 2>/dev/null`;
-    execSync(cmd, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+    const cmd = `whisper "${inputPath}" --model ${model} --language ${language} --output_format txt --output_dir "${outputDir}" --fp16 False`;
+    execSync(cmd, { timeout: 60000, maxBuffer: 10 * 1024 * 1024, stdio: 'pipe' });
 
     // Read the transcript
     const baseName = path.basename(inputPath, path.extname(inputPath));
@@ -118,75 +106,45 @@ async function transcribeBuffer(base64Audio, mimeType = 'audio/webm') {
 // ── Text-to-Speech ─────────────────────────────────────────────────────────
 
 /**
- * Speak text using macOS `say` command.
- * Generates audio and optionally plays it.
+ * Speak text using macOS `say` or Windows SAPI.
+ * Generates audio and optionally plays it. Delegates to platform.js.
  *
  * @param {string} text - Text to speak
- * @param {Object} opts - { voice, rate, output (file path), play (boolean) }
+ * @param {Object} opts - { voice, rate, output (file path), play (boolean), format }
  */
 function speak(text, opts = {}) {
-  if (!hasSay) return { error: 'macOS say command not available' };
+  if (!hasSay) return { error: 'TTS not available (macOS say or Windows SAPI required)' };
   if (!text) return { error: 'No text provided' };
 
-  const voice = opts.voice || TTS_VOICE;
-  const rate = opts.rate || TTS_RATE;
+  const result = ttsSpeak(text, {
+    voice: opts.voice,
+    rate: opts.rate,
+    output: opts.output,
+  });
 
-  // Sanitize text for shell (remove problematic characters)
-  const safeText = text
-    .replace(/[`$\\]/g, '')
-    .replace(/"/g, '\\"')
-    .slice(0, 5000); // Cap length
+  if (result.error) return result;
 
-  if (opts.output) {
-    // Generate audio file (AIFF format — macOS native)
-    const outPath = opts.output.endsWith('.aiff') ? opts.output : opts.output + '.aiff';
+  // Convert to mp3 if ffmpeg is available and requested (output mode only)
+  if (opts.output && opts.format === 'mp3' && hasFfmpeg && result.file) {
+    const mp3Path = result.file.replace(/\.(aiff|wav)$/, '.mp3');
     try {
-      execSync(`say -v "${voice}" -r ${rate} -o "${outPath}" "${safeText}"`, { timeout: 30000 });
-
-      // Convert to mp3 if ffmpeg is available and requested
-      if (opts.format === 'mp3' && hasFfmpeg) {
-        const mp3Path = outPath.replace('.aiff', '.mp3');
-        execSync(`ffmpeg -y -i "${outPath}" -codec:a libmp3lame -q:a 2 "${mp3Path}" 2>/dev/null`, { timeout: 30000 });
-        try { fs.unlinkSync(outPath); } catch {}
-        return { file: mp3Path, voice, rate };
-      }
-
-      return { file: outPath, voice, rate };
-    } catch (err) {
-      return { error: `TTS generation failed: ${err.message}` };
+      execSync(`ffmpeg -y -i "${result.file}" -codec:a libmp3lame -q:a 2 "${mp3Path}"`, { timeout: 30000, stdio: 'pipe' });
+      try { fs.unlinkSync(result.file); } catch {}
+      return { file: mp3Path, voice: result.voice, rate: result.rate };
+    } catch {
+      // Fall through — return the original format
     }
   }
 
-  // Play directly (non-blocking)
-  if (opts.play !== false) {
-    exec(`say -v "${voice}" -r ${rate} "${safeText}"`);
-    return { spoken: true, voice, rate, length: safeText.length };
-  }
-
-  return { error: 'No output or play option specified' };
+  return result;
 }
 
 /**
- * List available macOS voices.
+ * List available voices (macOS or Windows SAPI).
  */
 function listVoices() {
-  if (!hasSay) return { error: 'macOS say command not available' };
-  try {
-    const output = execSync('say -v "?"', { encoding: 'utf-8', timeout: 10000 });
-    const voices = output.trim().split('\n')
-      .map(line => {
-        const match = line.match(/^(\S+)\s+(\S+)\s+#\s*(.*)$/);
-        if (match) return { name: match[1], locale: match[2], sample: match[3] };
-        return null;
-      })
-      .filter(Boolean);
-
-    // Filter to English voices for the summary
-    const englishVoices = voices.filter(v => v.locale.startsWith('en'));
-    return { voices: englishVoices, total: voices.length };
-  } catch (err) {
-    return { error: `Failed to list voices: ${err.message}` };
-  }
+  if (!hasSay) return { error: 'TTS not available (macOS say or Windows SAPI required)' };
+  return ttsListVoices();
 }
 
 // ── Tool Dispatcher ────────────────────────────────────────────────────────
@@ -232,10 +190,11 @@ async function voice(args) {
       const capabilities = [];
       if (hasWhisper) capabilities.push('Whisper STT (installed)');
       else capabilities.push('Whisper STT (not installed — pip install openai-whisper)');
-      if (hasSay) capabilities.push('macOS TTS (available)');
+      if (hasSay) capabilities.push(`TTS (${IS_WIN ? 'Windows SAPI' : 'macOS say'} — available)`);
+      else capabilities.push('TTS (not available)');
       if (hasFfmpeg) capabilities.push('FFmpeg (available — format conversion)');
       if (hasSox) capabilities.push('Sox/rec (available — mic recording)');
-      else capabilities.push('Sox/rec (not installed — brew install sox)');
+      else capabilities.push(IS_WIN ? 'Sox (not installed — winget install sox)' : 'Sox/rec (not installed — brew install sox)');
       return `Voice capabilities:\n${capabilities.map(c => `  ${c}`).join('\n')}`;
     }
 

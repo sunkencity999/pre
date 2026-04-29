@@ -993,11 +993,27 @@ app.get('/api/status', async (_req, res) => {
 
 // ── System settings API ──
 
+// ── Autostart — platform-specific ──
+
+const { IS_WIN, IS_MAC } = require('./src/platform');
+
+// macOS: LaunchAgent plist
 const PLIST_LABEL = 'com.pre.server';
-const PLIST_PATH = path.join(os.homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
+const PLIST_PATH = IS_MAC ? path.join(os.homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`) : '';
 const PRE_SERVER_SH = path.join(__dirname, 'pre-server.sh');
 
+// Windows: VBScript in Startup folder
+const WIN_STARTUP_DIR = IS_WIN ? path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') : '';
+const WIN_STARTUP_VBS = IS_WIN ? path.join(WIN_STARTUP_DIR, 'PRE-Server.vbs') : '';
+const PRE_SERVER_PS1 = path.join(__dirname, 'pre-server.ps1');
+
 app.get('/api/system/autostart', (_req, res) => {
+  if (IS_WIN) {
+    const installed = fs.existsSync(WIN_STARTUP_VBS);
+    res.json({ installed, running: installed, startupPath: WIN_STARTUP_VBS });
+    return;
+  }
+  // macOS
   const installed = fs.existsSync(PLIST_PATH);
   let running = false;
   if (installed) {
@@ -1012,8 +1028,29 @@ app.get('/api/system/autostart', (_req, res) => {
 app.post('/api/system/autostart', (req, res) => {
   const { enabled } = req.body || {};
 
+  if (IS_WIN) {
+    if (enabled) {
+      // Create VBScript wrapper in Windows Startup folder (runs hidden, no console window)
+      const webDir = __dirname.replace(/\//g, '\\');
+      const vbs = `Set WshShell = CreateObject("WScript.Shell")\r\n`
+        + `WshShell.CurrentDirectory = "${webDir}"\r\n`
+        + `WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""${PRE_SERVER_PS1.replace(/\//g, '\\')}""", 0, False\r\n`;
+      try {
+        if (!fs.existsSync(WIN_STARTUP_DIR)) fs.mkdirSync(WIN_STARTUP_DIR, { recursive: true });
+        fs.writeFileSync(WIN_STARTUP_VBS, vbs);
+        res.json({ installed: true, running: true });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    } else {
+      if (fs.existsSync(WIN_STARTUP_VBS)) fs.unlinkSync(WIN_STARTUP_VBS);
+      res.json({ installed: false, running: false });
+    }
+    return;
+  }
+
+  // macOS
   if (enabled) {
-    // Create and load LaunchAgent
     const webDir = __dirname;
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1062,9 +1099,6 @@ app.post('/api/system/autostart', (req, res) => {
     try { execSync(`launchctl load "${PLIST_PATH}" 2>/dev/null`); } catch { /* already loaded */ }
     res.json({ installed: true, running: true });
   } else {
-    // Remove LaunchAgent plist — don't launchctl unload since that would
-    // kill this server process (we ARE the LaunchAgent-managed process).
-    // The server keeps running for this session but won't auto-start on next login.
     if (fs.existsSync(PLIST_PATH)) fs.unlinkSync(PLIST_PATH);
     res.json({ installed: false, running: false });
   }
