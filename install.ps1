@@ -2,9 +2,11 @@
 #
 # This script handles everything from Ollama to ready-to-run:
 #   0. Checks system requirements (Windows 10/11, NVIDIA GPU, RAM, disk)
+#      - 32GB+ RAM: uses q8_0 quantization (~28GB, near-lossless)
+#      - 16-31GB RAM: uses q4_K_M quantization (~15GB, good quality)
 #   1. Installs/verifies Ollama
 #   1b. Configures Ollama environment variables
-#   2. Pulls the base model (gemma4:26b-a4b-it-q8_0, ~28GB)
+#   2. Pulls the base model (auto-selected quantization based on RAM)
 #   2b. Pulls embedding model (nomic-embed-text for experience ledger + RAG)
 #   3. Creates optimized custom model (pre-gemma4) from Modelfile
 #   4. Checks/installs Node.js
@@ -80,7 +82,7 @@ $REPO_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ENGINE_DIR = Join-Path $REPO_DIR "engine"
 $WEB_DIR = Join-Path $REPO_DIR "web"
 $PRE_DIR = Join-Path $env:USERPROFILE ".pre"
-$BASE_MODEL = "gemma4:26b-a4b-it-q8_0"
+# Model selection happens after RAM detection (Step 0)
 $CUSTOM_MODEL = "pre-gemma4"
 $PORT = if ($env:PRE_PORT) { $env:PRE_PORT } else { "11434" }
 
@@ -112,19 +114,42 @@ if (-not $gpuName) {
     if (-not (Ask-YN "  Continue without GPU verification? [y/N]" "N")) { exit 1 }
 }
 
-# RAM
+# RAM + model selection
 $ramBytes = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $ramGB = [math]::Floor($ramBytes / 1GB)
-if ($ramGB -lt 32) {
-    Fail "PRE requires at least 32GB RAM (q8_0 model loads at ~32GB). Detected: ${ramGB}GB"
+
+if ($ramGB -lt 16) {
+    Fail "PRE requires at least 16GB RAM. Detected: ${ramGB}GB"
 }
-if ($ramGB -lt 64) {
+
+# Select quantization based on available RAM
+# q8_0 (~28GB weights) needs 32GB+ to leave room for KV cache + OS
+# q4_K_M (~15GB weights) fits comfortably in 16-31GB
+if ($ramGB -ge 32) {
+    $BASE_MODEL = "gemma4:26b-a4b-it-q8_0"
+    $QUANT = "q8_0"
+    $MODEL_SIZE_GB = 28
+    $MODEL_SIZE_LABEL = "~28GB"
+    Ok "RAM: ${ramGB}GB — using q8_0 quantization (near-lossless, ${MODEL_SIZE_LABEL})"
+} else {
+    $BASE_MODEL = "gemma4:26b-a4b-it-q4_K_M"
+    $QUANT = "q4_K_M"
+    $MODEL_SIZE_GB = 15
+    $MODEL_SIZE_LABEL = "~15GB"
+    Warn "RAM: ${ramGB}GB — using q4_K_M quantization (${MODEL_SIZE_LABEL}, good quality)"
+    Warn "Upgrade to 32GB+ RAM to use the higher-quality q8_0 quantization."
+}
+
+if ($ramGB -lt 32) {
+    # Already warned above
+} elseif ($ramGB -lt 64) {
     Warn "RAM: ${ramGB}GB - functional, but 64GB+ recommended for large context windows."
 } else {
     Ok "RAM: ${ramGB}GB"
 }
 
 # Auto-size context window based on RAM
+# q4_K_M uses ~15GB for weights, q8_0 uses ~28GB. KV cache scales with context.
 if ($ramGB -ge 96) {
     $OPTIMAL_CTX = 131072   # 128K
 } elseif ($ramGB -ge 64) {
@@ -133,8 +158,12 @@ if ($ramGB -ge 96) {
     $OPTIMAL_CTX = 32768    # 32K
 } elseif ($ramGB -ge 36) {
     $OPTIMAL_CTX = 16384    # 16K
-} else {
+} elseif ($ramGB -ge 24) {
+    $OPTIMAL_CTX = 16384    # 16K (q4_K_M leaves more headroom)
+} elseif ($ramGB -ge 20) {
     $OPTIMAL_CTX = 8192     # 8K
+} else {
+    $OPTIMAL_CTX = 4096     # 4K (tight fit with q4_K_M on 16GB)
 }
 $CTX_HUMAN = "$([math]::Floor($OPTIMAL_CTX / 1024))K"
 Ok "Context window: $CTX_HUMAN ($OPTIMAL_CTX tokens, auto-sized for ${ramGB}GB RAM)"
@@ -142,8 +171,9 @@ Ok "Context window: $CTX_HUMAN ($OPTIMAL_CTX tokens, auto-sized for ${ramGB}GB R
 # Disk space
 $drive = (Get-Item $REPO_DIR).PSDrive
 $availGB = [math]::Floor((Get-PSDrive $drive.Name).Free / 1GB)
-if ($availGB -lt 35) {
-    Warn "Disk: ${availGB}GB available - need ~28GB for q8_0 model download."
+$diskNeeded = $MODEL_SIZE_GB + 5
+if ($availGB -lt $diskNeeded) {
+    Warn "Disk: ${availGB}GB available - need ~${MODEL_SIZE_GB}GB for $QUANT model download."
     if (-not (Ask-YN "  Continue anyway? [y/N]" "N")) { exit 1 }
 } else {
     Ok "Disk: ${availGB}GB available"
@@ -242,10 +272,11 @@ Ok "Ollama environment set (KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
 Step "Pulling base model ($BASE_MODEL)"
 
 $modelList = & ollama list 2>&1
-if ($modelList -match "gemma4.*26b-a4b-it-q8_0") {
+$modelTag = $BASE_MODEL -replace '.*:', ''
+if ($modelList -match "gemma4.*$([regex]::Escape($modelTag))") {
     Ok "Base model already available."
 } else {
-    Write-Host "  Downloading ~28GB model. This may take a while..."
+    Write-Host "  Downloading $MODEL_SIZE_LABEL model ($QUANT). This may take a while..."
     Write-Host "  (Download is resumable - safe to interrupt and re-run)"
     & ollama pull $BASE_MODEL
     if ($LASTEXITCODE -ne 0) { Fail "Failed to pull $BASE_MODEL" }
@@ -275,23 +306,35 @@ if ($modelList -match "nomic-embed-text") {
 # ============================================================================
 Step "Creating optimized model ($CUSTOM_MODEL)"
 
+# The Modelfile uses q8_0 as its FROM line. If we're using q4_K_M, generate
+# a modified Modelfile on-the-fly with the correct base model.
+$modelfile = Join-Path $ENGINE_DIR "Modelfile"
+if (-not (Test-Path $modelfile)) {
+    Fail "Modelfile not found at $modelfile"
+}
+
+$effectiveModelfile = $modelfile
+if ($QUANT -ne "q8_0") {
+    $tempModelfile = Join-Path $env:TEMP "pre-Modelfile-$QUANT"
+    $content = Get-Content $modelfile -Raw
+    $content = $content -replace 'FROM gemma4:26b-a4b-it-q8_0', "FROM $BASE_MODEL"
+    Set-Content -Path $tempModelfile -Value $content -NoNewline
+    $effectiveModelfile = $tempModelfile
+    Ok "Using modified Modelfile with $QUANT base"
+}
+
 $modelList = & ollama list 2>&1
 if ($modelList -match $CUSTOM_MODEL) {
     Ok "Custom model already exists."
     if (Ask-YN "  Recreate from Modelfile? [y/N]" "N") {
-        $modelfile = Join-Path $ENGINE_DIR "Modelfile"
-        & ollama create $CUSTOM_MODEL -f $modelfile
+        & ollama create $CUSTOM_MODEL -f $effectiveModelfile
         if ($LASTEXITCODE -ne 0) { Fail "Failed to create $CUSTOM_MODEL" }
         Ok "Custom model recreated."
     }
 } else {
-    $modelfile = Join-Path $ENGINE_DIR "Modelfile"
-    if (-not (Test-Path $modelfile)) {
-        Fail "Modelfile not found at $modelfile"
-    }
-    & ollama create $CUSTOM_MODEL -f $modelfile
+    & ollama create $CUSTOM_MODEL -f $effectiveModelfile
     if ($LASTEXITCODE -ne 0) { Fail "Failed to create $CUSTOM_MODEL" }
-    Ok "Custom model created (dynamic context, optimized batch size)."
+    Ok "Custom model created ($QUANT, dynamic context, optimized batch size)."
 }
 
 # ============================================================================
@@ -512,7 +555,7 @@ Write-Host ""
 Write-Host "  Configuration:" -ForegroundColor Cyan
 Write-Host "    Context window: $CTX_HUMAN ($OPTIMAL_CTX tokens)"
 Write-Host "    Data directory: $PRE_DIR"
-Write-Host "    Model: $CUSTOM_MODEL (Gemma 4 26B q8_0)"
+Write-Host "    Model: $CUSTOM_MODEL (Gemma 4 26B $QUANT)"
 if ($gpuName) {
     Write-Host "    GPU: $gpuName"
 }

@@ -6,7 +6,7 @@ PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a
 
 PRE has two interfaces: a **CLI** (macOS-only, Objective-C) optimized for Apple Silicon, and a **Web GUI** (Node.js) that runs on both **macOS and Windows**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
 
-The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU** with 32+ GB system RAM.
+The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU** with 16+ GB system RAM (32+ GB recommended for q8_0 quantization).
 
 ---
 
@@ -118,7 +118,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 powershell -File web\pre-server.ps1
 ```
 
-The Windows installer checks system requirements (Windows 10+, NVIDIA GPU, 32+ GB RAM), installs Ollama and Node.js via `winget` if needed, pulls the model, creates data directories, auto-sizes the context window, and optionally enables auto-start at login. Pass `-Yes` for non-interactive mode. The Web GUI runs at `http://localhost:7749`.
+The Windows installer checks system requirements (Windows 10+, NVIDIA GPU, 16+ GB RAM), installs Ollama and Node.js via `winget` if needed, pulls the model, creates data directories, auto-sizes the context window, and optionally enables auto-start at login. Systems with 32+ GB RAM use the q8_0 quantization (near-lossless); 16-31 GB systems automatically use q4_K_M (smaller, still good quality). Pass `-Yes` for non-interactive mode. The Web GUI runs at `http://localhost:7749`.
 
 PRE detects your project, loads memories, and drops you into an interactive prompt:
 
@@ -236,8 +236,8 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 |-----------|----------|
 | **Windows** | 10 or 11 |
 | **GPU** | NVIDIA (for Ollama GPU inference) |
-| **RAM** | 32 GB minimum, 64+ GB recommended |
-| **Disk** | ~28 GB for model |
+| **RAM** | 16 GB minimum (q4_K_M), 32+ GB for q8_0, 64+ GB recommended |
+| **Disk** | ~15 GB (q4_K_M) or ~28 GB (q8_0) for model |
 | **Ollama** | [ollama.ai](https://ollama.ai) or installed via `winget` by the installer |
 | **Node.js 18+** | Installed via `winget` by the installer |
 
