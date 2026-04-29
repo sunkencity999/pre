@@ -284,14 +284,17 @@ make install
 ```powershell
 git clone https://github.com/sunkencity999/pre.git
 cd pre
+```
+
+**Easiest:** Double-click `install.cmd` in the `pre` folder. This handles execution policy automatically.
+
+**From a terminal:**
+```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1 -Yes   # Non-interactive
 ```
 
 The installer checks system requirements, installs Ollama and Node.js via `winget`, pulls the model, creates `~/.pre/` directories, auto-sizes the context window based on RAM, configures Ollama environment variables, and optionally enables auto-start at login.
-
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1 -Yes   # Non-interactive
-```
 
 > **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) and Telegram bot are Objective-C applications that require macOS.
 
@@ -1395,6 +1398,7 @@ pre/
 ├── README.md               # This file
 ├── install.sh              # macOS automated installer
 ├── install.ps1             # Windows automated installer (PowerShell)
+├── install.cmd             # Windows double-click launcher for install.ps1
 ├── system.md               # Model system prompt reference
 ├── benchmark.sh            # Performance benchmarking tool
 ├── engine/

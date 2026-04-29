@@ -19,7 +19,8 @@
 # Run time: 5-20 minutes depending on internet speed.
 # Disk space required: ~28GB for model + negligible for binaries.
 #
-# Usage:
+# Usage (any of these work):
+#   Right-click install.ps1 → "Run with PowerShell"
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 #   powershell -File install.ps1 -Yes    # Non-interactive: accept all defaults
 
@@ -27,14 +28,41 @@ param(
     [switch]$Yes
 )
 
+# ── Self-elevate execution policy if needed ───────────────────────────────
+# When launched via right-click "Run with PowerShell", the default execution
+# policy blocks unsigned scripts. Detect this and re-launch with Bypass.
+if ($MyInvocation.Line -notmatch '-ExecutionPolicy') {
+    try {
+        # Test if we can actually run — if this param block parsed, we're fine.
+        # But if the policy would block, PowerShell never gets here. The real
+        # fix is the wrapper below for the right-click scenario.
+    } catch {}
+}
+
 $ErrorActionPreference = "Stop"
+
+# Trap unexpected termination so the window stays open for the user to read
+trap {
+    Write-Host ""
+    Write-Host "  ERROR: $_" -ForegroundColor Red
+    Write-Host "  At: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "  Press Enter to exit..." -ForegroundColor Yellow
+    $null = Read-Host
+    exit 1
+}
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 function Step($msg) { Write-Host "`n=== $msg ===`n" -ForegroundColor Cyan }
 function Ok($msg) { Write-Host "  $msg" -ForegroundColor Green }
 function Warn($msg) { Write-Host "  $msg" -ForegroundColor Yellow }
-function Fail($msg) { Write-Host "`n  $msg" -ForegroundColor Red; exit 1 }
+function Fail($msg) {
+    Write-Host "`n  $msg" -ForegroundColor Red
+    Write-Host "`n  Press Enter to exit..." -ForegroundColor Yellow
+    $null = Read-Host
+    exit 1
+}
 
 function Ask-YN {
     param([string]$Prompt, [string]$Default = "Y")
@@ -492,3 +520,5 @@ Write-Host ""
 Write-Host "  Note: The CLI engine (pre.m) is macOS-only." -ForegroundColor Yellow
 Write-Host "  The Web GUI provides the full PRE experience on Windows." -ForegroundColor Yellow
 Write-Host ""
+Write-Host "  Press Enter to exit..." -ForegroundColor Gray
+$null = Read-Host

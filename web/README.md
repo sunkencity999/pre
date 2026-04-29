@@ -41,6 +41,9 @@ The `pre-launch` command also starts the web GUI automatically in the background
 
 ### Windows
 
+**Easiest:** Double-click `install.cmd` in the repo root. This handles execution policy automatically.
+
+**From a terminal:**
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1       # Interactive
 powershell -ExecutionPolicy Bypass -File install.ps1 -Yes  # Non-interactive
