@@ -292,6 +292,7 @@ async function executeTool(name, args, cwd, opts) {
       if (args?.app) computerTool.setTargetApp(args.app);
       return systemTool.windowFocus(args);
     case 'applescript': return systemTool.applescript(args);
+    case 'powershell_script': return systemTool.powershellScript(args);
 
     // Artifacts
     case 'artifact': return artifactTool.createArtifact(args);

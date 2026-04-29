@@ -1,7 +1,8 @@
 // PRE Web GUI — Web tools (web_fetch, web_search)
-// Mirrors the CLI's implementation using child_process for curl
+// Uses Node.js native https — no curl dependency, fully cross-platform.
 
-const { execSync } = require('child_process');
+const https = require('https');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { CONNECTIONS_FILE, ARTIFACTS_DIR } = require('../constants');
@@ -22,6 +23,35 @@ function getConnectionKey(name) {
 }
 
 /**
+ * Perform an HTTP(S) GET request using Node.js native modules.
+ * Follows redirects (up to 5), returns { data, headers } or throws.
+ */
+function httpGet(url, headers = {}, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { headers, timeout: 15000 }, (res) => {
+      // Follow redirects
+      if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        if (maxRedirects <= 0) return reject(new Error('Too many redirects'));
+        let loc = res.headers.location;
+        if (loc.startsWith('/')) {
+          const u = new URL(url);
+          loc = `${u.protocol}//${u.host}${loc}`;
+        }
+        res.resume();
+        return resolve(httpGet(loc, headers, maxRedirects - 1));
+      }
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ data: Buffer.concat(chunks), headers: res.headers, statusCode: res.statusCode }));
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+  });
+}
+
+/**
  * Check if a URL points to an image based on extension or explicit save_image flag.
  */
 function isImageUrl(url) {
@@ -29,26 +59,23 @@ function isImageUrl(url) {
   return imageExts.test(url);
 }
 
-function webFetch(args) {
+async function webFetch(args) {
   const url = args.url;
   if (!url) return 'Error: no url provided';
 
-  // Validate URL
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return 'Error: URL must start with http:// or https://';
   }
-  // Reject command injection characters
-  if (/[`$;']/.test(url)) {
-    return 'Error: URL contains invalid characters';
-  }
 
   try {
+    const headers = {};
+
     // Add GitHub auth header if applicable
-    let authHeader = '';
     if (url.includes('github.com') || url.includes('api.github.com') || url.includes('raw.githubusercontent.com')) {
       const ghKey = getConnectionKey('github');
       if (ghKey) {
-        authHeader = `-H 'Authorization: token ${ghKey}' -H 'Accept: application/vnd.github+json' `;
+        headers['Authorization'] = `token ${ghKey}`;
+        headers['Accept'] = 'application/vnd.github+json';
       }
     }
 
@@ -59,20 +86,21 @@ function webFetch(args) {
       const ext = (url.match(/\.(png|jpg|jpeg|gif|webp|svg)/) || [null, 'png'])[1];
       const fname = `web-${Date.now()}.${ext}`;
       const outPath = path.join(downloadsDir, fname);
-      execSync(`curl -sL --max-time 15 ${authHeader}-o '${outPath}' '${url}'`, { timeout: 20000 });
-      const stat = fs.statSync(outPath);
-      if (stat.size < 100) {
+
+      const { data } = await httpGet(url, headers);
+      fs.writeFileSync(outPath, data);
+      const size = data.length;
+      if (size < 100) {
         fs.unlinkSync(outPath);
-        return `Error: downloaded file too small (${stat.size} bytes), likely not a valid image`;
+        return `Error: downloaded file too small (${size} bytes), likely not a valid image`;
       }
-      const sizeFmt = stat.size < 1024 ? `${stat.size}B` : `${(stat.size / 1024).toFixed(0)}KB`;
+      const sizeFmt = size < 1024 ? `${size}B` : `${(size / 1024).toFixed(0)}KB`;
       return `Image downloaded and saved locally.\nPath: /artifacts/downloads/${fname}\nSize: ${sizeFmt}\nUse this path in HTML artifacts: <img src="/artifacts/downloads/${fname}">`;
     }
 
     // Fetch HTML and convert to readable text
-    const rawHtml = execSync(`curl -sL --max-time 15 ${authHeader}'${url}'`, {
-      encoding: 'utf-8', maxBuffer: 256 * 1024, timeout: 20000,
-    }).trim();
+    const { data } = await httpGet(url, headers);
+    const rawHtml = data.toString('utf-8').trim();
     if (!rawHtml) return `Error: no content fetched from ${url}`;
     const output = htmlToText(rawHtml);
     return output || rawHtml.slice(0, 50000);
@@ -81,7 +109,7 @@ function webFetch(args) {
   }
 }
 
-function webSearch(args) {
+async function webSearch(args) {
   const query = args.query;
   if (!query) return 'Error: no query provided';
 
@@ -95,15 +123,18 @@ function webSearch(args) {
   return duckDuckGoSearch(query, count);
 }
 
-function braveSearch(query, count, apiKey) {
-  const encoded = query.replace(/ /g, '+').replace(/[`$;']/g, '').replace(/&/g, '%26');
+async function braveSearch(query, count, apiKey) {
+  const encoded = encodeURIComponent(query);
   try {
-    const cmd = `curl -s --max-time 10 -H 'Accept: application/json' -H 'X-Subscription-Token: ${apiKey}' 'https://api.search.brave.com/res/v1/web/search?q=${encoded}&count=${count}' 2>/dev/null`;
-    const raw = execSync(cmd, { encoding: 'utf-8', maxBuffer: 128 * 1024, timeout: 15000 });
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encoded}&count=${count}`;
+    const { data } = await httpGet(url, {
+      'Accept': 'application/json',
+      'X-Subscription-Token': apiKey,
+    });
 
     try {
-      const data = JSON.parse(raw);
-      const results = data.web?.results || [];
+      const json = JSON.parse(data.toString('utf-8'));
+      const results = json.web?.results || [];
       if (results.length === 0) return `No search results found for: ${query}`;
 
       let output = `Search results for: ${query}\n\n`;
@@ -115,19 +146,21 @@ function braveSearch(query, count, apiKey) {
       }
       return output;
     } catch {
-      return raw.slice(0, 8000);
+      return data.toString('utf-8').slice(0, 8000);
     }
   } catch (err) {
     return `Error: search failed: ${err.message}`;
   }
 }
 
-function duckDuckGoSearch(query, count) {
-  // DuckDuckGo HTML search — no API key needed
+async function duckDuckGoSearch(query, count) {
   const encoded = encodeURIComponent(query);
   try {
-    const cmd = `curl -sL --max-time 15 -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' 'https://html.duckduckgo.com/html/?q=${encoded}' 2>/dev/null`;
-    const html = execSync(cmd, { encoding: 'utf-8', maxBuffer: 512 * 1024, timeout: 20000 });
+    const url = `https://html.duckduckgo.com/html/?q=${encoded}`;
+    const { data } = await httpGet(url, {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    });
+    const html = data.toString('utf-8');
 
     // Parse results from DuckDuckGo HTML response
     const results = [];
@@ -138,24 +171,21 @@ function duckDuckGoSearch(query, count) {
 
     for (const block of resultBlocks) {
       if (results.length >= count) break;
-      // Extract URL and title from the result link
       const linkMatch = block.match(/<a class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
-      // Extract snippet
       const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|td)>/);
 
       if (linkMatch) {
-        let url = linkMatch[1];
-        // DuckDuckGo wraps URLs in a redirect — extract the actual URL
-        const uddgMatch = url.match(/uddg=([^&]+)/);
-        if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
+        let resultUrl = linkMatch[1];
+        const uddgMatch = resultUrl.match(/uddg=([^&]+)/);
+        if (uddgMatch) resultUrl = decodeURIComponent(uddgMatch[1]);
 
         const title = linkMatch[2].replace(/<[^>]+>/g, '').trim();
         const snippet = snippetMatch
           ? snippetMatch[1].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim()
           : '';
 
-        if (url && title) {
-          results.push({ title, url, snippet });
+        if (resultUrl && title) {
+          results.push({ title, url: resultUrl, snippet });
         }
       }
     }
@@ -167,10 +197,10 @@ function duckDuckGoSearch(query, count) {
         if (results.length >= count) break;
         const m = link.match(/href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/);
         if (m) {
-          let url = m[1];
-          const uddgMatch = url.match(/uddg=([^&]+)/);
-          if (uddgMatch) url = decodeURIComponent(uddgMatch[1]);
-          results.push({ title: m[2].replace(/<[^>]+>/g, '').trim(), url, snippet: '' });
+          let resultUrl = m[1];
+          const uddgMatch = resultUrl.match(/uddg=([^&]+)/);
+          if (uddgMatch) resultUrl = decodeURIComponent(uddgMatch[1]);
+          results.push({ title: m[2].replace(/<[^>]+>/g, '').trim(), url: resultUrl, snippet: '' });
         }
       }
     }

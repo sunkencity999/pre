@@ -82,7 +82,8 @@ function checkAvailability() {
       const cmdPath = require('../platform').whichCmd(config.command);
       let version = '';
       try {
-        version = execSync(`${config.command} --version 2>/dev/null`, { encoding: 'utf-8' }).trim().split('\n')[0];
+        const suppress = process.platform === 'win32' ? '2>NUL' : '2>/dev/null';
+        version = execSync(`${config.command} --version ${suppress}`, { encoding: 'utf-8' }).trim().split('\n')[0];
       } catch {}
       result[key] = {
         available: true,

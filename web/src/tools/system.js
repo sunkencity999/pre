@@ -139,7 +139,7 @@ function windowFocus(args) {
 }
 
 function applescript(args) {
-  if (platform.IS_WIN) return 'AppleScript is not available on Windows. Use PowerShell or bash instead.';
+  if (platform.IS_WIN) return 'AppleScript is not available on Windows. Use powershell_script instead.';
   const script = args?.script;
   if (!script) return 'Error: no script provided';
   try {
@@ -151,9 +151,22 @@ function applescript(args) {
   }
 }
 
+function powershellScript(args) {
+  if (!platform.IS_WIN) return 'PowerShell script is not available on this platform. Use applescript or bash instead.';
+  const script = args?.script;
+  if (!script) return 'Error: no script provided';
+  try {
+    return execSync(`powershell.exe -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf-8', timeout: 30000, maxBuffer: 64 * 1024,
+    }).trim() || 'Script executed';
+  } catch (err) {
+    return `Error: ${(err.stderr || err.message).trim()}`;
+  }
+}
+
 module.exports = {
   systemInfo, processList, processKill, hardwareInfo, diskUsage,
   netInfo, netConnections, serviceStatus, displayInfo,
   clipboardRead, clipboardWrite, openApp, notify, screenshot,
-  windowList, windowFocus, applescript,
+  windowList, windowFocus, applescript, powershellScript,
 };

@@ -63,7 +63,7 @@ function buildToolDefs() {
       target: { type: 'string', description: 'Path, URL, or app name to open' },
     }, ['target']),
 
-    tool('notify', 'Show a macOS notification', {
+    tool('notify', 'Show a desktop notification', {
       title: { type: 'string', description: 'Notification title' },
       message: { type: 'string', description: 'Notification message' },
     }, ['title', 'message']),
@@ -103,9 +103,14 @@ function buildToolDefs() {
       path: { type: 'string', description: 'Path to check (default: /)' },
     }),
     tool('hardware_info', 'Get hardware details (CPU, GPU, memory)', {}),
-    tool('applescript', 'Run an AppleScript', {
+    // Platform-specific scripting
+    ...(IS_MAC ? [tool('applescript', 'Run an AppleScript', {
       script: { type: 'string', description: 'AppleScript code to execute' },
-    }, ['script']),
+    }, ['script'])] : []),
+
+    ...(IS_WIN ? [tool('powershell_script', 'Run a PowerShell script', {
+      script: { type: 'string', description: 'PowerShell code to execute' },
+    }, ['script'])] : []),
 
     tool('document', 'Create a downloadable document file. Supports txt, xml, docx, xlsx, and pdf formats. For xlsx with structured data, pass a sheets array with {name, headers, rows}.', {
       title: { type: 'string', description: 'Document title / filename' },
