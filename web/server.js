@@ -1537,9 +1537,9 @@ server.listen(PORT, async () => {
   console.log(`  MCP server: HTTP at /mcp | stdio via mcp-stdio.js`);
 
   // Initialize Telegram background receiver (incoming message polling)
-  telegramReceiver.init(
-    async (job) => executeCronJob(job, { broadcastWS })
-  ).then(tg => {
+  // Telegram receiver now maintains its own persistent sessions per chat
+  // and calls runToolLoop directly — no longer routes through executeCronJob.
+  telegramReceiver.init(broadcastWS).then(tg => {
     if (tg.active) {
       console.log(`  Telegram: receiver active (@${tg.username})`);
     }

@@ -1,18 +1,25 @@
 // PRE Web GUI — Telegram Background Receiver
-// Long-polls Telegram's getUpdates API for incoming messages, routes them
-// through the cron-runner execution pipeline, and sends responses back.
-// Initialized from server.js alongside triggers and cron.
+// Long-polls Telegram's getUpdates API for incoming messages, runs them
+// through the tool loop with persistent per-chat sessions, and sends
+// responses back. Initialized from server.js alongside triggers and cron.
 
 const https = require('https');
 const fs = require('fs');
 const { CONNECTIONS_FILE } = require('./constants');
+const { createSession, appendMessage, getSessionMessages, renameSession,
+        ensureProject, moveSessionToProject } = require('./sessions');
+const { runToolLoop } = require('./tools');
 
 // Polling state
 let polling = false;
 let pollTimeout = null;
 let lastOffset = 0;
-let executeFn = null;
 let botUsername = null;
+let broadcastWS = null;
+
+// Per-chat session map: chatId → sessionId
+// Persists conversation context across messages within the same chat.
+const chatSessions = new Map();
 
 // Telegram long-poll timeout (seconds) — Telegram holds the connection open
 const LONG_POLL_TIMEOUT = 30;
@@ -22,6 +29,9 @@ const POLL_INTERVAL = 1000;
 
 // Max message age to process (5 minutes) — skip stale messages from before boot
 const MAX_MESSAGE_AGE_S = 300;
+
+// Max execution time per message (10 minutes)
+const MESSAGE_TIMEOUT_MS = 10 * 60 * 1000;
 
 function loadConnections() {
   try {
@@ -136,8 +146,47 @@ async function sendReply(token, chatId, text) {
 }
 
 /**
+ * Get or create a persistent session for a Telegram chat.
+ * Reuses the same session across messages so the model retains context.
+ */
+function getOrCreateSession(chatId, from) {
+  const existing = chatSessions.get(chatId);
+  if (existing) return existing;
+
+  // Create a new session under the "telegram" project
+  const sessionId = createSession('telegram', `chat-${chatId}`, false);
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  renameSession(sessionId, `Telegram: ${from} — ${dateStr}`);
+  ensureProject('telegram', 'Telegram');
+  moveSessionToProject(sessionId, 'telegram');
+
+  chatSessions.set(chatId, sessionId);
+  console.log(`[telegram] Created session ${sessionId} for chat ${chatId}`);
+  return sessionId;
+}
+
+/**
+ * Start a fresh session for a chat (e.g. when user sends /new).
+ */
+function resetSession(chatId, from) {
+  // Force a new session by appending timestamp
+  const ts = Date.now().toString(36);
+  const sessionId = createSession('telegram', `chat-${chatId}-${ts}`, false);
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  renameSession(sessionId, `Telegram: ${from} — ${dateStr}`);
+  ensureProject('telegram', 'Telegram');
+  moveSessionToProject(sessionId, 'telegram');
+
+  chatSessions.set(chatId, sessionId);
+  console.log(`[telegram] Reset session for chat ${chatId} → ${sessionId}`);
+  return sessionId;
+}
+
+/**
  * Process a single incoming Telegram message.
- * Creates a session, runs the tool loop, sends the response back.
+ * Maintains persistent per-chat sessions for conversation context.
  */
 async function processMessage(token, message) {
   const chatId = message.chat.id;
@@ -153,29 +202,92 @@ async function processMessage(token, message) {
 
   console.log(`[telegram] Message from ${from} (${chatId}): ${text.slice(0, 80)}${text.length > 80 ? '...' : ''}`);
 
-  // Send typing indicator while processing
+  // Handle bot commands
+  const cmd = text.trim().toLowerCase();
+  if (cmd === '/new' || cmd === '/start') {
+    resetSession(chatId, from);
+    if (cmd === '/start') {
+      await sendReply(token, chatId, 'Welcome to PRE! Send any message to start a conversation. Use /new for a fresh session.');
+    } else {
+      await sendReply(token, chatId, 'Started a new conversation. Previous context cleared.');
+    }
+    return;
+  }
+  if (cmd === '/status') {
+    const sessionId = chatSessions.get(chatId);
+    const msgCount = sessionId ? getSessionMessages(sessionId).length : 0;
+    await sendReply(token, chatId, `PRE is running.\nSession: ${sessionId || 'none'}\nMessages in context: ${msgCount}`);
+    return;
+  }
+
+  // Get or create persistent session for this chat
+  const sessionId = getOrCreateSession(chatId, from);
+
+  // Append user message to session history
+  appendMessage(sessionId, { role: 'user', content: text });
+
+  // Send typing indicator and refresh every 4 seconds until processing completes.
+  // Telegram's typing indicator expires after ~5 seconds, so 4-second refresh
+  // keeps it visible for the entire duration (matches the Obj-C engine behavior).
   botRequest(token, 'sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
+  const typingInterval = setInterval(() => {
+    botRequest(token, 'sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {});
+  }, 4000);
+
+  // Collect response tokens
+  const collectedTokens = [];
+  let finalResponse = '';
+
+  // Abort controller with timeout
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), MESSAGE_TIMEOUT_MS);
 
   try {
-    // Run through the same execution pipeline as cron/triggers
-    const result = await executeFn({
-      id: `tg-${chatId}`,
-      description: `Telegram: ${from}`,
-      prompt: text,
+    await runToolLoop({
+      sessionId,
       cwd: process.env.HOME || '/tmp',
-      fromTelegram: true,
+      signal: abortController.signal,
+      userMessage: text,
+      needsTitle: false,
+      send: (event) => {
+        if (event.type === 'token' && event.content) {
+          collectedTokens.push(event.content);
+        }
+        if (event.type === 'done') {
+          finalResponse = collectedTokens.join('');
+        }
+        // Forward to GUI if connected
+        if (broadcastWS) {
+          broadcastWS({ ...event, telegramChatId: chatId, telegramSessionId: sessionId });
+        }
+      },
+      onConfirmRequest: async () => {
+        // Auto-deny destructive tools in Telegram (no interactive confirmation)
+        console.log(`[telegram] Auto-denied confirmation for chat ${chatId} — no interactive confirmation via Telegram`);
+        return false;
+      },
     });
-
-    if (result && result.response) {
-      await sendReply(token, chatId, result.response);
-    } else {
-      await sendReply(token, chatId, '(No response generated)');
-    }
   } catch (err) {
-    console.error(`[telegram] Processing error: ${err.message}`);
-    try {
-      await sendReply(token, chatId, `Error processing your message: ${err.message}`);
-    } catch {}
+    const partial = collectedTokens.join('');
+    if (abortController.signal.aborted && partial) {
+      finalResponse = partial + '\n\n*(Response timed out — partial results shown)*';
+    } else {
+      finalResponse = partial || `Error: ${err.message}`;
+      console.error(`[telegram] Processing error for chat ${chatId}: ${err.message}`);
+    }
+  } finally {
+    clearTimeout(timeout);
+    clearInterval(typingInterval);
+  }
+
+  if (!finalResponse) {
+    finalResponse = collectedTokens.join('') || '(No response generated)';
+  }
+
+  try {
+    await sendReply(token, chatId, finalResponse);
+  } catch (err) {
+    console.error(`[telegram] Failed to send reply to ${chatId}: ${err.message}`);
   }
 }
 
@@ -252,12 +364,11 @@ async function pollLoop() {
  * Initialize the Telegram receiver.
  * Call once from server.js after the execution pipeline is ready.
  *
- * @param {Function} execute — async (job) => { sessionId, response }
- * @param {Function} broadcast — WebSocket broadcast function
+ * @param {Function} broadcast - Optional: WebSocket broadcast function
  * @returns {{ active: boolean, username: string|null }}
  */
-async function init(execute) {
-  executeFn = execute;
+async function init(broadcast) {
+  broadcastWS = broadcast || null;
 
   const token = getBotToken();
   if (!token) {
