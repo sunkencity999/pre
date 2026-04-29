@@ -385,14 +385,14 @@ const MODULES = [
       {
         icon: '\u{1F44B}',
         title: 'Say Hello',
-        text: 'PRE is a conversational AI running entirely on your Mac. Type anything to start.',
+        text: 'PRE is a conversational AI running entirely on your machine. Type anything to start.',
         prompts: ['What can you help me with?', 'Summarize what\'s in my Downloads folder.']
       },
       {
         icon: '\u{1F50D}',
         title: 'Ask About Your System',
         text: 'PRE can inspect your system, search the web, and answer questions — all locally.',
-        prompts: ['What\'s running on my Mac right now? Show me the top 10 processes by CPU.', 'What day of the week was July 4, 1776?']
+        prompts: ['What\'s running on my computer right now? Show me the top 10 processes by CPU.', 'What day of the week was July 4, 1776?']
       }
     ],
     challenge: 'Ask PRE something about your own Mac — disk space, running processes, or what\'s in a folder. Did it use a tool to answer?'
@@ -417,25 +417,25 @@ const MODULES = [
         prompts: ['Create a shell script at ~/Desktop/cleanup.sh that lists files larger than 100MB.', 'Find every TODO comment in ~/projects and create a summary report.']
       }
     ],
-    challenge: 'Ask PRE to find a specific type of file on your Mac and read its contents. Then ask it to create a new file based on what it found.'
+    challenge: 'Ask PRE to find a specific type of file on your machine and read its contents. Then ask it to create a new file based on what it found.'
   },
   {
     id: 'native-apps',
-    title: 'Native macOS Apps',
-    desc: 'Control Mail, Calendar, Contacts, Reminders, Notes, and Spotlight',
+    title: 'Native Apps',
+    desc: 'Control Mail, Calendar, Contacts, Reminders, Notes, and file search',
     xp: 20,
-    badge: 'Mac Native',
+    badge: 'Native Apps',
     lessons: [
       {
         icon: '\u{2709}\u{FE0F}',
         title: 'Email & Calendar',
-        text: 'PRE controls your Mac\'s native apps directly. No API keys, no OAuth — it just works with whatever accounts you have configured.',
+        text: 'PRE controls your native apps directly. No API keys, no OAuth — it works with whatever accounts you have configured.',
         prompts: ['What\'s on my calendar today?', 'Check my email for anything important in the last 3 days.']
       },
       {
         icon: '\u{2705}',
         title: 'Reminders & Notes',
-        text: 'Create reminders with due dates, search your notes, and find anything with Spotlight.',
+        text: 'Create reminders with due dates, search your notes, and find files across your system.',
         prompts: ['Remind me to review the Q3 report on Friday with high priority.', 'Search my notes for anything about API migration.']
       }
     ],
@@ -457,8 +457,8 @@ const MODULES = [
       {
         icon: '\u{2328}\u{FE0F}',
         title: 'Keyboard & Multi-Step',
-        text: 'PRE can press key combos (Cmd+C, Cmd+Space) and chain multiple steps together.',
-        prompts: ['Open TextEdit, create a new document, and type "Meeting notes for today".', 'Press Cmd+Space to open Spotlight, type "Activity Monitor", and launch it.']
+        text: 'PRE can press key combos and chain multiple steps together.',
+        prompts: ['Open a text editor, create a new document, and type "Meeting notes for today".', 'Open the search bar, type "task manager", and launch it.']
       }
     ],
     challenge: 'Ask PRE to open an app you use daily and perform a real task in it — like looking up information, filling in a field, or navigating a menu. Computer Use works with ANY app!'

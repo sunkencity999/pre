@@ -988,6 +988,7 @@ app.get('/api/status', async (_req, res) => {
     ollama: ollamaUp,
     cwd: CWD,
     model_ctx: MODEL_CTX,
+    platform: IS_WIN ? 'windows' : IS_MAC ? 'macos' : 'linux',
   });
 });
 

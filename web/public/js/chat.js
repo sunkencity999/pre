@@ -661,7 +661,7 @@ const Chat = (() => {
         <div class="welcome">
           <div class="welcome-logo">PRE</div>
           <p class="welcome-text">Personal Reasoning Engine</p>
-          <p class="welcome-sub">Local AI assistant running on Apple Silicon. All data stays on this machine.</p>
+          <p class="welcome-sub">Local AI assistant. All data stays on this machine.</p>
           <div class="welcome-tutorial" id="welcome-tutorial"></div>
         </div>`;
       // Re-render tutorial cards if Tutorial module is loaded
