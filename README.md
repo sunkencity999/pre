@@ -300,6 +300,11 @@ The installer checks system requirements, installs Ollama and Node.js via `winge
 
 ### Launch (macOS)
 
+**Easiest:** Double-click `Launch PRE.command` in the repo root. Starts Ollama, launches the server, and opens your browser.
+
+**Menu bar app:** `PRE.app` (built via `make menubar`) sits in the macOS menu bar with a status indicator, start/stop/restart controls, and quick browser launch.
+
+**From a terminal:**
 ```bash
 pre-launch                         # From any directory
 pre-launch --dir /path/to/project  # Override working directory
@@ -311,6 +316,11 @@ The launcher checks Ollama, creates `pre-gemma4` if needed, pre-warms the model 
 
 ### Launch (Windows)
 
+**Easiest:** Double-click `Launch PRE.cmd` in the repo root. Starts Ollama, launches the server, and opens your browser.
+
+**System tray:** Double-click `PRE Tray.cmd` for a notification area icon with start/stop/restart controls, status indicator, and quick browser launch. Right-click the tray icon for options.
+
+**From a terminal:**
 ```powershell
 powershell -File web\pre-server.ps1           # Start Web GUI server
 powershell -File web\pre-server.ps1 --status  # Check if running
@@ -912,7 +922,7 @@ web/pre-server.sh --status   # Check if server and model are running
 web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
 ```
 
-**Windows:** A VBScript wrapper in the Startup folder launches `web/pre-server.ps1` hidden at login. It starts Ollama, pre-warms the model, and runs the Node.js server.
+**Windows:** A VBScript wrapper in the Startup folder launches either `web/pre-tray.ps1` (system tray icon with status indicator and controls) or `web/pre-server.ps1` (headless) at login. The installer asks which mode to use. The tray icon sits in the Windows notification area and provides start/stop/restart, status monitoring, and quick browser launch -- mirroring the macOS menu bar app.
 
 ```powershell
 powershell -File web\pre-server.ps1 --status   # Check if running
@@ -1397,8 +1407,12 @@ All PRE data lives in `~/.pre/`:
 pre/
 ├── README.md               # This file
 ├── install.sh              # macOS automated installer
+├── Install PRE.command     # macOS double-click installer (Finder)
 ├── install.ps1             # Windows automated installer (PowerShell)
-├── install.cmd             # Windows double-click launcher for install.ps1
+├── install.cmd             # Windows double-click installer
+├── Launch PRE.command      # macOS double-click launcher (Finder)
+├── Launch PRE.cmd          # Windows double-click launcher
+├── PRE Tray.cmd            # Windows system tray launcher
 ├── system.md               # Model system prompt reference
 ├── benchmark.sh            # Performance benchmarking tool
 ├── engine/
@@ -1413,6 +1427,7 @@ pre/
 │   ├── server.js            # Express + WebSocket + MCP server
 │   ├── pre-server.sh        # macOS headless launcher for LaunchAgent auto-start
 │   ├── pre-server.ps1       # Windows headless launcher for Startup folder auto-start
+│   ├── pre-tray.ps1         # Windows system tray app (notification area icon)
 │   ├── package.json
 │   ├── src/
 │   │   ├── ollama.js        # Ollama NDJSON streaming client

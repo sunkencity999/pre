@@ -470,22 +470,35 @@ Step "Auto-start Setup (optional)"
 
 $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
 $vbsPath = Join-Path $startupDir "PRE-Server.vbs"
-$ps1Path = Join-Path $WEB_DIR "pre-server.ps1"
+$trayScript = Join-Path $WEB_DIR "pre-tray.ps1"
+$serverScript = Join-Path $WEB_DIR "pre-server.ps1"
 
 if (Test-Path $vbsPath) {
     Ok "Auto-start already configured."
 } else {
     Write-Host "  PRE can start automatically when you log in."
-    Write-Host "  (Creates a VBScript in your Startup folder that launches the server hidden)"
+    Write-Host "  Option 1: System tray icon (recommended) - status indicator, start/stop controls"
+    Write-Host "  Option 2: Headless server only - no UI, just the server in background"
     Write-Host ""
     if (Ask-YN "  Enable auto-start? [y/N]" "N") {
+        $useTray = Ask-YN "  Use system tray icon? (recommended) [Y/n]" "Y"
         $webDirWin = $WEB_DIR -replace '/', '\'
-        $ps1PathWin = $ps1Path -replace '/', '\'
-        $vbs = "Set WshShell = CreateObject(`"WScript.Shell`")`r`n"
-        $vbs += "WshShell.CurrentDirectory = `"$webDirWin`"`r`n"
-        $vbs += "WshShell.Run `"powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$ps1PathWin`"`"`", 0, False`r`n"
-        Set-Content -Path $vbsPath -Value $vbs
-        Ok "Auto-start enabled: $vbsPath"
+
+        if ($useTray) {
+            $trayPathWin = $trayScript -replace '/', '\'
+            $vbs = "Set WshShell = CreateObject(`"WScript.Shell`")`r`n"
+            $vbs += "WshShell.CurrentDirectory = `"$webDirWin`"`r`n"
+            $vbs += "WshShell.Run `"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"`"$trayPathWin`"`"`", 0, False`r`n"
+            Set-Content -Path $vbsPath -Value $vbs
+            Ok "Auto-start enabled with system tray: $vbsPath"
+        } else {
+            $serverPathWin = $serverScript -replace '/', '\'
+            $vbs = "Set WshShell = CreateObject(`"WScript.Shell`")`r`n"
+            $vbs += "WshShell.CurrentDirectory = `"$webDirWin`"`r`n"
+            $vbs += "WshShell.Run `"powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"`"$serverPathWin`"`"`", 0, False`r`n"
+            Set-Content -Path $vbsPath -Value $vbs
+            Ok "Auto-start enabled (headless): $vbsPath"
+        }
     } else {
         Write-Host "  Skipped. Enable later via the PRE settings panel."
     }
