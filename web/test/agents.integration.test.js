@@ -9,6 +9,44 @@ jest.mock('../src/mcp', () => ({
   loadConfig: jest.fn().mockReturnValue({ servers: {} }),
 }));
 
+// Mock http so ensureModelReady's raw Ollama calls don't hit the network.
+// This is needed because agents.js uses http.get(/api/ps) and http.request(/api/generate)
+// directly, bypassing the mocked ollama module.
+jest.mock('http', () => {
+  const actual = jest.requireActual('http');
+  return {
+    ...actual,
+    get: jest.fn((url, cb) => {
+      // Simulate /api/ps returning the model as loaded
+      const res = new (require('events').EventEmitter)();
+      res.statusCode = 200;
+      process.nextTick(() => {
+        res.emit('data', JSON.stringify({ models: [{ name: 'pre-gemma4:latest' }] }));
+        res.emit('end');
+      });
+      if (cb) cb(res);
+      const req = new (require('events').EventEmitter)();
+      req.setTimeout = jest.fn();
+      req.destroy = jest.fn();
+      return req;
+    }),
+    request: jest.fn((opts, cb) => {
+      // Simulate /api/generate returning success
+      const res = new (require('events').EventEmitter)();
+      res.statusCode = 200;
+      process.nextTick(() => {
+        res.emit('data', JSON.stringify({ response: 'ok' }));
+        res.emit('end');
+      });
+      if (cb) cb(res);
+      const req = new (require('events').EventEmitter)();
+      req.write = jest.fn();
+      req.end = jest.fn();
+      return req;
+    }),
+  };
+});
+
 const ollama = require('../src/ollama');
 const { spawnAgent, spawnMulti, listAgents } = require('../src/tools/agents');
 
