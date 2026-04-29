@@ -2,7 +2,7 @@
 // Mirrors build_tools_json() from pre.m
 
 const { getActiveConnections, isComfyUIInstalled } = require('./context');
-const { IS_MAC } = require('./platform');
+const { IS_MAC, IS_WIN } = require('./platform');
 const mcp = require('./mcp');
 const { buildCustomToolDefs } = require('./custom-tools');
 
@@ -170,9 +170,12 @@ function buildToolDefs() {
     }, ['action']),
   ];
 
-  // Conditional: macOS native app integrations (AppleScript / EventKit — macOS only)
-  if (IS_MAC) {
-    tools.push(tool('apple_mail', 'Send, read, and search email using the macOS Mail app. Works with any configured email account (iCloud, Gmail, Exchange, Outlook). No API keys needed — uses the native mail client.', {
+  // Conditional: native app integrations (macOS: AppleScript/EventKit, Windows: Outlook COM/local files)
+  if (IS_MAC || IS_WIN) {
+    const mailDesc = IS_WIN
+      ? 'Send, read, and search email using Outlook. Works with any configured email account (Exchange, Gmail, IMAP). No API keys needed — uses the native mail client.'
+      : 'Send, read, and search email using the macOS Mail app. Works with any configured email account (iCloud, Gmail, Exchange, Outlook). No API keys needed — uses the native mail client.';
+    tools.push(tool('apple_mail', mailDesc, {
       action: { type: 'string', description: 'Action: send|draft|search|read|list_recent|list_mailboxes|list_accounts' },
       to: { type: 'string', description: 'Recipient email address' },
       cc: { type: 'string', description: 'CC email address' },
@@ -186,7 +189,10 @@ function buildToolDefs() {
       count: { type: 'integer', description: 'Max results (default: 15)' },
     }, ['action']));
 
-    tools.push(tool('apple_calendar', 'View and create calendar events using the macOS Calendar app. Works with any configured calendar (iCloud, Google, Exchange). No API keys needed.', {
+    const calDesc = IS_WIN
+      ? 'View and create calendar events using Outlook. Works with any configured calendar (Exchange, Google, IMAP). No API keys needed.'
+      : 'View and create calendar events using the macOS Calendar app. Works with any configured calendar (iCloud, Google, Exchange). No API keys needed.';
+    tools.push(tool('apple_calendar', calDesc, {
       action: { type: 'string', description: 'Action: today|week|list_events|create_event|search|list_calendars|delete_event' },
       title: { type: 'string', description: 'Event title (for create_event)' },
       start: { type: 'string', description: 'Start date/time, e.g. "April 15, 2026 10:00:00 AM"' },
@@ -199,7 +205,10 @@ function buildToolDefs() {
       id: { type: 'string', description: 'Event UID (for delete_event)' },
     }, ['action']));
 
-    tools.push(tool('apple_contacts', 'Search and read contacts from the macOS Contacts app. Works with any synced account (iCloud, Google, Exchange). No API keys needed.', {
+    const contactsDesc = IS_WIN
+      ? 'Search and read contacts from Outlook. Works with any synced account (Exchange, Google, IMAP). No API keys needed.'
+      : 'Search and read contacts from the macOS Contacts app. Works with any synced account (iCloud, Google, Exchange). No API keys needed.';
+    tools.push(tool('apple_contacts', contactsDesc, {
       action: { type: 'string', description: 'Action: search|read|list_groups|count' },
       query: { type: 'string', description: 'Search by name or organization' },
       name: { type: 'string', description: 'Contact name to search or read' },
@@ -207,7 +216,10 @@ function buildToolDefs() {
       count: { type: 'integer', description: 'Max search results (default: 20)' },
     }, ['action']));
 
-    tools.push(tool('apple_reminders', 'Create, list, complete, and search reminders using the macOS Reminders app. Works with any configured account (iCloud, Exchange). No API keys needed.', {
+    const remindersDesc = IS_WIN
+      ? 'Create, list, complete, and search tasks using Outlook Tasks. Works with any configured account (Exchange, IMAP). No API keys needed.'
+      : 'Create, list, complete, and search reminders using the macOS Reminders app. Works with any configured account (iCloud, Exchange). No API keys needed.';
+    tools.push(tool('apple_reminders', remindersDesc, {
       action: { type: 'string', description: 'Action: add|list|complete|search|list_lists|delete' },
       title: { type: 'string', description: 'Reminder title (for add/complete)' },
       notes: { type: 'string', description: 'Reminder notes/description' },
@@ -220,7 +232,10 @@ function buildToolDefs() {
       completed: { type: 'boolean', description: 'Show completed reminders too (default: false)' },
     }, ['action']));
 
-    tools.push(tool('apple_notes', 'Search, read, and create notes using the macOS Notes app. Works with any configured account (iCloud, Google, Exchange). No API keys needed.', {
+    const notesDesc = IS_WIN
+      ? 'Search, read, and create notes stored as local markdown files in ~/.pre/notes/. Simple and portable.'
+      : 'Search, read, and create notes using the macOS Notes app. Works with any configured account (iCloud, Google, Exchange). No API keys needed.';
+    tools.push(tool('apple_notes', notesDesc, {
       action: { type: 'string', description: 'Action: search|read|create|list_recent|list_folders' },
       title: { type: 'string', description: 'Note title (for create/read)' },
       body: { type: 'string', description: 'Note body content (for create)' },

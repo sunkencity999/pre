@@ -86,20 +86,20 @@ node server.js          # http://localhost:7749
 - **Auto-generated titles** — sessions are named from the first message
 - **Responsive** — three-panel desktop, hamburger drawer on mobile
 
-## Native macOS Integrations (Zero Config, macOS only)
+## Native App Integrations (Zero Config)
 
-These tools work immediately with no setup — they use the native macOS apps and whatever accounts you've already configured on your Mac. On Windows, these tools are automatically hidden; use the cloud integrations (Gmail, Google Calendar, etc.) instead.
+These tools work immediately with no setup — they use native platform APIs and whatever accounts you've already configured. No OAuth flows, no API keys, no developer console.
 
-| Tool | App | Actions |
-|------|-----|---------|
-| **Mail** | Mail.app | Send, draft, search, read, list recent, list mailboxes, list accounts |
-| **Calendar** | Calendar.app | Today's events, this week, list events by range, create events, search, list calendars, delete events |
-| **Contacts** | Contacts.app | Search by name/org, read full contact details, list groups, count |
-| **Reminders** | Reminders.app | Add, list, complete, search, list lists, delete |
-| **Notes** | Notes.app | Search (title + content), read, create, list recent, list folders |
-| **Spotlight** | mdfind | Full-text search across entire machine, find files by type, file metadata preview |
+| Tool | macOS | Windows | Actions |
+|------|-------|---------|---------|
+| **Mail** | Mail.app (AppleScript) | Outlook COM | Send, draft, search, read, list recent, list mailboxes, list accounts |
+| **Calendar** | Calendar.app (EventKit/Swift) | Outlook COM | Today's events, this week, list events by range, create events, search, list calendars, delete events |
+| **Contacts** | Contacts.app (AppleScript) | Outlook COM | Search by name/org, read full contact details, list groups, count |
+| **Reminders** | Reminders.app (EventKit/Swift) | Outlook Tasks COM | Add, list, complete, search, list lists, delete |
+| **Notes** | Notes.app (AppleScript) | Local markdown (`~/.pre/notes/`) | Search (title + content), read, create, list recent, list folders |
+| **Spotlight** | mdfind | Windows Search | Full-text search across entire machine, find files by type, file metadata preview |
 
-These work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. No OAuth flows, no API keys, no developer console. Just ask PRE to check your calendar or send an email.
+On macOS, these work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. On Windows, mail/calendar/contacts/tasks require Outlook installed; notes use portable local markdown files. Just ask PRE to check your calendar or send an email.
 
 > "What's on my calendar today?"
 
@@ -2110,12 +2110,12 @@ src/
     system.js              17 system tools (info, processes, clipboard, etc.)
     artifact.js            Interactive HTML artifacts
     export.js              Artifact sharing (PDF, PNG, self-contained HTML via Puppeteer)
-    mail.js                macOS Mail.app (AppleScript, zero-config, macOS only)
-    calendar.js            macOS Calendar.app (EventKit via compiled Swift binary, macOS only)
-    contacts.js            macOS Contacts.app (AppleScript, zero-config, macOS only)
+    mail.js                Email (macOS: Mail.app via AppleScript; Windows: Outlook COM)
+    calendar.js            Calendar (macOS: Calendar.app via EventKit/Swift; Windows: Outlook COM)
+    contacts.js            Contacts (macOS: Contacts.app via AppleScript; Windows: Outlook COM)
     spotlight.js           File search (macOS: Spotlight/mdfind; Windows: Windows Search)
-    reminders.js           macOS Reminders.app (EventKit via compiled Swift binary, macOS only)
-    notes.js               macOS Notes.app (AppleScript, zero-config, macOS only)
+    reminders.js           Reminders/Tasks (macOS: Reminders.app via EventKit/Swift; Windows: Outlook Tasks COM)
+    notes.js               Notes (macOS: Notes.app via AppleScript; Windows: local markdown files)
     computer-win32.js      Windows desktop automation helpers (PowerShell + .NET)
     image.js               ComfyUI image generation (SDXL/Juggernaut XL)
     document.js            Document export (txt, xml, docx, xlsx, pdf)

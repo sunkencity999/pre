@@ -1,7 +1,11 @@
-// PRE Web GUI — macOS Notes.app integration
-// Zero-config notes via AppleScript — works with iCloud or any configured account
+// PRE Web GUI — Notes integration (macOS Notes.app + Windows local markdown)
+// macOS: Zero-config notes via AppleScript — works with iCloud or any configured account
+// Windows: Local markdown notes in ~/.pre/notes/ — simple, portable, no COM dependency
 
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const { IS_WIN, IS_MAC } = require('../platform');
 
 function runAS(script, timeout = 30000) {
   try {
@@ -17,6 +21,15 @@ function runAS(script, timeout = 30000) {
   }
 }
 
+// ── Windows: local markdown notes directory ──────────────────────────────────
+const NOTES_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', '.pre', 'notes');
+
+function ensureNotesDir() {
+  if (!fs.existsSync(NOTES_DIR)) {
+    fs.mkdirSync(NOTES_DIR, { recursive: true });
+  }
+}
+
 /**
  * Notes tool dispatcher.
  * @param {Object} args - { action, title, body, folder, query, id, count }
@@ -25,15 +38,31 @@ async function notes(args) {
   const action = args?.action;
   if (!action) return 'Error: action required. Actions: search, read, create, list_recent, list_folders';
 
-  switch (action) {
-    case 'search': return searchNotes(args);
-    case 'read': return readNote(args);
-    case 'create': return createNote(args);
-    case 'list_recent': return listRecent(args);
-    case 'list_folders': return listFolders();
-    default:
-      return `Error: unknown action '${action}'. Available: search, read, create, list_recent, list_folders`;
+  if (IS_WIN) {
+    switch (action) {
+      case 'search': return winSearchNotes(args);
+      case 'read': return winReadNote(args);
+      case 'create': return winCreateNote(args);
+      case 'list_recent': return winListRecent(args);
+      case 'list_folders': return winListFolders();
+      default:
+        return `Error: unknown action '${action}'. Available: search, read, create, list_recent, list_folders`;
+    }
   }
+
+  if (IS_MAC) {
+    switch (action) {
+      case 'search': return searchNotes(args);
+      case 'read': return readNote(args);
+      case 'create': return createNote(args);
+      case 'list_recent': return listRecent(args);
+      case 'list_folders': return listFolders();
+      default:
+        return `Error: unknown action '${action}'. Available: search, read, create, list_recent, list_folders`;
+    }
+  }
+
+  return 'Error: notes tool is only supported on macOS (Notes.app) and Windows (local markdown notes)';
 }
 
 function searchNotes(args) {
@@ -261,6 +290,234 @@ end tell
   } catch (err) {
     return `Error listing folders: ${err.message}`;
   }
+}
+
+// ── Windows local markdown note implementations ─────────────────────────────
+
+/**
+ * Generate a filesystem-safe slug from a title.
+ */
+function slugify(title) {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80) || 'untitled';
+}
+
+/**
+ * Read frontmatter + body from a markdown note file.
+ * Files use a simple format: first line "# Title", optional metadata lines, then body.
+ */
+function parseNoteFile(filePath) {
+  const content = fs.readFileSync(filePath, 'utf-8');
+  const stat = fs.statSync(filePath);
+  const lines = content.split('\n');
+  let title = path.basename(filePath, '.md');
+  let body = content;
+
+  if (lines[0] && lines[0].startsWith('# ')) {
+    title = lines[0].slice(2).trim();
+    body = lines.slice(1).join('\n').trim();
+  }
+
+  return {
+    title,
+    body,
+    id: path.basename(filePath),
+    folder: path.basename(path.dirname(filePath)),
+    created: stat.birthtime,
+    modified: stat.mtime,
+    filePath,
+  };
+}
+
+function winSearchNotes(args) {
+  const query = args.query;
+  const count = Math.min(args.count || 20, 50);
+  if (!query) return 'Error: "query" is required for search';
+
+  ensureNotesDir();
+  const q = query.toLowerCase();
+  const results = [];
+
+  function searchDir(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (results.length >= count) break;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        searchDir(full);
+      } else if (entry.name.endsWith('.md')) {
+        try {
+          const note = parseNoteFile(full);
+          if (note.title.toLowerCase().includes(q) || note.body.toLowerCase().includes(q)) {
+            const dateStr = note.modified.toISOString().slice(0, 10);
+            const preview = note.body.slice(0, 100).replace(/\n/g, ' ');
+            let line = `ID:${note.id} | ${dateStr} | ${note.title}`;
+            if (note.folder !== 'notes') line += ` | Folder: ${note.folder}`;
+            if (preview) line += ` | Preview: ${preview}`;
+            results.push(line);
+          }
+        } catch {}
+      }
+    }
+  }
+
+  searchDir(NOTES_DIR);
+  return results.length > 0 ? results.join('\n') : `No notes found matching: ${query}`;
+}
+
+function winReadNote(args) {
+  const noteId = args.id;
+  const title = args.title || args.query;
+  if (!noteId && !title) return 'Error: "id" or "title" is required';
+
+  ensureNotesDir();
+
+  // Try direct file match by id
+  if (noteId) {
+    const direct = path.join(NOTES_DIR, noteId);
+    if (fs.existsSync(direct)) {
+      const note = parseNoteFile(direct);
+      const created = note.created.toISOString().slice(0, 10);
+      const modified = note.modified.toISOString().slice(0, 10);
+      let info = `Title: ${note.title}\nCreated: ${created}\nModified: ${modified}`;
+      if (note.folder !== 'notes') info += `\nFolder: ${note.folder}`;
+      const bodyPreview = note.body.length > 8000 ? note.body.slice(0, 8000) + '\n\n[...truncated]' : note.body;
+      info += `\n\n${bodyPreview}`;
+      return info;
+    }
+  }
+
+  // Search by title
+  const q = (title || noteId || '').toLowerCase();
+  function findInDir(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const found = findInDir(full);
+        if (found) return found;
+      } else if (entry.name.endsWith('.md')) {
+        try {
+          const note = parseNoteFile(full);
+          if (note.title.toLowerCase().includes(q) || entry.name.toLowerCase().includes(q)) {
+            return note;
+          }
+        } catch {}
+      }
+    }
+    return null;
+  }
+
+  const note = findInDir(NOTES_DIR);
+  if (!note) return 'Note not found';
+
+  const created = note.created.toISOString().slice(0, 10);
+  const modified = note.modified.toISOString().slice(0, 10);
+  let info = `Title: ${note.title}\nCreated: ${created}\nModified: ${modified}`;
+  if (note.folder !== 'notes') info += `\nFolder: ${note.folder}`;
+  const bodyPreview = note.body.length > 8000 ? note.body.slice(0, 8000) + '\n\n[...truncated]' : note.body;
+  info += `\n\n${bodyPreview}`;
+  return info;
+}
+
+function winCreateNote(args) {
+  const title = args.title || 'Untitled';
+  const body = args.body || '';
+  const folder = args.folder || '';
+
+  ensureNotesDir();
+
+  let targetDir = NOTES_DIR;
+  if (folder) {
+    targetDir = path.join(NOTES_DIR, slugify(folder));
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+  }
+
+  const slug = slugify(title);
+  let fileName = `${slug}.md`;
+  let filePath = path.join(targetDir, fileName);
+
+  // Avoid overwriting existing notes
+  let counter = 1;
+  while (fs.existsSync(filePath)) {
+    fileName = `${slug}-${counter}.md`;
+    filePath = path.join(targetDir, fileName);
+    counter++;
+  }
+
+  const content = `# ${title}\n\n${body}`;
+  fs.writeFileSync(filePath, content, 'utf-8');
+
+  return `Note created: ${title}\nID: ${fileName}`;
+}
+
+function winListRecent(args) {
+  const count = Math.min(args.count || 20, 50);
+  const folder = args.folder || '';
+
+  ensureNotesDir();
+
+  let targetDir = NOTES_DIR;
+  if (folder) {
+    const folderPath = path.join(NOTES_DIR, folder);
+    if (fs.existsSync(folderPath)) targetDir = folderPath;
+  }
+
+  const allNotes = [];
+  function collectNotes(dir) {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectNotes(full);
+      } else if (entry.name.endsWith('.md')) {
+        try {
+          allNotes.push(parseNoteFile(full));
+        } catch {}
+      }
+    }
+  }
+
+  collectNotes(targetDir);
+
+  // Sort by modification time descending
+  allNotes.sort((a, b) => b.modified - a.modified);
+
+  const results = allNotes.slice(0, count).map(note => {
+    const dateStr = note.modified.toISOString().slice(0, 10);
+    let line = `ID:${note.id} | ${dateStr} | ${note.title}`;
+    if (note.folder !== 'notes') line += ` | Folder: ${note.folder}`;
+    return line;
+  });
+
+  return results.length > 0 ? results.join('\n') : 'No notes found';
+}
+
+function winListFolders() {
+  ensureNotesDir();
+
+  const results = [];
+
+  // Count notes in root
+  const rootNotes = fs.readdirSync(NOTES_DIR).filter(f => f.endsWith('.md'));
+  results.push(`notes (${rootNotes.length} notes)`);
+
+  // Count notes in subfolders
+  const entries = fs.readdirSync(NOTES_DIR, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const subDir = path.join(NOTES_DIR, entry.name);
+      const subNotes = fs.readdirSync(subDir).filter(f => f.endsWith('.md'));
+      results.push(`${entry.name} (${subNotes.length} notes)`);
+    }
+  }
+
+  return results.length > 0 ? results.join('\n') : 'No note folders found';
 }
 
 module.exports = { notes };

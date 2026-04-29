@@ -1,7 +1,9 @@
-// PRE Web GUI — macOS Calendar.app integration
-// Zero-config calendar via AppleScript — works with iCloud, Google, Exchange, or any configured account
+// PRE Web GUI — Calendar integration (macOS Calendar.app + Windows Outlook COM)
+// macOS: Zero-config calendar via EventKit/AppleScript — works with iCloud, Google, Exchange, or any configured account
+// Windows: Outlook COM automation via PowerShell — works with any account configured in Outlook
 
 const { execSync } = require('child_process');
+const { IS_WIN, IS_MAC } = require('../platform');
 
 function runAS(script, timeout = 30000) {
   try {
@@ -18,6 +20,30 @@ function runAS(script, timeout = 30000) {
 }
 
 /**
+ * Run a PowerShell script and return the result.
+ */
+function runPS(script, timeout = 30000) {
+  try {
+    return execSync('powershell.exe -NoProfile -Command -', {
+      input: `$ErrorActionPreference = 'Stop'\n${script}`,
+      encoding: 'utf-8',
+      timeout,
+      maxBuffer: 256 * 1024,
+    }).trim();
+  } catch (err) {
+    const msg = (err.stderr || err.message || '').trim();
+    throw new Error(msg || 'PowerShell execution failed');
+  }
+}
+
+/**
+ * Escape a string for safe embedding in PowerShell single-quoted strings.
+ */
+function escPS(str) {
+  return (str || '').replace(/'/g, "''");
+}
+
+/**
  * Calendar tool dispatcher.
  * @param {Object} args - { action, title, start, end, location, notes, calendar, query, days, id }
  */
@@ -25,17 +51,35 @@ async function calendar(args) {
   const action = args?.action;
   if (!action) return 'Error: action required. Actions: list_events, create_event, search, list_calendars, delete_event, today, week';
 
-  switch (action) {
-    case 'today': return listEvents({ ...args, days: 1 });
-    case 'week': return listEvents({ ...args, days: 7 });
-    case 'list_events': return listEvents(args);
-    case 'create_event': return createEvent(args);
-    case 'search': return searchEvents(args);
-    case 'list_calendars': return listCalendars();
-    case 'delete_event': return deleteEvent(args);
-    default:
-      return `Error: unknown action '${action}'. Available: list_events, create_event, search, list_calendars, delete_event, today, week`;
+  if (IS_WIN) {
+    switch (action) {
+      case 'today': return winListEvents({ ...args, days: 1 });
+      case 'week': return winListEvents({ ...args, days: 7 });
+      case 'list_events': return winListEvents(args);
+      case 'create_event': return winCreateEvent(args);
+      case 'search': return winSearchEvents(args);
+      case 'list_calendars': return winListCalendars();
+      case 'delete_event': return winDeleteEvent(args);
+      default:
+        return `Error: unknown action '${action}'. Available: list_events, create_event, search, list_calendars, delete_event, today, week`;
+    }
   }
+
+  if (IS_MAC) {
+    switch (action) {
+      case 'today': return listEvents({ ...args, days: 1 });
+      case 'week': return listEvents({ ...args, days: 7 });
+      case 'list_events': return listEvents(args);
+      case 'create_event': return createEvent(args);
+      case 'search': return searchEvents(args);
+      case 'list_calendars': return listCalendars();
+      case 'delete_event': return deleteEvent(args);
+      default:
+        return `Error: unknown action '${action}'. Available: list_events, create_event, search, list_calendars, delete_event, today, week`;
+    }
+  }
+
+  return 'Error: calendar tool is only supported on macOS (Calendar.app) and Windows (Outlook)';
 }
 
 function listEvents(args) {
@@ -292,6 +336,190 @@ end tell
 
   try {
     return runAS(script);
+  } catch (err) {
+    return `Error deleting event: ${err.message}`;
+  }
+}
+
+// ── Windows Outlook COM implementations ──────────────────────────────────────
+
+function winListEvents(args) {
+  const days = Math.min(args.days || 7, 90);
+  const calName = args.calendar || '';
+
+  const filterClause = calName
+    ? `| Where-Object { $_.Parent.Name -eq '${escPS(calName)}' }`
+    : '';
+
+  const script = `
+$outlook = New-Object -ComObject Outlook.Application
+$ns = $outlook.GetNamespace('MAPI')
+$folder = $ns.GetDefaultFolder(9)
+$now = Get-Date
+$end = $now.AddDays(${days})
+$restrict = "[Start] >= '" + $now.ToString('g') + "' AND [Start] <= '" + $end.ToString('g') + "'"
+$folder.Items.IncludeRecurrences = $true
+$folder.Items.Sort('[Start]')
+$items = $folder.Items.Restrict($restrict) ${filterClause}
+$results = @()
+foreach ($item in $items) {
+  $start = $item.Start.ToString('yyyy-MM-dd HH:mm')
+  $finish = $item.End.ToString('HH:mm')
+  $line = "ID:$($item.EntryID.Substring(0,20)) | $start-$finish | $($item.Subject)"
+  if ($item.Location) { $line += " | @ $($item.Location)" }
+  $line += " | [$($item.Parent.Name)]"
+  $results += $line
+}
+if ($results.Count -eq 0) { Write-Output 'No events found in the next ${days} day(s)' }
+else { $results | ForEach-Object { Write-Output $_ } }
+`;
+
+  try {
+    return runPS(script, 15000);
+  } catch (err) {
+    return `Error listing events: ${err.message}`;
+  }
+}
+
+function winCreateEvent(args) {
+  const title = args.title;
+  const startTime = args.start;
+  const endTime = args.end;
+  const location = args.location || '';
+  const eventNotes = args.notes || '';
+
+  if (!title) return 'Error: "title" is required';
+  if (!startTime) return 'Error: "start" is required (e.g. "2026-04-15 10:00")';
+
+  const endClause = endTime
+    ? `$appt.End = [DateTime]::Parse('${escPS(endTime)}')`
+    : '$appt.End = $appt.Start.AddHours(1)';
+
+  const script = `
+$outlook = New-Object -ComObject Outlook.Application
+$appt = $outlook.CreateItem(1)
+$appt.Subject = '${escPS(title)}'
+$appt.Start = [DateTime]::Parse('${escPS(startTime)}')
+${endClause}
+${location ? `$appt.Location = '${escPS(location)}'` : ''}
+${eventNotes ? `$appt.Body = '${escPS(eventNotes)}'` : ''}
+$appt.Save()
+Write-Output "Event created: ${escPS(title)}"
+Write-Output "ID: $($appt.EntryID.Substring(0,20))"
+Write-Output "Start: $($appt.Start.ToString('yyyy-MM-dd HH:mm'))"
+Write-Output "End: $($appt.End.ToString('yyyy-MM-dd HH:mm'))"
+`;
+
+  try {
+    return runPS(script);
+  } catch (err) {
+    return `Error creating event: ${err.message}`;
+  }
+}
+
+function winSearchEvents(args) {
+  const query = args.query;
+  const days = Math.min(args.days || 30, 365);
+
+  if (!query) return 'Error: "query" is required for search';
+
+  const script = `
+$outlook = New-Object -ComObject Outlook.Application
+$ns = $outlook.GetNamespace('MAPI')
+$folder = $ns.GetDefaultFolder(9)
+$now = Get-Date
+$start = $now.AddDays(-${days})
+$end = $now.AddDays(${days})
+$restrict = "[Start] >= '" + $start.ToString('g') + "' AND [Start] <= '" + $end.ToString('g') + "'"
+$folder.Items.IncludeRecurrences = $true
+$folder.Items.Sort('[Start]')
+$items = $folder.Items.Restrict($restrict)
+$q = '${escPS(query)}'.ToLower()
+$results = @()
+foreach ($item in $items) {
+  $subj = if ($item.Subject) { $item.Subject.ToLower() } else { '' }
+  $loc = if ($item.Location) { $item.Location.ToLower() } else { '' }
+  if ($subj.Contains($q) -or $loc.Contains($q)) {
+    $s = $item.Start.ToString('yyyy-MM-dd HH:mm')
+    $f = $item.End.ToString('HH:mm')
+    $line = "ID:$($item.EntryID.Substring(0,20)) | $s-$f | $($item.Subject)"
+    if ($item.Location) { $line += " | @ $($item.Location)" }
+    $line += " | [$($item.Parent.Name)]"
+    $results += $line
+  }
+}
+if ($results.Count -eq 0) { Write-Output 'No events found matching: ${escPS(query)}' }
+else { $results | ForEach-Object { Write-Output $_ } }
+`;
+
+  try {
+    return runPS(script, 15000);
+  } catch (err) {
+    return `Error searching calendar: ${err.message}`;
+  }
+}
+
+function winListCalendars() {
+  const script = `
+$outlook = New-Object -ComObject Outlook.Application
+$ns = $outlook.GetNamespace('MAPI')
+$folder = $ns.GetDefaultFolder(9)
+$results = @()
+$results += "$($folder.Name) | Item count: $($folder.Items.Count) | Default"
+foreach ($sub in $folder.Folders) {
+  $results += "$($sub.Name) | Item count: $($sub.Items.Count)"
+}
+# Also check other stores for shared calendars
+foreach ($store in $ns.Stores) {
+  try {
+    $cal = $store.GetDefaultFolder(9)
+    if ($cal.FolderPath -ne $folder.FolderPath) {
+      $results += "$($cal.Name) | Item count: $($cal.Items.Count) | Store: $($store.DisplayName)"
+    }
+  } catch {}
+}
+if ($results.Count -eq 0) { Write-Output 'No calendars found' }
+else { $results | ForEach-Object { Write-Output $_ } }
+`;
+
+  try {
+    return runPS(script);
+  } catch (err) {
+    return `Error listing calendars: ${err.message}`;
+  }
+}
+
+function winDeleteEvent(args) {
+  const entryId = args.id || args.uid;
+  if (!entryId) return 'Error: "id" (event ID) is required';
+
+  const script = `
+$outlook = New-Object -ComObject Outlook.Application
+$ns = $outlook.GetNamespace('MAPI')
+try {
+  $item = $ns.GetItemFromID('${escPS(entryId)}')
+  $name = $item.Subject
+  $item.Delete()
+  Write-Output "Deleted event: $name"
+} catch {
+  # Try searching by partial ID prefix in default calendar
+  $folder = $ns.GetDefaultFolder(9)
+  $found = $false
+  foreach ($item in $folder.Items) {
+    if ($item.EntryID.StartsWith('${escPS(entryId)}')) {
+      $name = $item.Subject
+      $item.Delete()
+      Write-Output "Deleted event: $name"
+      $found = $true
+      break
+    }
+  }
+  if (-not $found) { Write-Output 'Event not found with ID: ${escPS(entryId)}' }
+}
+`;
+
+  try {
+    return runPS(script);
   } catch (err) {
     return `Error deleting event: ${err.message}`;
   }

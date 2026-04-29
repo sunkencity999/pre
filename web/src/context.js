@@ -238,6 +238,16 @@ function buildSystemPrompt(cwd) {
       + `- Notes → apple_notes (accesses all notes in Notes.app)\n`
       + `Only use gmail/gdrive/gdocs when the user SPECIFICALLY asks about their Google account, or when a native tool is not available.\n`
       + `The native tools are faster, require no API keys, and cover ALL the user's accounts — not just Google.\n`;
+  } else if (IS_WIN) {
+    prompt += `\nNATIVE APP PREFERENCE:\n`
+      + `When the user asks about email, calendar, contacts, reminders, or notes, ALWAYS use the native Outlook/local tools FIRST:\n`
+      + `- Email → apple_mail (uses Outlook COM — accesses ALL accounts: Exchange, Gmail, IMAP — whatever is configured in Outlook)\n`
+      + `- Calendar → apple_calendar (uses Outlook COM — accesses all calendars in Outlook)\n`
+      + `- Contacts → apple_contacts (uses Outlook COM — accesses all contacts in Outlook)\n`
+      + `- Reminders → apple_reminders (uses Outlook Tasks — accesses all task lists in Outlook)\n`
+      + `- Notes → apple_notes (uses local markdown files in ~/.pre/notes/)\n`
+      + `Only use gmail/gdrive/gdocs when the user SPECIFICALLY asks about their Google account, or when Outlook is not available.\n`
+      + `The native tools require no API keys and cover ALL the user's configured accounts — not just Google.\n`;
   }
 
   // Connection status

@@ -183,7 +183,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 **16 services in one interface** — Jira, Confluence, SharePoint, Smartsheet, Slack, Linear, Zoom, Figma, Asana, Dynamics 365, Gmail, Google Drive, Google Docs, GitHub, Telegram, Brave Search, and Wolfram Alpha. Search Jira, cross-reference Confluence, pull a file from SharePoint, and post a summary to Slack — in one conversation.
 
-**Native macOS apps (zero config)** — Mail, Calendar, Contacts, Reminders, Notes, and Spotlight work immediately with whatever accounts you've configured on your Mac. No API keys, no OAuth. On Windows, Spotlight is replaced by Windows Search; the five Apple app integrations are macOS-only.
+**Native app integrations (zero config)** — Mail, Calendar, Contacts, Reminders, Notes, and Spotlight work immediately with whatever accounts you've configured. On macOS, uses Mail.app, Calendar.app, Contacts.app, Reminders.app, and Notes.app via AppleScript/EventKit. On Windows, uses Outlook COM for mail, calendar, contacts, and tasks, plus local markdown notes. Spotlight uses Windows Search on Windows. No API keys, no OAuth on either platform.
 
 ### Memory & Intelligence
 
@@ -443,13 +443,13 @@ PRE has 70+ tools that the model calls autonomously. Nearly all auto-execute wit
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `apple_mail` | `action`, `to`?, `subject`?, `body`? | Mail.app — search, read, send, reply via AppleScript |
-| `apple_calendar` | `action`, `title`?, `start`?, `end`? | Calendar.app — list, create, update, delete events via EventKit/Swift |
-| `apple_contacts` | `action`, `query`? | Contacts.app — search, read contacts via AppleScript |
-| `apple_reminders` | `action`, `title`?, `list`? | Reminders.app — list, create, complete, delete via EventKit/Swift |
-| `apple_notes` | `action`, `title`?, `body`? | Notes.app — search, read, create notes via AppleScript |
+| `apple_mail` | `action`, `to`?, `subject`?, `body`? | macOS: Mail.app via AppleScript; Windows: Outlook COM — search, read, send, reply |
+| `apple_calendar` | `action`, `title`?, `start`?, `end`? | macOS: Calendar.app via EventKit/Swift; Windows: Outlook COM — list, create, delete events |
+| `apple_contacts` | `action`, `query`? | macOS: Contacts.app via AppleScript; Windows: Outlook COM — search, read contacts |
+| `apple_reminders` | `action`, `title`?, `list`? | macOS: Reminders.app via EventKit/Swift; Windows: Outlook Tasks COM — list, create, complete, delete |
+| `apple_notes` | `action`, `title`?, `body`? | macOS: Notes.app via AppleScript; Windows: local markdown files in `~/.pre/notes/` |
 
-> These five tools are automatically hidden on Windows. They use macOS-specific AppleScript and EventKit APIs.
+> On macOS, these tools use AppleScript and EventKit with whatever accounts are configured in System Settings. On Windows, they use Outlook COM automation (requires Outlook installed) for mail, calendar, contacts, and tasks; notes use local markdown files.
 
 #### File Search
 
