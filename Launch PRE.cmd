@@ -44,11 +44,18 @@ where nvidia-smi >nul 2>&1
 if !errorlevel!==0 (
     set "OLLAMA_FLASH_ATTENTION=1"
     set "OLLAMA_GPU_OVERHEAD=256000000"
-    :: Read KV cache type set by installer (q4_0 for q4 models, q8_0 for q8)
     set "OLLAMA_KV_CACHE_TYPE=q8_0"
     if exist "%USERPROFILE%\.pre\kv_cache_type" set /p OLLAMA_KV_CACHE_TYPE=<"%USERPROFILE%\.pre\kv_cache_type"
-    echo   NVIDIA GPU: Flash Attention + !OLLAMA_KV_CACHE_TYPE! KV cache enabled
 )
+
+:: Auto-detect KV cache type if file missing and NVIDIA detected
+if defined OLLAMA_FLASH_ATTENTION if not exist "%USERPROFILE%\.pre\kv_cache_type" (
+    echo   Detecting model quantization...
+    powershell -NoProfile -Command "try { $m = ollama show pre-gemma4 --modelfile 2>$null; if ($m -match 'q4') { 'q4_0' | Set-Content '%USERPROFILE%\.pre\kv_cache_type' -NoNewline; exit 4 } else { 'q8_0' | Set-Content '%USERPROFILE%\.pre\kv_cache_type' -NoNewline; exit 8 } } catch { exit 8 }" >nul 2>&1
+    if !errorlevel!==4 set "OLLAMA_KV_CACHE_TYPE=q4_0"
+)
+
+if defined OLLAMA_FLASH_ATTENTION echo   NVIDIA GPU: Flash Attention + !OLLAMA_KV_CACHE_TYPE! KV cache enabled
 
 :: ---- Start Ollama ----
 echo   Checking Ollama...
