@@ -635,11 +635,31 @@ describe('Windows launch/install scripts exist', () => {
     expect(source).toContain('OLLAMA_KV_CACHE_TYPE');
   });
 
-  test('install.ps1 uses RAM-based KV cache type selection', () => {
+  test('install.ps1 uses VRAM-aware quant and KV cache selection', () => {
     const ps1Path = path.join(repoRoot, 'install.ps1');
     const source = fs.readFileSync(ps1Path, 'utf-8');
-    // Should select q4_0 or q8_0 based on quant type
+    // Should select q4_0 or q8_0 KV cache based on quant type
     expect(source).toMatch(/q4_0|q8_0/);
     expect(source).toContain('QUANT');
+    // VRAM-aware: model must fit in VRAM for full GPU acceleration
+    expect(source).toContain('vramGB');
+    expect(source).toContain('q4_K_M');
+    expect(source).toContain('q8_0');
+  });
+
+  test('pre-server.ps1 uses VRAM-based KV cache detection', () => {
+    const ps1Path = path.join(__dirname, '..', 'pre-server.ps1');
+    const source = fs.readFileSync(ps1Path, 'utf-8');
+    // Should detect VRAM via nvidia-smi, not rely on RAM alone
+    expect(source).toContain('memory.total');
+    expect(source).toContain('detectedVramGB');
+  });
+
+  test('Launch PRE.cmd uses VRAM-based KV cache detection', () => {
+    const cmdPath = path.join(repoRoot, 'Launch PRE.cmd');
+    const source = fs.readFileSync(cmdPath, 'utf-8');
+    // Should detect VRAM via nvidia-smi, not rely on RAM alone
+    expect(source).toContain('memory.total');
+    expect(source).toMatch(/geq 28/);
   });
 });

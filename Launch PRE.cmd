@@ -44,10 +44,10 @@ where nvidia-smi >nul 2>&1
 if !errorlevel!==0 (
     set "OLLAMA_FLASH_ATTENTION=1"
     set "OLLAMA_GPU_OVERHEAD=256000000"
-    :: Match KV cache to model quant: <32GB RAM uses q4_K_M model -> q4_0 cache
-    set "OLLAMA_KV_CACHE_TYPE=q8_0"
-    for /f "usebackq" %%R in (`powershell -NoProfile -Command "[math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB)"`) do (
-        if %%R lss 32 set "OLLAMA_KV_CACHE_TYPE=q4_0"
+    :: Match KV cache to model quant: q8_0 only installed when VRAM >= 28GB
+    set "OLLAMA_KV_CACHE_TYPE=q4_0"
+    for /f "usebackq" %%V in (`powershell -NoProfile -Command "try { $o = nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null; if ($o -and $o.Trim() -match '^\d+$') { [math]::Floor([int]$o.Trim()/1024) } else { 0 } } catch { 0 }"`) do (
+        if %%V geq 28 set "OLLAMA_KV_CACHE_TYPE=q8_0"
     )
     echo   NVIDIA GPU: Flash Attention + !OLLAMA_KV_CACHE_TYPE! KV cache enabled
 )

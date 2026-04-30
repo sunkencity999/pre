@@ -76,7 +76,7 @@ node server.js          # http://localhost:7749
 - **Parallel sub-agents** — spawn multiple research agents that run concurrently via `Promise.all`; tool execution (web fetches, file reads) runs in parallel
 - **Background process monitor** — start, read output from, and stop long-running commands without blocking the conversation
 - **Argus companion** — an interactive session observer that watches PRE work, diagnoses errors with actionable fixes, relates observations to your stated goal, and supports reply-to-reaction micro-conversations
-- **Auto-sized context window** — the installer detects your system's RAM and sets the optimal context window (8K–128K); no manual tuning needed
+- **Auto-sized context window** — the installer detects available memory headroom (RAM minus model size) and sets the optimal context window (8K–128K); no manual tuning needed
 - **Shared sessions** — same JSONL format as CLI, fully interchangeable
 - **Projects** — group related sessions into collapsible project folders with drag-and-drop
 - **Connections GUI** — configure all integrations from Settings (gear icon in sidebar)
@@ -1016,15 +1016,15 @@ web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
 
 ## Context Window Auto-Sizing
 
-The install script detects your system's RAM and sets the optimal context window size. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
+The install script sizes the context window based on memory headroom: total RAM minus model weight size. On Windows, quantization is VRAM-aware (28+ GB VRAM → q8_0 at ~28 GB; smaller GPUs → q4_K_M at ~15 GB), so systems with smaller GPUs get more RAM headroom and proportionally larger context windows. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
 
-| RAM | Context Window | Tokens |
-|-----|---------------|--------|
-| 128GB+ | 128K | 131,072 |
-| 64–95GB | 64K | 65,536 |
-| 48–63GB | 32K | 32,768 |
-| 36–47GB | 16K | 16,384 |
-| <36GB | 8K | 8,192 |
+| Headroom (RAM − model) | Context Window | Tokens |
+|------------------------|---------------|--------|
+| 68GB+ | 128K | 131,072 |
+| 36–67GB | 64K | 65,536 |
+| 20–35GB | 32K | 32,768 |
+| 8–19GB | 16K | 16,384 |
+| 4–7GB | 8K | 8,192 |
 
 The context window can be overridden by editing `~/.pre/context` directly (any value from 2048 to 262144). Changes take effect the next time the CLI or web GUI starts.
 

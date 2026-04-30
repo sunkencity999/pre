@@ -56,11 +56,17 @@ $env:OLLAMA_MAX_LOADED_MODELS = "1"
 
 # NVIDIA GPU optimizations: reduce KV cache VRAM so more model layers fit on GPU
 $hasNvidia = $false
-try { $hasNvidia = [bool](& nvidia-smi --query-gpu=name --format=csv,noheader 2>$null) } catch {}
+$detectedVramGB = 0
+try {
+    $nvOut = & nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null
+    if ($nvOut -and $nvOut.Trim() -match '^\d+$') {
+        $hasNvidia = $true
+        $detectedVramGB = [math]::Floor([int]$nvOut.Trim() / 1024)
+    }
+} catch {}
 if ($hasNvidia) {
-    # Match KV cache to model quant: <32GB RAM uses q4_K_M model -> q4_0 cache
-    $ramGB = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-    $kvType = if ($ramGB -lt 32) { "q4_0" } else { "q8_0" }
+    # Match KV cache to model quant: q8_0 only installed when VRAM >= 28GB
+    $kvType = if ($detectedVramGB -ge 28) { "q8_0" } else { "q4_0" }
     $env:OLLAMA_FLASH_ATTENTION = "1"
     $env:OLLAMA_KV_CACHE_TYPE = $kvType
     $env:OLLAMA_GPU_OVERHEAD = "256000000"
@@ -69,7 +75,7 @@ if ($hasNvidia) {
 # ── Start Ollama if not running ──
 Write-Host "PRE Server starting..."
 Write-Host "  Context window: $NUM_CTX tokens"
-if ($hasNvidia) { Write-Host "  NVIDIA GPU: Flash Attention + $($env:OLLAMA_KV_CACHE_TYPE) KV cache enabled" }
+if ($hasNvidia) { Write-Host "  NVIDIA GPU: ${detectedVramGB}GB VRAM, Flash Attention + $($env:OLLAMA_KV_CACHE_TYPE) KV cache" }
 
 $ollamaRunning = $false
 try {

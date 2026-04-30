@@ -99,13 +99,19 @@ if ($winVer.Major -lt 10) {
 }
 Ok "OS: $($osInfo.Caption) (Build $($winVer.Build))"
 
-# NVIDIA GPU
+# NVIDIA GPU + VRAM detection
 $gpuName = ""
+$vramGB = 0
 try {
     $nvOut = & nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>$null
     if ($nvOut) {
         $gpuName = $nvOut.Trim()
         Ok "GPU: $gpuName (NVIDIA CUDA)"
+        # Parse VRAM from output like "NVIDIA GeForce RTX 4080, 16384 MiB"
+        if ($nvOut -match '(\d+)\s*MiB') {
+            $vramGB = [math]::Floor([int]$Matches[1] / 1024)
+            Ok "VRAM: ${vramGB}GB"
+        }
     }
 } catch {}
 if (-not $gpuName) {
@@ -122,22 +128,42 @@ if ($ramGB -lt 16) {
     Fail "PRE requires at least 16GB RAM. Detected: ${ramGB}GB"
 }
 
-# Select quantization based on available RAM
-# q8_0 (~28GB weights) needs 32GB+ to leave room for KV cache + OS
-# q4_K_M (~15GB weights) fits comfortably in 16-31GB
-if ($ramGB -ge 32) {
+# Select quantization based on VRAM (GPU) and RAM (CPU fallback)
+# On NVIDIA systems the model must fit in VRAM for full GPU acceleration.
+# q8_0 (~28GB) needs 28GB+ VRAM; q4_K_M (~15GB) fits in 16GB VRAM.
+# Overflow to system RAM causes a massive speed penalty (e.g. 6 tok/s vs 30+).
+if ($vramGB -ge 28) {
+    # Model fits entirely on GPU — use highest quality
     $BASE_MODEL = "gemma4:26b-a4b-it-q8_0"
     $QUANT = "q8_0"
     $MODEL_SIZE_GB = 28
     $MODEL_SIZE_LABEL = "~28GB"
-    Ok "RAM: ${ramGB}GB - using q8_0 quantization (near-lossless, ${MODEL_SIZE_LABEL})"
-} else {
+    Ok "Quant: q8_0 (near-lossless, ${MODEL_SIZE_LABEL}) - fits in ${vramGB}GB VRAM"
+} elseif ($vramGB -gt 0) {
+    # GPU detected but VRAM < 28GB — q8_0 would overflow to CPU (very slow!)
     $BASE_MODEL = "gemma4:26b-a4b-it-q4_K_M"
     $QUANT = "q4_K_M"
     $MODEL_SIZE_GB = 15
     $MODEL_SIZE_LABEL = "~15GB"
-    Warn "RAM: ${ramGB}GB - using q4_K_M quantization (${MODEL_SIZE_LABEL}, good quality)"
-    Warn "Upgrade to 32GB+ RAM to use the higher-quality q8_0 quantization."
+    Ok "Quant: q4_K_M (${MODEL_SIZE_LABEL}) - fits in ${vramGB}GB VRAM for full GPU acceleration"
+    if ($vramGB -lt 16) {
+        Warn "VRAM is low (${vramGB}GB). Model may partially offload to CPU."
+    }
+} elseif ($ramGB -ge 32) {
+    # No GPU — CPU inference, use highest quality that fits in RAM
+    $BASE_MODEL = "gemma4:26b-a4b-it-q8_0"
+    $QUANT = "q8_0"
+    $MODEL_SIZE_GB = 28
+    $MODEL_SIZE_LABEL = "~28GB"
+    Ok "Quant: q8_0 (near-lossless, ${MODEL_SIZE_LABEL}) - CPU mode, ${ramGB}GB RAM"
+} else {
+    # No GPU, limited RAM
+    $BASE_MODEL = "gemma4:26b-a4b-it-q4_K_M"
+    $QUANT = "q4_K_M"
+    $MODEL_SIZE_GB = 15
+    $MODEL_SIZE_LABEL = "~15GB"
+    Warn "Quant: q4_K_M (${MODEL_SIZE_LABEL}, good quality) - CPU mode, ${ramGB}GB RAM"
+    Warn "Add an NVIDIA GPU or upgrade to 32GB+ RAM for q8_0 quantization."
 }
 
 if ($ramGB -lt 32) {
@@ -148,25 +174,26 @@ if ($ramGB -lt 32) {
     Ok "RAM: ${ramGB}GB"
 }
 
-# Auto-size context window based on RAM
-# q4_K_M uses ~15GB for weights, q8_0 uses ~28GB. KV cache scales with context.
-if ($ramGB -ge 96) {
+# Auto-size context window based on memory headroom after model weights
+# Headroom = total RAM - model size. KV cache + OS must fit in the remainder.
+# Thresholds calibrated from macOS install.sh (assumes q8_0@28GB baselines):
+#   headroom 68GB+ → 128K, 36GB+ → 64K, 20GB+ → 32K, 8GB+ → 16K, 4GB+ → 8K
+$headroom = $ramGB - $MODEL_SIZE_GB
+if ($headroom -ge 68) {
     $OPTIMAL_CTX = 131072   # 128K
-} elseif ($ramGB -ge 64) {
+} elseif ($headroom -ge 36) {
     $OPTIMAL_CTX = 65536    # 64K
-} elseif ($ramGB -ge 48) {
+} elseif ($headroom -ge 20) {
     $OPTIMAL_CTX = 32768    # 32K
-} elseif ($ramGB -ge 36) {
+} elseif ($headroom -ge 8) {
     $OPTIMAL_CTX = 16384    # 16K
-} elseif ($ramGB -ge 24) {
-    $OPTIMAL_CTX = 16384    # 16K (q4_K_M leaves more headroom)
-} elseif ($ramGB -ge 20) {
+} elseif ($headroom -ge 4) {
     $OPTIMAL_CTX = 8192     # 8K
 } else {
-    $OPTIMAL_CTX = 4096     # 4K (tight fit with q4_K_M on 16GB)
+    $OPTIMAL_CTX = 4096     # 4K
 }
 $CTX_HUMAN = "$([math]::Floor($OPTIMAL_CTX / 1024))K"
-Ok "Context window: $CTX_HUMAN ($OPTIMAL_CTX tokens, auto-sized for ${ramGB}GB RAM)"
+Ok "Context window: $CTX_HUMAN ($OPTIMAL_CTX tokens, ${headroom}GB headroom after ${QUANT} model)"
 
 # Disk space
 $drive = (Get-Item $REPO_DIR).PSDrive
