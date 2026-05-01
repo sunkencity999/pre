@@ -29,6 +29,12 @@ if [ -f "$CTX_FILE" ]; then
     fi
 fi
 
+# Detect eGPU (TinyGPU) for status display
+EGPU_STATUS=""
+if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
+    EGPU_STATUS=" + eGPU (TinyGPU)"
+fi
+
 # Check if Ollama is running
 if ! curl -sf http://localhost:${PORT}/v1/models >/dev/null 2>&1; then
     echo "  Ollama not running. Starting..."
@@ -73,7 +79,7 @@ if ! ollama ps 2>/dev/null | grep -q "pre-gemma4"; then
     fi
 fi
 
-echo "  Ollama running on port $PORT."
+echo "  Ollama running on port $PORT.${EGPU_STATUS}"
 
 if [ ! -x "$PRE_BIN" ]; then
     echo "Error: PRE binary not found at $PRE_BIN"

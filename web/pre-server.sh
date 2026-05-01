@@ -66,10 +66,37 @@ fi
 # Set Ollama env vars here so manual invocations (outside LaunchAgent) also get
 # the optimized settings. The LaunchAgent plist carries them too, but exporting
 # here means `pre-server.sh` works correctly however it's launched.
-export OLLAMA_FLASH_ATTENTION=0   # Gemma 4 hybrid attention is slower/unstable with FA
 export OLLAMA_KEEP_ALIVE=24h
 export OLLAMA_NUM_PARALLEL=1
 export OLLAMA_MAX_LOADED_MODELS=1
+
+# Detect GPU backend: NVIDIA eGPU (CUDA via TinyGPU) vs Apple Silicon (Metal)
+# Flash Attention: ON for CUDA, OFF for Metal (Gemma 4 hybrid attention is slower on Metal)
+GPU_BACKEND="metal"
+if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
+    # TinyGPU driver loaded — check for NVIDIA via Docker
+    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+        EGPU_VRAM_MIB=$(docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 \
+            nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+        if [ -n "$EGPU_VRAM_MIB" ] && [ "$EGPU_VRAM_MIB" -gt 0 ] 2>/dev/null; then
+            GPU_BACKEND="cuda"
+            EGPU_VRAM_GB=$((EGPU_VRAM_MIB / 1024))
+        fi
+    fi
+fi
+
+if [ "$GPU_BACKEND" = "cuda" ]; then
+    export OLLAMA_FLASH_ATTENTION=1
+    # KV cache type: q8_0 only if eGPU VRAM >= 28GB (q8_0 model installed)
+    if [ "${EGPU_VRAM_GB:-0}" -ge 28 ]; then
+        export OLLAMA_KV_CACHE_TYPE=q8_0
+    else
+        export OLLAMA_KV_CACHE_TYPE=q4_0
+    fi
+    export OLLAMA_GPU_OVERHEAD=256000000
+else
+    export OLLAMA_FLASH_ATTENTION=0
+fi
 
 # Ensure Ollama is running
 if ! curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then

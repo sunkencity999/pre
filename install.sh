@@ -2,10 +2,10 @@
 # install.sh — Full setup for PRE (Personal Reasoning Engine)
 #
 # This script handles everything from Ollama to ready-to-run:
-#   0. Checks system requirements (Apple Silicon, macOS, RAM, disk)
+#   0. Checks system requirements (macOS, arch, RAM, eGPU/VRAM, disk)
 #   1. Installs/verifies Ollama
 #   1b. Configures Ollama environment (FA, keep-alive, parallelism)
-#   2. Pulls the base model (gemma4:26b-a4b-it-q8_0, ~28GB)
+#   2. Pulls the base model (q8_0 ~28GB or q4_K_M ~15GB, auto-selected)
 #   2b. Pulls embedding model (nomic-embed-text for experience ledger + RAG)
 #   3. Creates optimized custom model (pre-gemma4) from Modelfile
 #   4. Installs Xcode CLI tools if needed
@@ -40,7 +40,7 @@ RESET='\033[0m'
 
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$REPO_DIR/engine"
-BASE_MODEL="gemma4:26b-a4b-it-q8_0"
+# BASE_MODEL is set dynamically in Step 0 based on VRAM/RAM detection
 CUSTOM_MODEL="pre-gemma4"
 
 # --- Flag parsing ---
@@ -79,69 +79,207 @@ trap 'echo -e "\n${RED}Installation failed at line $LINENO.${RESET}\n${DIM}Re-ru
 # ============================================================================
 step "Checking system requirements"
 
-# Apple Silicon
-ARCH=$(uname -m)
-if [ "$ARCH" != "arm64" ]; then
-    fail "PRE requires Apple Silicon (arm64). Detected: $ARCH"
-fi
-ok "  Apple Silicon: $ARCH"
-
-# macOS
+# macOS version
 OS=$(uname -s)
 if [ "$OS" != "Darwin" ]; then
     fail "PRE requires macOS. Detected: $OS"
 fi
 MACOS_VER=$(sw_vers -productVersion)
 MACOS_MAJOR=$(echo "$MACOS_VER" | cut -d. -f1)
-if [ "$MACOS_MAJOR" -lt 14 ]; then
-    fail "PRE requires macOS 14 (Sonoma) or later. Detected: $MACOS_VER"
-fi
 ok "  macOS: $MACOS_VER"
 
-# RAM — q8_0 model loads at ~32GB, need headroom for KV cache + OS
+# Architecture detection
+ARCH=$(uname -m)
+IS_APPLE_SILICON=false
+IS_INTEL=false
+if [ "$ARCH" = "arm64" ]; then
+    IS_APPLE_SILICON=true
+    ok "  Architecture: Apple Silicon ($ARCH)"
+elif [ "$ARCH" = "x86_64" ]; then
+    IS_INTEL=true
+    ok "  Architecture: Intel ($ARCH)"
+else
+    fail "Unsupported architecture: $ARCH"
+fi
+
+# ── eGPU detection (TinyGPU: NVIDIA/AMD via Thunderbolt/USB4) ──
+# TinyGPU is Tiny Corp's Apple-signed driver enabling NVIDIA Ampere+ and
+# AMD RDNA3+ eGPUs for compute on macOS. Ollama 0.4+ auto-detects it.
+EGPU_DETECTED=false
+EGPU_VENDOR=""
+EGPU_NAME=""
+EGPU_VRAM_GB=0
+GPU_BACKEND="metal"   # metal (Apple Silicon) or cuda (NVIDIA eGPU)
+
+# Method 1: Check if TinyGPU driver extension is loaded
+TINYGPU_LOADED=false
+if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
+    TINYGPU_LOADED=true
+fi
+
+# Method 2: Check for TinyGPU.app
+TINYGPU_APP=false
+if [ -d "/Applications/TinyGPU.app" ] || [ -d "$HOME/Applications/TinyGPU.app" ]; then
+    TINYGPU_APP=true
+fi
+
+# Method 3: Check system_profiler for Thunderbolt GPU devices
+THUNDERBOLT_GPU=""
+THUNDERBOLT_GPU=$(system_profiler SPThunderboltDataType 2>/dev/null | grep -i "NVIDIA\|GeForce\|RTX\|Radeon\|RX " | head -1 | sed 's/.*: //' || true)
+
+if [ "$TINYGPU_LOADED" = true ] || [ "$TINYGPU_APP" = true ] || [ -n "$THUNDERBOLT_GPU" ]; then
+    EGPU_DETECTED=true
+
+    # Determine vendor from Thunderbolt info or Docker nvidia-smi
+    if [ -n "$THUNDERBOLT_GPU" ]; then
+        EGPU_NAME="$THUNDERBOLT_GPU"
+        if echo "$THUNDERBOLT_GPU" | grep -qi "NVIDIA\|GeForce\|RTX"; then
+            EGPU_VENDOR="nvidia"
+        elif echo "$THUNDERBOLT_GPU" | grep -qi "AMD\|Radeon\|RX"; then
+            EGPU_VENDOR="amd"
+        fi
+    fi
+
+    # NVIDIA VRAM detection via Docker nvidia-smi (CUDA path requires Docker)
+    if [ "$EGPU_VENDOR" = "nvidia" ] || [ "$EGPU_VENDOR" = "" ]; then
+        if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            NVOUT=$(docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 \
+                nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true)
+            if [ -n "$NVOUT" ]; then
+                EGPU_VENDOR="nvidia"
+                [ -z "$EGPU_NAME" ] && EGPU_NAME=$(echo "$NVOUT" | cut -d',' -f1 | xargs)
+                VRAM_MIB=$(echo "$NVOUT" | grep -oE '[0-9]+' | tail -1)
+                if [ -n "$VRAM_MIB" ] && [ "$VRAM_MIB" -gt 0 ] 2>/dev/null; then
+                    EGPU_VRAM_GB=$((VRAM_MIB / 1024))
+                fi
+            fi
+        fi
+    fi
+
+    if [ "$EGPU_VENDOR" = "nvidia" ]; then
+        GPU_BACKEND="cuda"
+    fi
+
+    ok "  eGPU: ${EGPU_NAME:-detected} (${EGPU_VENDOR:-unknown}, TinyGPU)"
+    if [ "$EGPU_VRAM_GB" -gt 0 ]; then
+        ok "  eGPU VRAM: ${EGPU_VRAM_GB}GB"
+    fi
+fi
+
+# ── Validate requirements based on hardware profile ──
+if [ "$IS_INTEL" = true ] && [ "$EGPU_DETECTED" = false ]; then
+    fail "Intel Macs require an eGPU (NVIDIA Ampere+ or AMD RDNA3+) with the TinyGPU driver.
+  Install TinyGPU: curl -fsSL https://raw.githubusercontent.com/tinygrad/tinygrad/master/extra/setup_tinygpu_osx.sh | sh
+  More info: https://docs.tinygrad.org/tinygpu/"
+fi
+
+# macOS version: Apple Silicon needs 14+, Intel eGPU needs 12.1+ (TinyGPU minimum)
+if [ "$IS_APPLE_SILICON" = true ] && [ "$MACOS_MAJOR" -lt 14 ]; then
+    fail "Apple Silicon PRE requires macOS 14 (Sonoma) or later. Detected: $MACOS_VER"
+elif [ "$IS_INTEL" = true ] && [ "$MACOS_MAJOR" -lt 12 ]; then
+    fail "Intel eGPU PRE requires macOS 12.1 (Monterey) or later. Detected: $MACOS_VER"
+fi
+
+# Check Docker for NVIDIA eGPU (required for CUDA compilation)
+if [ "$EGPU_VENDOR" = "nvidia" ]; then
+    if ! command -v docker &>/dev/null; then
+        warn "  Docker Desktop not found. Required for NVIDIA eGPU CUDA path."
+        warn "  Install from: https://www.docker.com/products/docker-desktop/"
+        if ! ask_yn "  Continue without Docker? (eGPU may not work) [y/N] " "N"; then exit 1; fi
+    elif ! docker info &>/dev/null 2>&1; then
+        warn "  Docker Desktop is installed but not running. Start it for NVIDIA eGPU support."
+    else
+        ok "  Docker: running (required for NVIDIA CUDA on macOS)"
+    fi
+fi
+
+# Internal GPU info (Apple Silicon Metal)
+GPU_INFO=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -1 | sed 's/.*: //')
+if [ -n "$GPU_INFO" ]; then
+    ok "  GPU: $GPU_INFO (Metal)"
+fi
+
+# RAM
 RAM_BYTES=$(sysctl -n hw.memsize)
 RAM_GB=$((RAM_BYTES / 1073741824))
-if [ "$RAM_GB" -lt 32 ]; then
-    fail "PRE requires at least 32GB unified memory (q8_0 model loads at ~32GB). Detected: ${RAM_GB}GB"
+
+# RAM requirements differ based on hardware profile:
+#   Apple Silicon (unified memory): model + KV cache + OS all share RAM → need 32GB+
+#   Intel + eGPU: model lives on eGPU VRAM, RAM just for KV cache + OS → 16GB+
+if [ "$IS_APPLE_SILICON" = true ]; then
+    if [ "$RAM_GB" -lt 32 ]; then
+        fail "Apple Silicon PRE requires at least 32GB unified memory. Detected: ${RAM_GB}GB"
+    fi
+elif [ "$IS_INTEL" = true ]; then
+    if [ "$RAM_GB" -lt 16 ]; then
+        fail "PRE requires at least 16GB RAM. Detected: ${RAM_GB}GB"
+    fi
 fi
 if [ "$RAM_GB" -lt 64 ]; then
     warn "  RAM: ${RAM_GB}GB — functional, but 64GB+ recommended for large context windows."
 else
-    ok "  RAM: ${RAM_GB}GB unified memory"
+    ok "  RAM: ${RAM_GB}GB"
 fi
 
-# Auto-size context window based on available RAM.
-# Gemma 4 26B q8_0 uses ~28GB for weights. KV cache scales linearly with context:
-#   128K ≈ 4GB, 64K ≈ 2GB, 32K ≈ 1GB, 16K ≈ 0.5GB, 8K ≈ 0.25GB
-# We need headroom for macOS, apps, and swap avoidance.
-if [ "$RAM_GB" -ge 96 ]; then
-    OPTIMAL_CTX=131072   # 128K — full Gemma 4 capacity
-elif [ "$RAM_GB" -ge 64 ]; then
-    OPTIMAL_CTX=65536    # 64K
-elif [ "$RAM_GB" -ge 48 ]; then
-    OPTIMAL_CTX=32768    # 32K
-elif [ "$RAM_GB" -ge 36 ]; then
-    OPTIMAL_CTX=16384    # 16K
+# ── Quantization selection ──
+# Apple Silicon: unified memory, use RAM-based selection (current behavior)
+# eGPU systems: model must fit in eGPU VRAM for full GPU acceleration
+if [ "$EGPU_DETECTED" = true ] && [ "$EGPU_VRAM_GB" -gt 0 ]; then
+    # eGPU with known VRAM — same logic as Windows installer
+    if [ "$EGPU_VRAM_GB" -ge 28 ]; then
+        BASE_MODEL="gemma4:26b-a4b-it-q8_0"
+        QUANT="q8_0"
+        MODEL_SIZE_GB=28
+        ok "  Quant: q8_0 (near-lossless, ~28GB) — fits in ${EGPU_VRAM_GB}GB eGPU VRAM"
+    else
+        BASE_MODEL="gemma4:26b-a4b-it-q4_K_M"
+        QUANT="q4_K_M"
+        MODEL_SIZE_GB=15
+        ok "  Quant: q4_K_M (~15GB) — fits in ${EGPU_VRAM_GB}GB eGPU VRAM for full acceleration"
+    fi
+elif [ "$EGPU_DETECTED" = true ]; then
+    # eGPU detected but VRAM unknown (no Docker or AMD) — default to q4_K_M (safe)
+    BASE_MODEL="gemma4:26b-a4b-it-q4_K_M"
+    QUANT="q4_K_M"
+    MODEL_SIZE_GB=15
+    warn "  Quant: q4_K_M (~15GB) — eGPU VRAM unknown, using safe default"
+    warn "  To use q8_0, ensure Docker is running and re-run the installer."
 else
-    OPTIMAL_CTX=8192     # 8K — tight fit on 32GB
+    # Apple Silicon unified memory — original behavior
+    BASE_MODEL="gemma4:26b-a4b-it-q8_0"
+    QUANT="q8_0"
+    MODEL_SIZE_GB=28
+    ok "  Quant: q8_0 (near-lossless, ~28GB)"
+fi
+
+# Auto-size context window based on memory headroom after model weights.
+# Headroom = total RAM - model size. KV cache + OS must fit in the remainder.
+HEADROOM=$((RAM_GB - MODEL_SIZE_GB))
+if [ "$HEADROOM" -ge 68 ]; then
+    OPTIMAL_CTX=131072   # 128K
+elif [ "$HEADROOM" -ge 36 ]; then
+    OPTIMAL_CTX=65536    # 64K
+elif [ "$HEADROOM" -ge 20 ]; then
+    OPTIMAL_CTX=32768    # 32K
+elif [ "$HEADROOM" -ge 8 ]; then
+    OPTIMAL_CTX=16384    # 16K
+elif [ "$HEADROOM" -ge 4 ]; then
+    OPTIMAL_CTX=8192     # 8K
+else
+    OPTIMAL_CTX=4096     # 4K
 fi
 CTX_HUMAN="$(( OPTIMAL_CTX / 1024 ))K"
-ok "  Context window: ${CTX_HUMAN} (${OPTIMAL_CTX} tokens, auto-sized for ${RAM_GB}GB RAM)"
+ok "  Context window: ${CTX_HUMAN} (${OPTIMAL_CTX} tokens, ${HEADROOM}GB headroom after ${QUANT} model)"
 
-# Disk space (~28GB for q8_0 model, ~2GB headroom)
+# Disk space
 AVAIL_KB=$(df -k "$REPO_DIR" | tail -1 | awk '{print $4}')
 AVAIL_GB=$((AVAIL_KB / 1048576))
-if [ "$AVAIL_GB" -lt 35 ]; then
-    warn "  Disk: ${AVAIL_GB}GB available — need ~28GB for q8_0 model download."
+DISK_NEEDED=$((MODEL_SIZE_GB + 5))
+if [ "$AVAIL_GB" -lt "$DISK_NEEDED" ]; then
+    warn "  Disk: ${AVAIL_GB}GB available — need ~${MODEL_SIZE_GB}GB for ${QUANT} model download."
     if ! ask_yn "  Continue anyway? [y/N] " "N"; then exit 1; fi
 else
     ok "  Disk: ${AVAIL_GB}GB available"
-fi
-
-# GPU info
-GPU_INFO=$(system_profiler SPDisplaysDataType 2>/dev/null | grep "Chipset Model" | head -1 | sed 's/.*: //')
-if [ -n "$GPU_INFO" ]; then
-    ok "  GPU: $GPU_INFO (Metal)"
 fi
 
 echo ""
@@ -199,14 +337,28 @@ ok "  Ollama running on port $PORT."
 # ============================================================================
 step "Configuring Ollama environment"
 
-# These settings are tuned for Gemma 4 26B MoE on Apple Silicon:
-#   FA=0:            Gemma 4's hybrid attention (sliding-window + global) is slower/unstable with Flash Attention
+# Settings tuned for Gemma 4 26B MoE:
+#   FA:              0 for Metal (hybrid attention is slower/unstable), 1 for CUDA (eGPU benefits)
+#   KV_CACHE_TYPE:   Match KV cache precision to model quant
 #   KEEP_ALIVE=24h:  Keep model loaded in GPU memory between requests
 #   NUM_PARALLEL=1:  Single-user — don't split KV cache across parallel slots
 #   MAX_LOADED=1:    Only one model at a time to avoid memory waste
 
+# Flash Attention: off for Metal (Apple Silicon), on for CUDA (NVIDIA eGPU)
+FA_VAL=0
+if [ "$GPU_BACKEND" = "cuda" ]; then
+    FA_VAL=1
+fi
+
+# KV cache type: match to model quant for best quality/memory tradeoff
+KV_CACHE_TYPE="q8_0"
+if [ "$QUANT" = "q4_K_M" ]; then
+    KV_CACHE_TYPE="q4_0"
+fi
+
 OLLAMA_ENVS=(
-    "OLLAMA_FLASH_ATTENTION:0"
+    "OLLAMA_FLASH_ATTENTION:${FA_VAL}"
+    "OLLAMA_KV_CACHE_TYPE:${KV_CACHE_TYPE}"
     "OLLAMA_KEEP_ALIVE:24h"
     "OLLAMA_NUM_PARALLEL:1"
     "OLLAMA_MAX_LOADED_MODELS:1"
@@ -223,7 +375,7 @@ for entry in "${OLLAMA_ENVS[@]}"; do
         NEEDS_RESTART=true
     fi
 done
-ok "  launchctl environment set (FA=0, KEEP_ALIVE=24h, NUM_PARALLEL=1, MAX_LOADED=1)"
+ok "  launchctl environment set (FA=${FA_VAL}, KV=${KV_CACHE_TYPE}, KEEP_ALIVE=24h)"
 
 # Persist in shell profile so new terminals inherit the values
 SHELL_RC=""
@@ -273,10 +425,11 @@ fi
 # ============================================================================
 step "Pulling base model ($BASE_MODEL)"
 
-if ollama list 2>/dev/null | grep -q "gemma4.*26b-a4b-it-q8_0"; then
+MODEL_TAG=$(echo "$BASE_MODEL" | sed 's/.*://')
+if ollama list 2>/dev/null | grep -q "gemma4.*${MODEL_TAG}"; then
     ok "  Base model already available."
 else
-    echo "  Downloading ~28GB model. This may take a while..."
+    echo "  Downloading ~${MODEL_SIZE_GB}GB model ($QUANT). This may take a while..."
     echo "  (Download is resumable — safe to interrupt and re-run)"
     ollama pull "$BASE_MODEL" || fail "Failed to pull $BASE_MODEL"
     ok "  Base model downloaded."
@@ -302,18 +455,28 @@ fi
 # ============================================================================
 step "Creating optimized model ($CUSTOM_MODEL)"
 
+# The Modelfile uses q8_0 as its FROM line. If we're using q4_K_M, generate
+# a modified Modelfile with the correct base model.
+EFFECTIVE_MODELFILE="$ENGINE_DIR/Modelfile"
+if [ ! -f "$EFFECTIVE_MODELFILE" ]; then
+    fail "Modelfile not found at $EFFECTIVE_MODELFILE"
+fi
+if [ "$QUANT" != "q8_0" ]; then
+    TEMP_MODELFILE="/tmp/pre-Modelfile-${QUANT}"
+    sed "s|FROM gemma4:26b-a4b-it-q8_0|FROM $BASE_MODEL|" "$EFFECTIVE_MODELFILE" > "$TEMP_MODELFILE"
+    EFFECTIVE_MODELFILE="$TEMP_MODELFILE"
+    ok "  Using modified Modelfile with $QUANT base"
+fi
+
 if ollama list 2>/dev/null | grep -q "$CUSTOM_MODEL"; then
     ok "  Custom model already exists."
     if ask_yn "  Recreate from Modelfile? [y/N] " "N"; then
-        ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
+        ollama create "$CUSTOM_MODEL" -f "$EFFECTIVE_MODELFILE" || fail "Failed to create $CUSTOM_MODEL"
         ok "  Custom model recreated."
     fi
 else
-    if [ ! -f "$ENGINE_DIR/Modelfile" ]; then
-        fail "Modelfile not found at $ENGINE_DIR/Modelfile"
-    fi
-    ollama create "$CUSTOM_MODEL" -f "$ENGINE_DIR/Modelfile" || fail "Failed to create $CUSTOM_MODEL"
-    ok "  Custom model created (dynamic context, optimized batch size)."
+    ollama create "$CUSTOM_MODEL" -f "$EFFECTIVE_MODELFILE" || fail "Failed to create $CUSTOM_MODEL"
+    ok "  Custom model created ($QUANT, dynamic context, optimized batch size)."
 fi
 
 # ============================================================================
@@ -322,43 +485,58 @@ fi
 step "Checking build tools"
 
 if ! command -v clang &>/dev/null; then
-    warn "  Clang not found. Installing Xcode Command Line Tools..."
-    xcode-select --install 2>/dev/null || true
-    echo "  Please complete the Xcode installation and re-run this script."
-    exit 1
+    if [ "$IS_APPLE_SILICON" = true ]; then
+        warn "  Clang not found. Installing Xcode Command Line Tools..."
+        xcode-select --install 2>/dev/null || true
+        echo "  Please complete the Xcode installation and re-run this script."
+        exit 1
+    else
+        warn "  Clang not found — CLI binary will not be built (Web GUI only)."
+    fi
+else
+    ok "  Compiler: $(clang --version | head -1)"
 fi
-ok "  Compiler: $(clang --version | head -1)"
 
 # Swift compiler (needed for EventKit-based Calendar/Reminders tools)
 if command -v swiftc &>/dev/null; then
     ok "  Swift: $(swiftc --version 2>&1 | head -1 | sed 's/.*version: //')"
 else
     warn "  swiftc not found — Calendar/Reminders tools will compile on first use."
-    warn "  Install Xcode CLI tools to resolve: xcode-select --install"
+    if [ "$IS_APPLE_SILICON" = true ]; then
+        warn "  Install Xcode CLI tools to resolve: xcode-select --install"
+    fi
 fi
 
-# Check for Metal framework (should always be present on Apple Silicon macOS)
-if ! xcrun --sdk macosx --show-sdk-path &>/dev/null; then
-    warn "  macOS SDK not found. You may need to run: xcode-select --install"
+# Check for Metal framework (Apple Silicon only)
+if [ "$IS_APPLE_SILICON" = true ]; then
+    if ! xcrun --sdk macosx --show-sdk-path &>/dev/null; then
+        warn "  macOS SDK not found. You may need to run: xcode-select --install"
+    fi
 fi
 
 # ============================================================================
 # Step 5: Build PRE
 # ============================================================================
-step "Building PRE"
+if [ "$IS_APPLE_SILICON" = true ]; then
+    step "Building PRE"
 
-cd "$ENGINE_DIR"
-make clean 2>/dev/null || true
-make pre telegram menubar 2>&1 | tail -5
-if [ ! -x "$ENGINE_DIR/pre" ]; then
-    fail "Build failed — 'pre' binary not found."
-fi
-ok "  Built: pre ($(du -sh pre | cut -f1))"
-if [ -x "$ENGINE_DIR/pre-telegram" ]; then
-    ok "  Built: pre-telegram ($(du -sh pre-telegram | cut -f1))"
-fi
-if [ -x "$ENGINE_DIR/PRE.app/Contents/MacOS/pre-menubar" ]; then
-    ok "  Built: PRE.app (menu bar helper)"
+    cd "$ENGINE_DIR"
+    make clean 2>/dev/null || true
+    make pre telegram menubar 2>&1 | tail -5
+    if [ ! -x "$ENGINE_DIR/pre" ]; then
+        fail "Build failed — 'pre' binary not found."
+    fi
+    ok "  Built: pre ($(du -sh pre | cut -f1))"
+    if [ -x "$ENGINE_DIR/pre-telegram" ]; then
+        ok "  Built: pre-telegram ($(du -sh pre-telegram | cut -f1))"
+    fi
+    if [ -x "$ENGINE_DIR/PRE.app/Contents/MacOS/pre-menubar" ]; then
+        ok "  Built: PRE.app (menu bar helper)"
+    fi
+else
+    step "Skipping CLI build (Intel — Web GUI only)"
+    ok "  CLI requires Apple Silicon (arm64). Web GUI will be your interface."
+    ok "  Access PRE at http://localhost:7749 after installation."
 fi
 
 # ============================================================================

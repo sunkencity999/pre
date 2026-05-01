@@ -4,9 +4,9 @@
 
 PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your hardware.
 
-PRE has two interfaces: a **CLI** (macOS-only, Objective-C) optimized for Apple Silicon, and a **Web GUI** (Node.js) that runs on both **macOS and Windows**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
+PRE has two interfaces: a **CLI** (macOS Apple Silicon only, Objective-C) and a **Web GUI** (Node.js) that runs on **macOS (Apple Silicon + Intel with eGPU) and Windows**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
 
-The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU** — the installer selects the optimal quantization based on GPU VRAM (28+ GB VRAM for q8_0, otherwise q4_K_M for full GPU acceleration).
+The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU**. Intel Macs are supported via **eGPU** (NVIDIA Ampere+ or AMD RDNA3+) using the [TinyGPU driver](https://docs.tinygrad.org/tinygpu/). Both installers auto-detect GPU VRAM and select the optimal quantization (28+ GB VRAM for q8_0, otherwise q4_K_M).
 
 ---
 
@@ -217,7 +217,7 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 
 ## Installation
 
-### macOS Prerequisites
+### macOS Prerequisites (Apple Silicon)
 
 | Component | Required |
 |-----------|----------|
@@ -229,6 +229,23 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 | **Xcode CLI** | `xcode-select --install` |
 | **Node.js 18+** | For web GUI (`brew install node`) |
 | **Python 3.10-3.13** | Optional — for ComfyUI image generation |
+
+### macOS Prerequisites (Intel + eGPU)
+
+| Component | Required |
+|-----------|----------|
+| **macOS** | 12.1+ (Monterey or later) |
+| **Chip** | Intel x86_64 |
+| **eGPU** | NVIDIA Ampere+ (RTX 3000+) or AMD RDNA3+ via Thunderbolt/USB4 |
+| **TinyGPU** | [tinygrad TinyGPU driver](https://docs.tinygrad.org/tinygpu/) (Apple-signed) |
+| **Docker Desktop** | Required for NVIDIA CUDA path ([docker.com](https://www.docker.com/products/docker-desktop/)) |
+| **RAM** | 16 GB minimum (model runs on eGPU VRAM) |
+| **eGPU VRAM** | 16+ GB (q4_K_M); 28+ GB for q8_0 |
+| **Disk** | ~15 GB (q4_K_M) or ~28 GB (q8_0) for model |
+| **Ollama 0.4+** | [ollama.ai](https://ollama.ai) (auto-detects TinyGPU) |
+| **Node.js 18+** | For web GUI (`brew install node`) |
+
+> **Note:** Intel Macs run the Web GUI only (CLI requires Apple Silicon). Connect the eGPU before booting — hot-plug detection is unreliable in the current TinyGPU driver.
 
 ### Windows Prerequisites
 
