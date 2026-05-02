@@ -215,10 +215,10 @@ describe('native app tools — dispatcher routing', () => {
         }
       });
     } else {
-      test('returns unsupported platform error on Linux', async () => {
+      test('returns EDS guidance on Linux without EDS', async () => {
         const result = await calendar({ action: 'today' });
-        expect(result).toContain('Error');
-        expect(result).toContain('only supported');
+        // On Linux, calendar dispatches to EDS which returns install guidance
+        expect(result).toContain('Evolution Data Server');
       });
     }
 
@@ -316,10 +316,10 @@ describe('native app tools — dispatcher routing', () => {
         expect(result).toContain('unknown');
       });
     } else {
-      test('returns unsupported platform error on Linux', async () => {
+      test('returns EDS guidance on Linux without EDS', async () => {
         const result = await contacts({ action: 'search' });
-        expect(result).toContain('Error');
-        expect(result).toContain('only supported');
+        // On Linux, contacts dispatches to EDS which returns install guidance
+        expect(result).toContain('Evolution Data Server');
       });
     }
 
@@ -353,10 +353,10 @@ describe('native app tools — dispatcher routing', () => {
         }
       });
     } else {
-      test('returns unsupported platform error on Linux', async () => {
+      test('returns EDS guidance on Linux without EDS', async () => {
         const result = await reminders({ action: 'list' });
-        expect(result).toContain('Error');
-        expect(result).toContain('only supported');
+        // On Linux, reminders dispatches to EDS which returns install guidance
+        expect(result).toContain('Evolution Data Server');
       });
     }
 

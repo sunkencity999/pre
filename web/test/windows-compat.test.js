@@ -83,20 +83,21 @@ describe('Windows compatibility — module loading', () => {
     const { IS_MAC, IS_WIN } = require('../src/platform');
     const { buildToolDefs } = require('../src/tools-defs');
     const names = buildToolDefs().map(t => t.function.name);
-    // These tools are registered when IS_MAC || IS_WIN (both platforms)
-    const nativeAppTools = [
-      'apple_mail', 'apple_calendar', 'apple_contacts',
-      'apple_reminders', 'apple_notes',
-    ];
 
+    // PIM tools (calendar, contacts, reminders, notes) are cross-platform
+    // (macOS: EventKit/AppleScript, Windows: Outlook COM, Linux: GNOME EDS)
+    const crossPlatformPIM = [
+      'apple_calendar', 'apple_contacts', 'apple_reminders', 'apple_notes',
+    ];
+    for (const t of crossPlatformPIM) {
+      expect(names).toContain(t);
+    }
+
+    // Mail is macOS + Windows only (no stable Linux mail DBus API)
     if (IS_MAC || IS_WIN) {
-      for (const t of nativeAppTools) {
-        expect(names).toContain(t);
-      }
+      expect(names).toContain('apple_mail');
     } else {
-      for (const t of nativeAppTools) {
-        expect(names).not.toContain(t);
-      }
+      expect(names).not.toContain('apple_mail');
     }
   });
 
