@@ -4,7 +4,7 @@
 
 const { execSync } = require('child_process');
 const os = require('os');
-const { IS_WIN } = require('../platform');
+const { IS_WIN, IS_LINUX } = require('../platform');
 
 /**
  * Spotlight tool dispatcher.
@@ -33,6 +33,7 @@ function searchFiles(args) {
   if (!query) return 'Error: "query" is required for search';
 
   if (IS_WIN) return winSearch(query, folder, '', count);
+  if (IS_LINUX) return linuxSearch(query, folder, count);
   return macSearch(query, folder, count);
 }
 
@@ -117,6 +118,7 @@ function findFiles(args) {
   if (!query && !type) return 'Error: "query" and/or "type" is required';
 
   if (IS_WIN) return winFindFiles(query, type, folder, count);
+  if (IS_LINUX) return linuxFindFiles(query, type, folder, count);
   return macFindFiles(query, type, folder, count);
 }
 
@@ -219,6 +221,7 @@ function previewFile(args) {
   if (!filePath) return 'Error: "path" or "query" (file path) is required for preview';
 
   if (IS_WIN) return winPreview(filePath);
+  if (IS_LINUX) return linuxPreview(filePath);
   return macPreview(filePath);
 }
 
@@ -277,6 +280,108 @@ $props -join [char]10
     }).trim();
 
     return output || `No metadata found for: ${filePath}`;
+  } catch (err) {
+    return `Error getting file metadata: ${(err.stderr || err.message).trim()}`;
+  }
+}
+
+// ── Linux implementations ────────────────────────────────────────────────
+
+/**
+ * Linux search: try `locate` (fast, pre-indexed) then `find` fallback.
+ */
+function linuxSearch(query, folder, count) {
+  const safeQuery = query.replace(/"/g, '\\"');
+
+  // Try locate first (fastest — pre-indexed)
+  try {
+    const locateCmd = folder
+      ? `locate -i -l ${count} "${safeQuery}" 2>/dev/null | grep "^${folder.replace(/"/g, '\\"')}"`
+      : `locate -i -l ${count} "${safeQuery}" 2>/dev/null`;
+    const output = execSync(locateCmd, {
+      encoding: 'utf-8', timeout: 15000, maxBuffer: 512 * 1024,
+    }).trim();
+    if (output) return output.split('\n').slice(0, count).join('\n');
+  } catch { /* locate not installed or db not initialized */ }
+
+  // Fallback: find (slower but universal)
+  const searchPath = folder || os.homedir();
+  try {
+    const output = execSync(
+      `find "${searchPath.replace(/"/g, '\\"')}" -maxdepth 6 -iname "*${safeQuery}*" -not -path "*/\\.*" -not -path "*/node_modules/*" 2>/dev/null | head -${count}`,
+      { encoding: 'utf-8', timeout: 30000, maxBuffer: 512 * 1024 }
+    ).trim();
+    if (!output) return `No files found matching: ${query}`;
+    return output;
+  } catch (err) {
+    return `Error searching files: ${(err.stderr || err.message).trim()}`;
+  }
+}
+
+function linuxFindFiles(query, type, folder, count) {
+  const extMap = {
+    pdf: '*.pdf',
+    image: '*.jpg *.jpeg *.png *.gif *.bmp *.webp *.svg *.tiff',
+    photo: '*.jpg *.jpeg *.png *.gif *.bmp *.webp *.tiff',
+    audio: '*.mp3 *.wav *.flac *.aac *.ogg *.wma *.m4a',
+    music: '*.mp3 *.wav *.flac *.aac *.ogg *.wma *.m4a',
+    video: '*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm',
+    movie: '*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm',
+    presentation: '*.pptx *.ppt *.key *.odp',
+    spreadsheet: '*.xlsx *.xls *.csv *.ods',
+    document: '*.docx *.doc *.pdf *.rtf *.odt *.txt',
+    text: '*.txt *.md *.log *.csv *.json *.xml *.yaml *.yml',
+    code: '*.js *.ts *.py *.java *.c *.cpp *.cs *.go *.rs *.rb *.php *.sh',
+    app: '',
+  };
+
+  const searchPath = folder || os.homedir();
+  const patterns = type ? (extMap[type.toLowerCase()] || `*.${type}`) : '';
+
+  let nameArgs = '';
+  if (patterns) {
+    const parts = patterns.split(' ').filter(Boolean);
+    nameArgs = parts.map((p, i) => `${i > 0 ? '-o ' : ''}-iname "${p}"`).join(' ');
+    if (parts.length > 1) nameArgs = `\\( ${nameArgs} \\)`;
+  }
+  if (query) {
+    const safeQuery = query.replace(/"/g, '\\"');
+    const qArg = `-iname "*${safeQuery}*"`;
+    nameArgs = nameArgs ? `${nameArgs} ${qArg}` : qArg;
+  }
+
+  if (!nameArgs) return 'Error: need query or type filter';
+
+  try {
+    const output = execSync(
+      `find "${searchPath.replace(/"/g, '\\"')}" -maxdepth 6 -type f ${nameArgs} -not -path "*/\\.*" -not -path "*/node_modules/*" 2>/dev/null | head -${count}`,
+      { encoding: 'utf-8', timeout: 30000, maxBuffer: 512 * 1024 }
+    ).trim();
+    if (!output) return `No ${type || ''} files found${query ? ` matching: ${query}` : ''}`;
+    return output;
+  } catch (err) {
+    return `Error finding files: ${(err.stderr || err.message).trim()}`;
+  }
+}
+
+function linuxPreview(filePath) {
+  const safePath = filePath.replace(/"/g, '\\"');
+  try {
+    const output = execSync(
+      `stat --format="Name: %n\nSize: %s bytes\nType: %F\nCreated: %w\nModified: %y\nAccessed: %x\nPermissions: %A\nOwner: %U:%G" "${safePath}" 2>/dev/null`,
+      { encoding: 'utf-8', timeout: 10000, maxBuffer: 256 * 1024 }
+    ).trim();
+
+    // Try to get MIME type for extra context
+    let mime = '';
+    try {
+      mime = execSync(`file --brief --mime-type "${safePath}" 2>/dev/null`, {
+        encoding: 'utf-8', timeout: 5000,
+      }).trim();
+    } catch { /* ok */ }
+
+    const result = mime ? `MIME: ${mime}\n${output}` : output;
+    return result || `No metadata found for: ${filePath}`;
   } catch (err) {
     return `Error getting file metadata: ${(err.stderr || err.message).trim()}`;
   }

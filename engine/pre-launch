@@ -29,10 +29,19 @@ if [ -f "$CTX_FILE" ]; then
     fi
 fi
 
-# Detect eGPU (TinyGPU) for status display
+# Detect GPU for status display
 EGPU_STATUS=""
-if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
-    EGPU_STATUS=" + eGPU (TinyGPU)"
+if [ "$(uname -s)" = "Linux" ]; then
+    # Linux: show NVIDIA GPU info if available
+    if command -v nvidia-smi &>/dev/null; then
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)
+        [ -n "$GPU_NAME" ] && EGPU_STATUS=" + $GPU_NAME (CUDA)"
+    fi
+else
+    # macOS: detect eGPU (TinyGPU)
+    if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
+        EGPU_STATUS=" + eGPU (TinyGPU)"
+    fi
 fi
 
 # Check if Ollama is running
@@ -96,7 +105,7 @@ WEB_STARTED_BY_US=false
 
 if [ -f "$WEB_DIR/server.js" ] && command -v node >/dev/null 2>&1; then
     # Check if a server is already running on our port
-    EXISTING_PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
+    EXISTING_PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || ss -tlnp "sport = :$WEB_PORT" 2>/dev/null | grep -oP 'pid=\K\d+' | head -1)
 
     if [ -n "$EXISTING_PID" ]; then
         # Check if it's managed by launchd (PPID=1) — don't touch it

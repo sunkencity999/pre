@@ -43,19 +43,39 @@ fi
 
 # Stop
 if [ "${1:-}" = "--stop" ]; then
-    PLIST="$HOME/Library/LaunchAgents/com.pre.server.plist"
-    if [ -f "$PLIST" ]; then
-        launchctl unload "$PLIST" 2>/dev/null || true
-        echo "PRE server stopped (LaunchAgent unloaded)"
-        echo "To re-enable: launchctl load $PLIST"
-    else
-        # No LaunchAgent — try to kill the process directly
-        PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
-        if [ -n "$PID" ]; then
-            kill "$PID" 2>/dev/null
-            echo "PRE server stopped (PID $PID)"
+    IS_LINUX=false
+    [ "$(uname -s)" = "Linux" ] && IS_LINUX=true
+
+    if [ "$IS_LINUX" = true ]; then
+        # Linux: try systemd user service first, then direct kill
+        if systemctl --user is-active pre-server &>/dev/null 2>&1; then
+            systemctl --user stop pre-server
+            echo "PRE server stopped (systemd user service)"
+            echo "To re-enable: systemctl --user start pre-server"
         else
-            echo "PRE server is not running"
+            PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1 || ss -tlnp "sport = :$WEB_PORT" 2>/dev/null | grep -oP 'pid=\K\d+' | head -1)
+            if [ -n "$PID" ]; then
+                kill "$PID" 2>/dev/null
+                echo "PRE server stopped (PID $PID)"
+            else
+                echo "PRE server is not running"
+            fi
+        fi
+    else
+        # macOS: LaunchAgent or direct kill
+        PLIST="$HOME/Library/LaunchAgents/com.pre.server.plist"
+        if [ -f "$PLIST" ]; then
+            launchctl unload "$PLIST" 2>/dev/null || true
+            echo "PRE server stopped (LaunchAgent unloaded)"
+            echo "To re-enable: launchctl load $PLIST"
+        else
+            PID=$(lsof -ti :"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
+            if [ -n "$PID" ]; then
+                kill "$PID" 2>/dev/null
+                echo "PRE server stopped (PID $PID)"
+            else
+                echo "PRE server is not running"
+            fi
         fi
     fi
     exit 0
@@ -70,38 +90,59 @@ export OLLAMA_KEEP_ALIVE=24h
 export OLLAMA_NUM_PARALLEL=1
 export OLLAMA_MAX_LOADED_MODELS=1
 
-# Detect GPU backend: NVIDIA eGPU (CUDA via TinyGPU) vs Apple Silicon (Metal)
-# Flash Attention: ON for CUDA, OFF for Metal (Gemma 4 hybrid attention is slower on Metal)
-GPU_BACKEND="metal"
-if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
-    # TinyGPU driver loaded — check for NVIDIA via Docker
-    if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-        EGPU_VRAM_MIB=$(docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 \
-            nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
-        if [ -n "$EGPU_VRAM_MIB" ] && [ "$EGPU_VRAM_MIB" -gt 0 ] 2>/dev/null; then
+# Detect GPU backend and set Flash Attention / KV cache accordingly
+# macOS: NVIDIA eGPU via TinyGPU (Docker nvidia-smi) or Apple Silicon (Metal)
+# Linux: direct nvidia-smi (no Docker needed)
+GPU_BACKEND=""
+DETECTED_VRAM_GB=0
+
+if [ "$(uname -s)" = "Linux" ]; then
+    # Linux: direct NVIDIA detection
+    if command -v nvidia-smi &>/dev/null; then
+        NVRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+        if [ -n "$NVRAM_MIB" ] && [ "$NVRAM_MIB" -gt 0 ] 2>/dev/null; then
             GPU_BACKEND="cuda"
-            EGPU_VRAM_GB=$((EGPU_VRAM_MIB / 1024))
+            DETECTED_VRAM_GB=$((NVRAM_MIB / 1024))
+        fi
+    fi
+else
+    # macOS: Apple Silicon (Metal) or NVIDIA eGPU (CUDA via TinyGPU)
+    GPU_BACKEND="metal"
+    if systemextensionsctl list 2>/dev/null | grep -qi "tinygpu"; then
+        if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+            EGPU_VRAM_MIB=$(docker run --rm --gpus all nvidia/cuda:12.6.0-base-ubuntu24.04 \
+                nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -1 || true)
+            if [ -n "$EGPU_VRAM_MIB" ] && [ "$EGPU_VRAM_MIB" -gt 0 ] 2>/dev/null; then
+                GPU_BACKEND="cuda"
+                DETECTED_VRAM_GB=$((EGPU_VRAM_MIB / 1024))
+            fi
         fi
     fi
 fi
 
 if [ "$GPU_BACKEND" = "cuda" ]; then
     export OLLAMA_FLASH_ATTENTION=1
-    # KV cache type: q8_0 only if eGPU VRAM >= 28GB (q8_0 model installed)
-    if [ "${EGPU_VRAM_GB:-0}" -ge 28 ]; then
+    if [ "$DETECTED_VRAM_GB" -ge 28 ]; then
         export OLLAMA_KV_CACHE_TYPE=q8_0
     else
         export OLLAMA_KV_CACHE_TYPE=q4_0
     fi
     export OLLAMA_GPU_OVERHEAD=256000000
-else
+elif [ "$GPU_BACKEND" = "metal" ]; then
     export OLLAMA_FLASH_ATTENTION=0
 fi
 
 # Ensure Ollama is running
 if ! curl -sf "http://localhost:${PORT}/v1/models" >/dev/null 2>&1; then
-    # Try starting Ollama.app first (preferred — handles updates, UI icon)
-    if [ -d "/Applications/Ollama.app" ]; then
+    if [ "$(uname -s)" = "Linux" ]; then
+        # Linux: try systemd service first, then manual
+        if systemctl start ollama &>/dev/null 2>&1; then
+            : # started via systemd
+        else
+            ollama serve >/dev/null 2>&1 &
+        fi
+    elif [ -d "/Applications/Ollama.app" ]; then
+        # macOS: prefer Ollama.app (handles updates, UI icon)
         open -g -a Ollama 2>/dev/null || true
     else
         ollama serve >/dev/null 2>&1 &

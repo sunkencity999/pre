@@ -92,6 +92,11 @@ async function executeCustomTool(name, args) {
   const tool = tools.find(t => t.name === name);
   if (!tool) return `Error: custom tool "${name}" not found`;
 
+  // Track usage for self-improving skills analytics
+  tool.usage_count = (tool.usage_count || 0) + 1;
+  tool.last_used = new Date().toISOString();
+  try { saveCustomTool(tool); } catch {}
+
   const impl = tool.implementation;
   if (!impl) return `Error: custom tool "${name}" has no implementation`;
 
@@ -321,4 +326,6 @@ module.exports = {
   isCustomTool,
   buildCustomToolDefs,
   loadCustomTools,
+  saveCustomTool,
+  deleteCustomTool,
 };

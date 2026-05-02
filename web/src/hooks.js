@@ -8,6 +8,14 @@ const { execSync } = require('child_process');
 
 const HOOKS_PATH = path.join(process.env.HOME || '/tmp', '.pre', 'hooks.json');
 
+// ── Cached hooks config ──────────────────────────────────────────────────────
+// runHooks() is called twice per tool call (pre + post). With 10 tools per turn
+// and 35 turns, that's ~700 readFileSync calls per session for a file that only
+// changes when the user manually edits hooks. Cache with 30s TTL.
+let _hooksCache = null;
+let _hooksCacheTime = 0;
+const _HOOKS_TTL = 30000;
+
 /**
  * Hook config format (hooks.json):
  * {
@@ -35,22 +43,31 @@ const HOOKS_PATH = path.join(process.env.HOME || '/tmp', '.pre', 'hooks.json');
  */
 
 function loadHooks() {
+  const now = Date.now();
+  if (_hooksCache && now - _hooksCacheTime < _HOOKS_TTL) return _hooksCache;
   try {
     if (fs.existsSync(HOOKS_PATH)) {
       const raw = fs.readFileSync(HOOKS_PATH, 'utf-8');
       const config = JSON.parse(raw);
-      return config.hooks || [];
+      _hooksCache = config.hooks || [];
+      _hooksCacheTime = now;
+      return _hooksCache;
     }
   } catch (err) {
     console.error('[hooks] Failed to load config:', err.message);
   }
-  return [];
+  _hooksCache = [];
+  _hooksCacheTime = now;
+  return _hooksCache;
 }
 
 function saveHooks(hooks) {
   const dir = path.dirname(HOOKS_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(HOOKS_PATH, JSON.stringify({ hooks }, null, 2));
+  // Invalidate cache so next loadHooks() reads the updated file
+  _hooksCache = null;
+  _hooksCacheTime = 0;
 }
 
 /**

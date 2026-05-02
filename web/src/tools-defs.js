@@ -2,11 +2,20 @@
 // Mirrors build_tools_json() from pre.m
 
 const { getActiveConnections, isComfyUIInstalled } = require('./context');
-const { IS_MAC, IS_WIN } = require('./platform');
+const { IS_MAC, IS_WIN, IS_LINUX } = require('./platform');
 const mcp = require('./mcp');
 const { buildCustomToolDefs } = require('./custom-tools');
+const { isToolAllowed } = require('./tool-tiers');
 
-function buildToolDefs() {
+/**
+ * Build Ollama-compatible tool definitions.
+ * @param {Object} opts
+ * @param {Set<string>} [opts.activeDomains] - Active domain names. If provided,
+ *   only CORE + active-domain tools are included. If omitted, all tools load
+ *   (backward compatible).
+ */
+function buildToolDefs(opts = {}) {
+  const filtering = opts.activeDomains instanceof Set;
   const tools = [
     tool('bash', 'Run a shell command and return output', {
       command: { type: 'string', description: 'The shell command to execute' },
@@ -173,9 +182,19 @@ function buildToolDefs() {
       path: { type: 'string', description: 'File path (for preview action — shows metadata)' },
       count: { type: 'integer', description: 'Max results (default: 20)' },
     }, ['action']),
+
+    tool('request_tools', 'Load additional tool domains on demand. Use this when you need a tool that is not currently available. Domains: devops (process/network/disk monitoring), desktop (computer control, clipboard, notifications), pim (email, calendar, contacts, reminders, notes), code (AppleScript/PowerShell), media (image generation, voice, browser, PDF export), automation (cron, agents, workflows, RAG, triggers, custom tools), cloud (GitHub, Jira, Slack, etc.), or "all" to load everything.', {
+      domain: { type: 'string', description: 'Domain to activate: devops|desktop|pim|code|media|automation|cloud|all' },
+    }, ['domain']),
+
+    tool('session_search', 'Search across all past conversations for specific text, commands, or topics. Useful for finding previous solutions, discussions, or tool outputs.', {
+      query: { type: 'string', description: 'Search text or regex pattern' },
+      project: { type: 'string', description: 'Limit search to a specific project (optional)' },
+      count: { type: 'integer', description: 'Max results (default: 20)' },
+    }, ['query']),
   ];
 
-  // Conditional: native app integrations (macOS: AppleScript/EventKit, Windows: Outlook COM/local files)
+  // Conditional: native mail (macOS + Windows only — no stable Linux mail DBus API)
   if (IS_MAC || IS_WIN) {
     const mailDesc = IS_WIN
       ? 'Send, read, and search email using Outlook. Works with any configured email account (Exchange, Gmail, IMAP). No API keys needed — uses the native mail client.'
@@ -193,9 +212,15 @@ function buildToolDefs() {
       account: { type: 'string', description: 'Account name filter (optional)' },
       count: { type: 'integer', description: 'Max results (default: 15)' },
     }, ['action']));
+  }
 
+  // Native PIM tools: calendar, contacts, reminders, notes (all platforms)
+  // macOS: EventKit/AppleScript, Windows: Outlook COM, Linux: GNOME Evolution Data Server via gdbus
+  {
     const calDesc = IS_WIN
       ? 'View and create calendar events using Outlook. Works with any configured calendar (Exchange, Google, IMAP). No API keys needed.'
+      : IS_LINUX
+      ? 'View and create calendar events via GNOME Evolution Data Server. Works with any configured calendar (Google, CalDAV, local). No API keys needed.'
       : 'View and create calendar events using the macOS Calendar app. Works with any configured calendar (iCloud, Google, Exchange). No API keys needed.';
     tools.push(tool('apple_calendar', calDesc, {
       action: { type: 'string', description: 'Action: today|week|list_events|create_event|search|list_calendars|delete_event' },
@@ -212,6 +237,8 @@ function buildToolDefs() {
 
     const contactsDesc = IS_WIN
       ? 'Search and read contacts from Outlook. Works with any synced account (Exchange, Google, IMAP). No API keys needed.'
+      : IS_LINUX
+      ? 'Search and read contacts via GNOME Evolution Data Server. Works with any synced account (Google, CardDAV, local). No API keys needed.'
       : 'Search and read contacts from the macOS Contacts app. Works with any synced account (iCloud, Google, Exchange). No API keys needed.';
     tools.push(tool('apple_contacts', contactsDesc, {
       action: { type: 'string', description: 'Action: search|read|list_groups|count' },
@@ -223,6 +250,8 @@ function buildToolDefs() {
 
     const remindersDesc = IS_WIN
       ? 'Create, list, complete, and search tasks using Outlook Tasks. Works with any configured account (Exchange, IMAP). No API keys needed.'
+      : IS_LINUX
+      ? 'Create, list, complete, and search tasks via GNOME Evolution Data Server. Works with any configured task list (Google, CalDAV, local). No API keys needed.'
       : 'Create, list, complete, and search reminders using the macOS Reminders app. Works with any configured account (iCloud, Exchange). No API keys needed.';
     tools.push(tool('apple_reminders', remindersDesc, {
       action: { type: 'string', description: 'Action: add|list|complete|search|list_lists|delete' },
@@ -237,7 +266,7 @@ function buildToolDefs() {
       completed: { type: 'boolean', description: 'Show completed reminders too (default: false)' },
     }, ['action']));
 
-    const notesDesc = IS_WIN
+    const notesDesc = IS_WIN || IS_LINUX
       ? 'Search, read, and create notes stored as local markdown files in ~/.pre/notes/. Simple and portable.'
       : 'Search, read, and create notes using the macOS Notes app. Works with any configured account (iCloud, Google, Exchange). No API keys needed.';
     tools.push(tool('apple_notes', notesDesc, {
@@ -608,6 +637,10 @@ function buildToolDefs() {
   const mcpTools = mcp.getAllTools();
   tools.push(...mcpTools);
 
+  // Progressive disclosure: filter to CORE + active domains when requested
+  if (filtering) {
+    return tools.filter(t => isToolAllowed(t.function.name, opts.activeDomains));
+  }
   return tools;
 }
 

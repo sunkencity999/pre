@@ -10,6 +10,10 @@ const { CONNECTIONS_FILE } = require('../src/constants');
 const context = require('../src/context');
 
 describe('context', () => {
+  beforeEach(() => {
+    context.invalidateConnectionsCache();
+  });
+
   describe('getActiveConnections', () => {
     test('returns boolean fields for each service', () => {
       const c = context.getActiveConnections();

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=PRE - Personal Reasoning Engine
+Comment=Local AI assistant with 70+ tools — starts server and opens browser
+Exec=bash -c 'cd "$(dirname "$(readlink -f "%k")")/web" && ./pre-server.sh & sleep 3 && xdg-open http://localhost:7749'
+Icon=applications-science
+Terminal=false
+Categories=Development;AI;Science;
+StartupNotify=true

@@ -12,11 +12,13 @@ jest.mock('../src/mcp', () => ({
 }));
 
 const { CONNECTIONS_FILE } = require('../src/constants');
+const { invalidateConnectionsCache } = require('../src/context');
 const toolsDefs = require('../src/tools-defs');
 
 describe('tools-defs', () => {
   beforeEach(() => {
     fs.writeFileSync(CONNECTIONS_FILE, '{}');
+    invalidateConnectionsCache(); // Clear cached config so file changes take effect
   });
 
   describe('buildToolDefs', () => {
@@ -92,6 +94,7 @@ describe('tools-defs', () => {
         github_key: 'ghp_test',
         jira_url: 'https://jira.test', jira_token: 'pat',
       }));
+      invalidateConnectionsCache(); // Flush cache so new credentials are read
       const names = toolsDefs.buildToolDefs().map(t => t.function.name);
       expect(names).toContain('github');
       expect(names).toContain('jira');

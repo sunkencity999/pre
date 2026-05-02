@@ -1,6 +1,6 @@
 # PRE Web GUI
 
-A local AI operating system for macOS and Windows. 70+ tools, desktop automation, document intelligence, voice interface, 16 enterprise integrations, event-driven triggers, self-architecting virtual tools, relevance-ranked memory, and a full management GUI — all running on your hardware with zero cloud dependency.
+A local AI operating system for macOS, Windows, and Linux. 70+ tools, desktop automation, document intelligence, voice interface, 16 enterprise integrations, event-driven triggers, self-architecting virtual tools, relevance-ranked memory, and a full management GUI — all running on your hardware with zero cloud dependency.
 
 PRE is not a chatbot with a few tools bolted on. It is a **vertically integrated AI platform** that controls your desktop, reads your email, searches your documents semantically, reacts to file changes, speaks and listens, records and replays workflows, schedules autonomous tasks, and connects to every enterprise tool your team uses — through a single conversational interface backed by Google Gemma 4 26B running locally at ~73 tokens/second.
 
@@ -51,6 +51,16 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Yes  # Non-interactive
 
 Then launch with `powershell -File web\pre-server.ps1`.
 
+### Linux
+
+```bash
+./install-linux.sh     # Interactive — prompts for optional steps
+```
+
+The installer detects your distro (apt/dnf/pacman), checks NVIDIA VRAM, installs Ollama and Node.js, pulls models, and optionally sets up GNOME PIM integration, desktop automation, voice tools, and systemd autostart.
+
+Then launch with `cd web && ./pre-server.sh` or `node server.js`.
+
 ### Manual (any platform)
 
 ```bash
@@ -93,16 +103,16 @@ node server.js          # http://localhost:7749
 
 These tools work immediately with no setup — they use native platform APIs and whatever accounts you've already configured. No OAuth flows, no API keys, no developer console.
 
-| Tool | macOS | Windows | Actions |
-|------|-------|---------|---------|
-| **Mail** | Mail.app (AppleScript) | Outlook COM | Send, draft, search, read, list recent, list mailboxes, list accounts |
-| **Calendar** | Calendar.app (EventKit/Swift) | Outlook COM | Today's events, this week, list events by range, create events, search, list calendars, delete events |
-| **Contacts** | Contacts.app (AppleScript) | Outlook COM | Search by name/org, read full contact details, list groups, count |
-| **Reminders** | Reminders.app (EventKit/Swift) | Outlook Tasks COM | Add, list, complete, search, list lists, delete |
-| **Notes** | Notes.app (AppleScript) | Local markdown (`~/.pre/notes/`) | Search (title + content), read, create, list recent, list folders |
-| **Spotlight** | mdfind | Windows Search | Full-text search across entire machine, find files by type, file metadata preview |
+| Tool | macOS | Windows | Linux | Actions |
+|------|-------|---------|-------|---------|
+| **Mail** | Mail.app (AppleScript) | Outlook COM | — | Send, draft, search, read, list recent, list mailboxes, list accounts |
+| **Calendar** | Calendar.app (EventKit/Swift) | Outlook COM | GNOME EDS | Today's events, this week, list events by range, create events, search, list calendars, delete events |
+| **Contacts** | Contacts.app (AppleScript) | Outlook COM | GNOME EDS | Search by name/org, read full contact details, list groups, count |
+| **Reminders** | Reminders.app (EventKit/Swift) | Outlook Tasks COM | GNOME EDS | Add, list, complete, search, list lists, delete |
+| **Notes** | Notes.app (AppleScript) | Local markdown (`~/.pre/notes/`) | Local markdown (`~/.pre/notes/`) | Search (title + content), read, create, list recent, list folders |
+| **Spotlight** | mdfind | Windows Search | locate / find | Full-text search across entire machine, find files by type, file metadata preview |
 
-On macOS, these work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. On Windows, mail/calendar/contacts/tasks require Outlook installed; notes use portable local markdown files. Just ask PRE to check your calendar or send an email.
+On macOS, these work with **any email/calendar provider** — iCloud, Gmail, Exchange, Outlook, Yahoo — whatever is configured in System Settings. On Windows, mail/calendar/contacts/tasks require Outlook installed; notes use portable local markdown files. On Linux, calendar/contacts/reminders use GNOME Evolution Data Server (install `evolution-data-server`); mail is not available (no universal Linux mail API). Just ask PRE to check your calendar or send an email.
 
 > "What's on my calendar today?"
 
@@ -150,8 +160,9 @@ PRE's standout capability: control **any desktop application** through a vision 
 
 ### Requirements
 
-- **cliclick** (Homebrew): `brew install cliclick`
-- **Accessibility permissions**: macOS will prompt to allow terminal access for screen recording and input events
+- **macOS:** `brew install cliclick` + Accessibility permissions (macOS will prompt)
+- **Windows:** Built-in (System.Windows.Forms + user32.dll P/Invoke)
+- **Linux (X11):** `sudo apt install xdotool scrot` (+ `imagemagick` for region capture/resize)
 
 ### How It Works
 
@@ -472,8 +483,8 @@ PRE supports speech-to-text and text-to-speech, all running locally. Transcribe 
 | Component | Install | Purpose |
 |-----------|---------|---------|
 | **Whisper** | `pip install openai-whisper` | Speech-to-text (local, no API) |
-| **TTS** | Built-in | Text-to-speech — macOS `say` (25+ voices) or Windows SAPI |
-| **FFmpeg** (optional) | `brew install ffmpeg` (macOS) or `winget install ffmpeg` (Windows) | Audio format conversion (WebM→WAV, AIFF→MP3) |
+| **TTS** | Built-in | Text-to-speech — macOS `say` (25+ voices), Windows SAPI, or Linux `espeak-ng` |
+| **FFmpeg** (optional) | `brew install ffmpeg` (macOS), `winget install ffmpeg` (Windows), `apt install ffmpeg` (Linux) | Audio format conversion (WebM→WAV, AIFF→MP3) |
 
 ### Available Actions
 
@@ -978,11 +989,13 @@ PRE can optionally start the web GUI server automatically when you log in, so it
 
 **Windows:** A VBScript wrapper in the Startup folder launches `pre-server.ps1` hidden at login. It starts Ollama, pre-warms the model, and runs the Node.js server.
 
+**Linux:** A systemd user service (`~/.config/systemd/user/pre-server.service`) starts the server at login. Managed via `systemctl --user enable/disable pre-server`.
+
 ### Enabling Auto-Start
 
 **From the GUI:** Open Settings (gear icon) → scroll to the **System** section → toggle **Start at Login**.
 
-**From the installer:** Both `install.sh` (macOS) and `install.ps1` (Windows) offer to enable auto-start during installation.
+**From the installer:** `install.sh` (macOS), `install.ps1` (Windows), and `install-linux.sh` (Linux) offer to enable auto-start during installation.
 
 **Manually:**
 
@@ -1016,7 +1029,7 @@ web/pre-server.sh --stop     # Stop the server (unloads LaunchAgent if active)
 
 ## Context Window Auto-Sizing
 
-The install script sizes the context window based on memory headroom: total RAM minus model weight size. On Windows, quantization is VRAM-aware (28+ GB VRAM → q8_0 at ~28 GB; smaller GPUs → q4_K_M at ~15 GB), so systems with smaller GPUs get more RAM headroom and proportionally larger context windows. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
+The install script sizes the context window based on memory headroom: total RAM minus model weight size. On Windows and Linux, quantization is VRAM-aware (28+ GB VRAM → q8_0 at ~28 GB; smaller GPUs → q4_K_M at ~15 GB), so systems with smaller GPUs get more RAM headroom and proportionally larger context windows. Linux detects NVIDIA VRAM directly via `nvidia-smi`. The value is written to `~/.pre/context` and read at runtime by the CLI, web GUI, and launcher — no manual sync needed.
 
 | Headroom (RAM − model) | Context Window | Tokens |
 |------------------------|---------------|--------|

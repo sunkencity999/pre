@@ -11,6 +11,7 @@ const os = require('os');
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
+const IS_LINUX = process.platform === 'linux';
 
 // ── Shell ─────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,9 @@ const IS_MAC = process.platform === 'darwin';
 function getShell() {
   if (IS_WIN) {
     return { cmd: 'powershell.exe', args: ['-NoProfile', '-Command'] };
+  }
+  if (IS_LINUX) {
+    return { cmd: '/bin/bash', args: ['-c'] };
   }
   return { cmd: '/bin/zsh', args: ['-c'] };
 }
@@ -44,6 +48,16 @@ function getChromePaths() {
       'C:\\Program Files\\Chromium\\Application\\chrome.exe',
     ];
   }
+  if (IS_LINUX) {
+    return [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/chromium',
+      '/snap/bin/chromium',
+      '/opt/google/chrome/chrome',
+    ];
+  }
   return [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
@@ -58,6 +72,9 @@ function revealInFileManager(filePath) {
   const safe = filePath.replace(/"/g, '\\"');
   if (IS_WIN) {
     exec(`explorer.exe /select,"${safe.replace(/\//g, '\\')}"`);
+  } else if (IS_LINUX) {
+    // xdg-open opens the parent directory (no select-file equivalent on Linux)
+    exec(`xdg-open "${path.dirname(safe)}"`);
   } else {
     exec(`open -R "${safe}"`);
   }
@@ -72,6 +89,11 @@ function clipboardRead() {
         encoding: 'utf-8', timeout: 5000,
       }).trim();
     }
+    if (IS_LINUX) {
+      return execSync('xclip -selection clipboard -o 2>/dev/null || xsel -b -o 2>/dev/null', {
+        encoding: 'utf-8', timeout: 5000,
+      }).trim();
+    }
     return execSync('pbpaste 2>/dev/null', { encoding: 'utf-8', timeout: 5000 }).trim();
   } catch {
     return '';
@@ -82,6 +104,10 @@ function clipboardWrite(text) {
   try {
     if (IS_WIN) {
       execSync('powershell.exe -NoProfile -Command "Set-Clipboard -Value $input"', {
+        input: text, encoding: 'utf-8', timeout: 5000,
+      });
+    } else if (IS_LINUX) {
+      execSync('xclip -selection clipboard 2>/dev/null || xsel -b -i 2>/dev/null', {
         input: text, encoding: 'utf-8', timeout: 5000,
       });
     } else {
@@ -104,6 +130,8 @@ function notify(title, message) {
       execSync(`powershell.exe -NoProfile -Command "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; $n.ShowBalloonTip(5000, '${safeTitle}', '${safeMsg}', 'Info'); Start-Sleep -Milliseconds 100; $n.Dispose()"`, {
         timeout: 10000, windowsHide: true,
       });
+    } else if (IS_LINUX) {
+      execSync(`notify-send "${safeTitle}" "${safeMsg}" 2>/dev/null`, { timeout: 5000 });
     } else {
       execSync(`osascript -e 'display notification "${safeMsg}" with title "${safeTitle}"'`, { timeout: 5000 });
     }
@@ -117,6 +145,8 @@ function openTarget(target) {
   try {
     if (IS_WIN) {
       execSync(`start "" "${safe}"`, { shell: 'cmd.exe', timeout: 10000 });
+    } else if (IS_LINUX) {
+      execSync(`xdg-open "${safe}"`, { timeout: 10000 });
     } else {
       execSync(`open "${safe}"`, { timeout: 10000 });
     }
@@ -197,6 +227,11 @@ function getCpuInfo() {
     const cores = os.cpus().length;
     return { name: name || `${cores}-core processor`, cores };
   }
+  if (IS_LINUX) {
+    const name = run("grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2") || '';
+    const cores = os.cpus().length;
+    return { name: name.trim() || `${cores}-core processor`, cores };
+  }
   const name = run("sysctl -n machdep.cpu.brand_string 2>/dev/null");
   const cores = parseInt(run("sysctl -n hw.ncpu 2>/dev/null")) || os.cpus().length;
   return { name, cores };
@@ -207,9 +242,9 @@ function getCpuUsage() {
     const pct = run('powershell.exe -NoProfile -Command "(Get-CimInstance Win32_Processor).LoadPercentage"');
     return parseFloat(pct) || 0;
   }
-  // macOS: aggregate from ps, normalized by core count
+  // Unix: aggregate from ps, normalized by core count
   const ps = run("ps -A -o %cpu | awk '{s+=$1} END {print s}'");
-  const cores = parseInt(run("sysctl -n hw.ncpu")) || 1;
+  const cores = IS_LINUX ? os.cpus().length : (parseInt(run("sysctl -n hw.ncpu")) || 1);
   return (parseFloat(ps) || 0) / cores;
 }
 
@@ -224,6 +259,27 @@ function getMemoryInfo() {
       totalGB: (totalBytes / (1024 ** 3)).toFixed(1),
       usagePct: Math.round(usagePct * 10) / 10,
     };
+  }
+
+  if (IS_LINUX) {
+    // Linux: parse /proc/meminfo for MemAvailable (includes reclaimable caches)
+    try {
+      const meminfo = run("cat /proc/meminfo 2>/dev/null");
+      const totalKB = parseFloat((meminfo.match(/MemTotal:\s+(\d+)/) || [])[1]) || 0;
+      const availKB = parseFloat((meminfo.match(/MemAvailable:\s+(\d+)/) || [])[1]) || 0;
+      const totalB = totalKB * 1024;
+      const usagePct = totalB > 0 ? ((1 - ((availKB * 1024) / totalB)) * 100) : 0;
+      return {
+        totalGB: (totalB / (1024 ** 3)).toFixed(1),
+        usagePct: Math.round(usagePct * 10) / 10,
+      };
+    } catch {
+      const usagePct = totalBytes > 0 ? ((1 - (freeBytes / totalBytes)) * 100) : 0;
+      return {
+        totalGB: (totalBytes / (1024 ** 3)).toFixed(1),
+        usagePct: Math.round(usagePct * 10) / 10,
+      };
+    }
   }
 
   // macOS: count inactive + speculative pages as available (reclaimable under pressure)
@@ -262,6 +318,12 @@ function getDiskUsage() {
     }
     return 0;
   }
+  if (IS_LINUX) {
+    const df = run("df -h / 2>/dev/null");
+    const lastLine = df.trim().split('\n').pop();
+    const pctMatch = (lastLine || '').match(/(\d+)%/);
+    return pctMatch ? parseInt(pctMatch[1]) : 0;
+  }
   // macOS: use Data volume (APFS root shows only system volume)
   const df = run("df -h /System/Volumes/Data 2>/dev/null || df -h /");
   const lastLine = df.trim().split('\n').pop();
@@ -278,6 +340,22 @@ function getBatteryInfo() {
     const charging = ['2', '3', '6', '7', '8', '9'].includes(status);
     const state = !percent ? 'unknown' : charging ? 'charging' : 'discharging';
     return { percent, state };
+  }
+  if (IS_LINUX) {
+    // Read from /sys/class/power_supply/BAT*
+    try {
+      const batDirs = fs.readdirSync('/sys/class/power_supply').filter(d => d.startsWith('BAT'));
+      if (batDirs.length === 0) return { percent: null, state: 'unknown' };
+      const batPath = `/sys/class/power_supply/${batDirs[0]}`;
+      const capacity = run(`cat ${batPath}/capacity 2>/dev/null`);
+      const statusRaw = run(`cat ${batPath}/status 2>/dev/null`).toLowerCase();
+      const percent = parseInt(capacity) || null;
+      const state = statusRaw.includes('discharging') ? 'discharging'
+        : statusRaw.includes('charging') ? 'charging' : 'unknown';
+      return { percent, state };
+    } catch {
+      return { percent: null, state: 'unknown' };
+    }
   }
   // macOS
   const raw = run("pmset -g batt 2>/dev/null | tail -1");
@@ -298,6 +376,14 @@ function getGpuInfo() {
     const wmi = run('powershell.exe -NoProfile -Command "(Get-CimInstance Win32_VideoController).Name"');
     return wmi ? `GPU: ${wmi}` : '';
   }
+  if (IS_LINUX) {
+    // Try NVIDIA first (direct — no Docker needed on Linux)
+    const nvidia = run('nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader 2>/dev/null');
+    if (nvidia) return `GPU: ${nvidia}`;
+    // Fallback to lspci
+    const lspci = run("lspci 2>/dev/null | grep -i 'vga\\|3d\\|display'");
+    return lspci ? `GPU: ${lspci}` : '';
+  }
   return run("system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Chipset|Chip|VRAM|Metal'");
 }
 
@@ -307,6 +393,9 @@ function hasTTS() {
   if (IS_WIN) {
     // Windows SAPI is always available on Windows 10+
     return true;
+  }
+  if (IS_LINUX) {
+    return !!(whichCmd('espeak-ng') || whichCmd('espeak'));
   }
   return !!whichCmd('say');
 }
@@ -348,6 +437,26 @@ function ttsSpeak(text, opts = {}) {
     }
   }
 
+  if (IS_LINUX) {
+    // Linux — use espeak-ng (or espeak fallback)
+    const ttsCmd = whichCmd('espeak-ng') ? 'espeak-ng' : 'espeak';
+    const voice = opts.voice || 'en';
+    const rate = opts.rate || 175; // espeak WPM (default ~175)
+
+    if (opts.output) {
+      const outPath = opts.output.endsWith('.wav') ? opts.output : opts.output + '.wav';
+      try {
+        execSync(`${ttsCmd} -v "${voice}" -s ${rate} -w "${outPath}" "${safeText}"`, { timeout: 30000 });
+        return { file: outPath, voice, rate };
+      } catch (err) {
+        return { error: `TTS generation failed: ${err.message}` };
+      }
+    }
+
+    exec(`${ttsCmd} -v "${voice}" -s ${rate} "${safeText}"`);
+    return { spoken: true, voice, rate, length: safeText.length };
+  }
+
   // macOS — use `say`
   const voice = opts.voice || 'Samantha';
   const rate = opts.rate || 185;
@@ -374,6 +483,26 @@ function ttsListVoices() {
         const [name, locale] = line.split('|');
         return { name: name.trim(), locale: (locale || '').trim(), sample: '' };
       });
+      const english = voices.filter(v => v.locale.startsWith('en'));
+      return { voices: english, total: voices.length };
+    } catch {
+      return { voices: [], total: 0 };
+    }
+  }
+
+  if (IS_LINUX) {
+    // espeak-ng / espeak
+    const ttsCmd = whichCmd('espeak-ng') ? 'espeak-ng' : 'espeak';
+    try {
+      const output = run(`${ttsCmd} --voices 2>/dev/null`, 15000);
+      const voices = output.split('\n').filter(Boolean).slice(1).map(line => {
+        // Format: Pty Language Age/Gender VoiceName File Other Languages
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 4) {
+          return { name: parts[3], locale: parts[1] || '', sample: '' };
+        }
+        return null;
+      }).filter(Boolean);
       const english = voices.filter(v => v.locale.startsWith('en'));
       return { voices: english, total: voices.length };
     } catch {
@@ -551,6 +680,9 @@ function netInfo() {
   if (IS_WIN) {
     return run('ipconfig', 10000) || 'Unable to gather network info';
   }
+  if (IS_LINUX) {
+    return run("ip addr 2>/dev/null | head -40") || run("ifconfig 2>/dev/null | head -30") || 'Unable to gather network info';
+  }
   return run("ifconfig 2>/dev/null | grep -E 'flags|inet |ether' | head -30") || 'Unable to gather network info';
 }
 
@@ -573,12 +705,18 @@ function serviceStatus(service) {
   if (IS_WIN) {
     return run(`powershell.exe -NoProfile -Command "Get-Service -Name '*${safe}*' | Format-Table Status, Name, DisplayName -AutoSize | Out-String -Width 200"`) || `Service '${service}' not found`;
   }
+  if (IS_LINUX) {
+    return run(`systemctl status '${safe}' 2>/dev/null`) || run(`systemctl --user status '${safe}' 2>/dev/null`) || `Service '${service}' not found`;
+  }
   return run(`launchctl list 2>/dev/null | grep '${safe}'`) || run(`brew services list 2>/dev/null | grep '${safe}'`) || `Service '${service}' not found`;
 }
 
 function windowList() {
   if (IS_WIN) {
     return run('powershell.exe -NoProfile -Command "Get-Process | Where-Object { $_.MainWindowTitle -ne \'\' } | Format-Table Id, ProcessName, MainWindowTitle -AutoSize | Out-String -Width 300"') || 'Unable to list windows';
+  }
+  if (IS_LINUX) {
+    return run("wmctrl -l 2>/dev/null") || 'Unable to list windows (install wmctrl)';
   }
   return run("osascript -e 'tell application \"System Events\" to get name of every application process whose visible is true' 2>/dev/null") || 'Unable to list windows';
 }
@@ -588,6 +726,11 @@ function windowFocus(app) {
   const safe = app.replace(/"/g, '\\"');
   if (IS_WIN) {
     run(`powershell.exe -NoProfile -Command "$p = Get-Process | Where-Object { $_.MainWindowTitle -like '*${safe}*' } | Select-Object -First 1; if ($p) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class W { [DllImport(\\\"user32.dll\\\")] public static extern bool SetForegroundWindow(IntPtr hWnd); }'; [W]::SetForegroundWindow($p.MainWindowHandle) }"`);
+    return true;
+  }
+  if (IS_LINUX) {
+    // Find window by name and activate it via xdotool
+    run(`xdotool search --name "${safe}" windowactivate 2>/dev/null`);
     return true;
   }
   run(`osascript -e 'tell application "${safe}" to activate' 2>&1`);
@@ -619,6 +762,21 @@ function screenshot(region) {
       return null;
     }
   }
+  if (IS_LINUX) {
+    const outPath = `/tmp/pre_screenshot_${ts}.png`;
+    try {
+      if (region === 'selection') {
+        execSync(`scrot -s '${outPath}' 2>/dev/null || import '${outPath}'`, { timeout: 30000 });
+      } else if (region === 'window') {
+        execSync(`scrot -u '${outPath}' 2>/dev/null || import -window "$(xdotool getactivewindow)" '${outPath}'`, { timeout: 30000 });
+      } else {
+        execSync(`scrot '${outPath}' 2>/dev/null || import -window root '${outPath}'`, { timeout: 10000 });
+      }
+      return outPath;
+    } catch {
+      return null;
+    }
+  }
   // macOS
   const outPath = `/tmp/pre_screenshot_${ts}.png`;
   try {
@@ -639,6 +797,7 @@ module.exports = {
   // Detection
   IS_WIN,
   IS_MAC,
+  IS_LINUX,
   // Shell
   getShell,
   getShellPath,

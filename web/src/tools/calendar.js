@@ -3,7 +3,7 @@
 // Windows: Outlook COM automation via PowerShell — works with any account configured in Outlook
 
 const { execSync } = require('child_process');
-const { IS_WIN, IS_MAC } = require('../platform');
+const { IS_WIN, IS_MAC, IS_LINUX } = require('../platform');
 
 function runAS(script, timeout = 30000) {
   try {
@@ -79,7 +79,22 @@ async function calendar(args) {
     }
   }
 
-  return 'Error: calendar tool is only supported on macOS (Calendar.app) and Windows (Outlook)';
+  if (IS_LINUX) {
+    const eds = require('./eds-linux');
+    switch (action) {
+      case 'today': return eds.edsCalendarList(1, args.calendar);
+      case 'week': return eds.edsCalendarList(7, args.calendar);
+      case 'list_events': return eds.edsCalendarList(args.days || 7, args.calendar);
+      case 'create_event': return eds.edsCalendarCreate(args.title, args.start, args.end, args.location, args.notes, args.calendar);
+      case 'search': return eds.edsCalendarSearch(args.query, args.days);
+      case 'list_calendars': return eds.edsListCalendars();
+      case 'delete_event': return eds.edsCalendarDelete(args.id);
+      default:
+        return `Error: unknown action '${action}'. Available: list_events, create_event, search, list_calendars, delete_event, today, week`;
+    }
+  }
+
+  return 'Error: calendar tool is not supported on this platform';
 }
 
 function listEvents(args) {

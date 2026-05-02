@@ -3,7 +3,7 @@
 // Windows: Outlook COM automation via PowerShell — works with any account configured in Outlook
 
 const { execSync } = require('child_process');
-const { IS_WIN, IS_MAC } = require('../platform');
+const { IS_WIN, IS_MAC, IS_LINUX } = require('../platform');
 
 function runAS(script, timeout = 30000) {
   try {
@@ -73,7 +73,19 @@ async function contacts(args) {
     }
   }
 
-  return 'Error: contacts tool is only supported on macOS (Contacts.app) and Windows (Outlook)';
+  if (IS_LINUX) {
+    const eds = require('./eds-linux');
+    switch (action) {
+      case 'search': return eds.edsContactSearch(args.query || args.name, args.count);
+      case 'read': return eds.edsContactRead(args.id || args.name);
+      case 'list_groups': return eds.edsListGroups();
+      case 'count': return eds.edsContactCount();
+      default:
+        return `Error: unknown action '${action}'. Available: search, read, list_groups, count`;
+    }
+  }
+
+  return 'Error: contacts tool is not supported on this platform';
 }
 
 function searchContacts(args) {

@@ -10,6 +10,12 @@ if (!fs.existsSync(SESSIONS_DIR)) {
   fs.mkdirSync(SESSIONS_DIR, { recursive: true });
 }
 
+// ── In-memory session cache ──────────────────────────────────────────────────
+// getSession() is called 2+ times per tool loop turn (messages + background extract).
+// Parsing the same JSONL from disk 70+ times per session is wasteful.
+// Cache parsed messages in memory; appendMessage writes through to both.
+const _sessionCache = new Map();
+
 // On Windows, ':' is illegal in filenames. Use '--' as the file separator,
 // but keep ':' in logical session IDs for API/UI compatibility.
 function idToFilename(id) {
@@ -187,6 +193,10 @@ function moveSessionToProject(sessionId, projectSlug) {
  * Get full session history as messages array
  */
 function getSession(sessionId) {
+  // Return cached copy if available (populated by appendMessage write-through)
+  const cached = _sessionCache.get(sessionId);
+  if (cached) return cached;
+
   const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   if (!fs.existsSync(filePath)) return [];
 
@@ -198,6 +208,7 @@ function getSession(sessionId) {
       messages.push(JSON.parse(line));
     } catch {}
   }
+  _sessionCache.set(sessionId, messages);
   return messages;
 }
 
@@ -208,6 +219,11 @@ function appendMessage(sessionId, message) {
   const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   const line = JSON.stringify(message) + '\n';
   fs.appendFileSync(filePath, line);
+  // Write-through: update cache so getSession() doesn't re-parse from disk
+  const cached = _sessionCache.get(sessionId);
+  if (cached) {
+    cached.push(message);
+  }
 }
 
 /**
@@ -253,6 +269,7 @@ function deleteSession(sessionId) {
   const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   if (!fs.existsSync(filePath)) return false;
   fs.unlinkSync(filePath);
+  _sessionCache.delete(sessionId);
   // Clean up display name and project mapping
   const meta = loadMeta();
   let changed = false;
@@ -272,6 +289,7 @@ function rewindSession(sessionId, turns = 1) {
   const kept = messages.slice(0, Math.max(0, messages.length - removeCount));
   const filePath = path.join(SESSIONS_DIR, `${idToFilename(sessionId)}.jsonl`);
   fs.writeFileSync(filePath, kept.map(m => JSON.stringify(m)).join('\n') + (kept.length ? '\n' : ''));
+  _sessionCache.set(sessionId, kept); // Update cache to match rewritten file
   return kept;
 }
 
@@ -284,6 +302,17 @@ function getSessionMessages(sessionId) {
   return getSession(sessionId).filter(m => m.role !== 'display');
 }
 
+/**
+ * Clear in-memory session cache (for testing or after external file edits)
+ */
+function clearSessionCache(sessionId) {
+  if (sessionId) {
+    _sessionCache.delete(sessionId);
+  } else {
+    _sessionCache.clear();
+  }
+}
+
 module.exports = {
   listSessions,
   getSession,
@@ -293,6 +322,7 @@ module.exports = {
   renameSession,
   rewindSession,
   getSessionMessages,
+  clearSessionCache,
   listProjects,
   createProject,
   renameProject,

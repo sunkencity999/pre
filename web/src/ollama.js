@@ -4,6 +4,14 @@
 const http = require('http');
 const { MODEL, MODEL_CTX, OLLAMA_PORT } = require('./constants');
 
+// Persistent HTTP agent — reuses TCP connections to Ollama across requests.
+// Eliminates ~5-50ms TCP handshake overhead per inference call.
+const ollamaAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 4, // Allow background tasks + main inference concurrently
+});
+
 /**
  * Send a chat request to Ollama and stream the response.
  * @param {Object} opts
@@ -39,6 +47,7 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
       port: OLLAMA_PORT,
       path: '/api/chat',
       method: 'POST',
+      agent: ollamaAgent,
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
@@ -221,7 +230,7 @@ function streamChat({ messages, tools, maxTokens = 8192, onToken, signal, think,
  */
 function healthCheck() {
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${OLLAMA_PORT}/v1/models`, (res) => {
+    const req = http.get({ hostname: '127.0.0.1', port: OLLAMA_PORT, path: '/v1/models', agent: ollamaAgent }, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
       res.on('end', () => resolve(true));
@@ -460,6 +469,7 @@ function embed(input) {
       port: OLLAMA_PORT,
       path: '/api/embed',
       method: 'POST',
+      agent: ollamaAgent,
       headers: { 'Content-Type': 'application/json' },
     }, (res) => {
       let data = '';

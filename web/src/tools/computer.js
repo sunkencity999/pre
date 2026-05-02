@@ -10,14 +10,15 @@
 
 const { execSync } = require('child_process');
 const fs = require('fs');
-const { IS_WIN } = require('../platform');
+const { IS_WIN, IS_LINUX } = require('../platform');
 
 // Load platform-specific backend
 const win32 = IS_WIN ? require('./computer-win32') : null;
+const linux = IS_LINUX ? require('./computer-linux') : null;
 
 // Check if cliclick is installed (macOS only)
 let cliclickPath = null;
-if (!IS_WIN) {
+if (!IS_WIN && !IS_LINUX) {
   try {
     cliclickPath = execSync('which cliclick', { encoding: 'utf-8', timeout: 3000 }).trim();
   } catch {}
@@ -54,14 +55,14 @@ function checkClickLoop(x, y) {
     if (dist < CLICK_PROXIMITY_THRESHOLD) nearby++;
   }
   if (nearby >= 5) {
-    const modKey = IS_WIN ? 'ctrl' : 'cmd';
+    const modKey = (IS_WIN || IS_LINUX) ? 'ctrl' : 'cmd';
     return {
       level: 'block',
       message: `ERROR: CLICK BLOCKED — You have clicked near (${cx}, ${cy}) ${nearby} times with no progress. This click was NOT executed. You MUST try a completely different approach NOW: use key action with "${modKey}+f" to open search, or type in a visible search field, or use keyboard shortcuts, or scroll, or report your findings to the user. Do NOT click this area again.`,
     };
   }
   if (nearby >= 3) {
-    const modKey = IS_WIN ? 'ctrl' : 'cmd';
+    const modKey = (IS_WIN || IS_LINUX) ? 'ctrl' : 'cmd';
     return {
       level: 'warn',
       message: `WARNING: You have clicked near (${cx}, ${cy}) ${nearby} times. This area is not responding to clicks. Try a DIFFERENT approach: use key "${modKey}+f" to search, click a different UI element, or report what you see.`,
@@ -79,6 +80,8 @@ function setTargetApp(appName) {
     try {
       if (IS_WIN) {
         _previousApp = win32.getForegroundApp();
+      } else if (IS_LINUX) {
+        _previousApp = linux.getForegroundApp();
       } else {
         _previousApp = runAppleScript(
           'tell application "System Events" to get name of first application process whose frontmost is true'
@@ -97,6 +100,8 @@ function ensureTargetFocused() {
     try {
       if (IS_WIN) {
         win32.focusWindow(_targetApp);
+      } else if (IS_LINUX) {
+        linux.focusWindow(_targetApp);
       } else {
         runAppleScript(`tell application "${_targetApp}" to activate`);
       }
@@ -124,6 +129,20 @@ using System; using System.Runtime.InteropServices;
 public class WMax { [DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h, int c); }
 '@; $p = Get-Process -Name '${safeName}' -EA SilentlyContinue | ? { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select -First 1; if($p){[WMax]::ShowWindow($p.MainWindowHandle, 3)}"`, { timeout: 10000, windowsHide: true, encoding: 'utf-8' });
       console.log(`[computer] Maximized ${_targetApp} (Windows)`);
+    } else if (IS_LINUX) {
+      // Linux: wmctrl or xdotool for maximize
+      try {
+        const wid = execSync(`xdotool search --name '${_targetApp.replace(/'/g, "'\\''")}' | head -1`, { encoding: 'utf-8', timeout: 5000 }).trim();
+        if (wid && /^\d+$/.test(wid)) {
+          execSync(`wmctrl -i -r ${wid} -b add,maximized_vert,maximized_horz`, { encoding: 'utf-8', timeout: 5000 });
+        }
+      } catch {
+        // wmctrl not available, try xdotool key shortcut
+        try {
+          execSync('xdotool key super+Up', { encoding: 'utf-8', timeout: 5000 });
+        } catch {}
+      }
+      console.log(`[computer] Maximized ${_targetApp} (Linux)`);
     } else {
       const processName = runAppleScript(
         'tell application "System Events" to get name of first application process whose frontmost is true'
@@ -152,6 +171,8 @@ function restoreFocus() {
     try {
       if (IS_WIN) {
         win32.focusWindow(_previousApp);
+      } else if (IS_LINUX) {
+        linux.focusWindow(_previousApp);
       } else {
         runAppleScript(`tell application "${_previousApp}" to activate`);
       }
@@ -164,6 +185,7 @@ function restoreFocus() {
 
 function getWindowBounds(appName) {
   if (IS_WIN) return win32.getWindowBounds(appName);
+  if (IS_LINUX) return linux.getWindowBounds(appName);
   try {
     const out = runAppleScript(`
       tell application "System Events"
@@ -182,11 +204,13 @@ function getWindowBounds(appName) {
 
 function isAvailable() {
   if (IS_WIN) return win32.isAvailable();
+  if (IS_LINUX) return linux.isAvailable();
   return !!cliclickPath;
 }
 
 function getScreenSize() {
   if (IS_WIN) return win32.getScreenSize();
+  if (IS_LINUX) return linux.getScreenSize();
   try {
     const out = execSync(
       "osascript -e 'tell application \"Finder\" to get bounds of window of desktop'",
@@ -208,6 +232,7 @@ function getScreenSize() {
 
 function takeScreenshot() {
   if (IS_WIN) return takeScreenshotWin();
+  if (IS_LINUX) return takeScreenshotLinux();
   return takeScreenshotMac();
 }
 
@@ -277,6 +302,27 @@ function takeScreenshotWin() {
   return { base64: result.base64, width: result.width, height: result.height };
 }
 
+function takeScreenshotLinux() {
+  let region = null;
+
+  if (_targetApp) {
+    ensureTargetFocused();
+    const bounds = getWindowBounds(_targetApp);
+    if (bounds && bounds.width > 50 && bounds.height > 50) {
+      _windowOffset = { x: bounds.x, y: bounds.y };
+      region = bounds;
+    } else {
+      _windowOffset = { x: 0, y: 0 };
+    }
+  } else {
+    _windowOffset = { x: 0, y: 0 };
+  }
+
+  const result = linux.takeScreenshot(region, MAX_CAPTURE_WIDTH);
+  _coordScale = result.scale;
+  return { base64: result.base64, width: result.width, height: result.height };
+}
+
 function run(cmd, timeout = 10000) {
   return execSync(cmd, { encoding: 'utf-8', timeout, maxBuffer: 64 * 1024 }).trim();
 }
@@ -296,9 +342,9 @@ async function computerUse(args) {
   if (!action) return 'Error: action required (screenshot|click|double_click|right_click|type|key|scroll|move|drag|screen_size|cursor_position)';
 
   if (!isAvailable() && action !== 'screenshot' && action !== 'screen_size') {
-    return IS_WIN
-      ? 'Error: Desktop automation unavailable (System.Windows.Forms not found)'
-      : 'Error: cliclick not installed. Run: brew install cliclick';
+    if (IS_WIN) return 'Error: Desktop automation unavailable (System.Windows.Forms not found)';
+    if (IS_LINUX) return 'Error: xdotool and scrot required. Run: sudo apt install xdotool scrot';
+    return 'Error: cliclick not installed. Run: brew install cliclick';
   }
 
   try {
@@ -330,6 +376,8 @@ async function computerUse(args) {
       const abs = toScreen(x, y);
       if (IS_WIN) {
         win32.mouseAction('click', abs.x, abs.y);
+      } else if (IS_LINUX) {
+        linux.mouseAction('click', abs.x, abs.y);
       } else {
         run(`${cliclickPath} c:${abs.x},${abs.y}`);
       }
@@ -360,6 +408,8 @@ async function computerUse(args) {
       const abs = toScreen(x, y);
       if (IS_WIN) {
         win32.mouseAction('double_click', abs.x, abs.y);
+      } else if (IS_LINUX) {
+        linux.mouseAction('double_click', abs.x, abs.y);
       } else {
         run(`${cliclickPath} dc:${abs.x},${abs.y}`);
       }
@@ -390,6 +440,8 @@ async function computerUse(args) {
       const abs = toScreen(x, y);
       if (IS_WIN) {
         win32.mouseAction('right_click', abs.x, abs.y);
+      } else if (IS_LINUX) {
+        linux.mouseAction('right_click', abs.x, abs.y);
       } else {
         run(`${cliclickPath} rc:${abs.x},${abs.y}`);
       }
@@ -418,6 +470,13 @@ async function computerUse(args) {
         for (let li = 0; li < lines.length; li++) {
           if (lines[li].length > 0) win32.typeText(lines[li]);
           if (li < lines.length - 1) win32.pressKey('enter');
+        }
+      } else if (IS_LINUX) {
+        const normalized = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+        const lines = normalized.split(/\r?\n/);
+        for (let li = 0; li < lines.length; li++) {
+          if (lines[li].length > 0) linux.typeText(lines[li]);
+          if (li < lines.length - 1) linux.pressKey('enter');
         }
       } else {
         const normalized = text.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
@@ -456,6 +515,10 @@ async function computerUse(args) {
         // On Windows, map cmd → ctrl (most shortcuts)
         const winKey = key.replace(/\bcmd\b/gi, 'ctrl').replace(/\bcommand\b/gi, 'ctrl').replace(/\boption\b/gi, 'alt');
         win32.pressKey(winKey);
+      } else if (IS_LINUX) {
+        // On Linux, map cmd → ctrl (same as Windows)
+        const linuxKey = key.replace(/\bcmd\b/gi, 'ctrl').replace(/\bcommand\b/gi, 'ctrl').replace(/\boption\b/gi, 'alt');
+        linux.pressKey(linuxKey);
       } else {
         const keyMap = {
           'enter': 'return', 'return': 'return',
@@ -521,6 +584,9 @@ async function computerUse(args) {
       if (IS_WIN) {
         const abs = (x !== undefined && y !== undefined) ? toScreen(x, y) : { x: 960, y: 540 };
         win32.mouseScroll(abs.x, abs.y, direction || 'down', clicks);
+      } else if (IS_LINUX) {
+        const abs = (x !== undefined && y !== undefined) ? toScreen(x, y) : { x: 960, y: 540 };
+        linux.mouseScroll(abs.x, abs.y, direction || 'down', clicks);
       } else {
         if (x !== undefined && y !== undefined) {
           const abs = toScreen(x, y);
@@ -555,6 +621,8 @@ async function computerUse(args) {
       const abs = toScreen(x, y);
       if (IS_WIN) {
         win32.mouseAction('move', abs.x, abs.y);
+      } else if (IS_LINUX) {
+        linux.mouseAction('move', abs.x, abs.y);
       } else {
         run(`${cliclickPath} m:${abs.x},${abs.y}`);
       }
@@ -576,6 +644,8 @@ async function computerUse(args) {
       const absTo = toScreen(to_x, to_y);
       if (IS_WIN) {
         win32.mouseDrag(absFrom.x, absFrom.y, absTo.x, absTo.y);
+      } else if (IS_LINUX) {
+        linux.mouseDrag(absFrom.x, absFrom.y, absTo.x, absTo.y);
       } else {
         run(`${cliclickPath} dd:${absFrom.x},${absFrom.y} du:${absTo.x},${absTo.y}`);
       }
@@ -602,6 +672,8 @@ async function computerUse(args) {
       let pos;
       if (IS_WIN) {
         pos = win32.getCursorPosition();
+      } else if (IS_LINUX) {
+        pos = linux.getCursorPosition();
       } else {
         pos = run(`${cliclickPath} p:`);
       }

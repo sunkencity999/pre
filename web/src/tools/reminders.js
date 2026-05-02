@@ -4,7 +4,7 @@
 
 const { execSync } = require('child_process');
 const fs = require('fs');
-const { IS_WIN, IS_MAC } = require('../platform');
+const { IS_WIN, IS_MAC, IS_LINUX } = require('../platform');
 
 const BIN_PATH = '/tmp/pre-reminders';
 const SRC_PATH = '/tmp/pre-reminders.swift';
@@ -101,7 +101,21 @@ async function reminders(args) {
     }
   }
 
-  return 'Error: reminders tool is only supported on macOS (Reminders.app) and Windows (Outlook Tasks)';
+  if (IS_LINUX) {
+    const eds = require('./eds-linux');
+    switch (action) {
+      case 'add': return eds.edsTaskCreate(args.title, args.list, args.due, args.priority, args.notes);
+      case 'list': return eds.edsTaskList(args.list, args.completed);
+      case 'complete': return eds.edsTaskComplete(args.id || args.title);
+      case 'search': return eds.edsTaskSearch(args.query || args.title, args.count);
+      case 'list_lists': return eds.edsListTaskLists();
+      case 'delete': return eds.edsTaskDelete(args.id || args.title);
+      default:
+        return `Error: unknown action '${action}'. Available: add, list, complete, search, list_lists, delete`;
+    }
+  }
+
+  return 'Error: reminders tool is only supported on macOS (Reminders.app), Windows (Outlook Tasks), and Linux (GNOME EDS)';
 }
 
 function addReminder(args) {

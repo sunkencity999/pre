@@ -9,13 +9,22 @@ const { buildMemoryContext: buildMemCtx, buildMemoryContextAsync, buildMemoryIns
 const { buildExperienceContext, buildExperienceContextAsync } = require('./experience');
 const { buildTemporalContext } = require('./chronos');
 
+// ── Cached config readers ─────────────────────────────────────────────────────
+// These files rarely change mid-conversation. Cache with 30s TTL to avoid
+// reading from disk on every tool loop turn (~35 reads per session).
+
+const _cache = { connections: null, connTime: 0, comfyui: null, comfyTime: 0 };
+const CACHE_TTL = 30000; // 30 seconds
+
 /**
- * Check which connections are active
+ * Check which connections are active (cached, 30s TTL)
  */
 function getActiveConnections() {
+  const now = Date.now();
+  if (_cache.connections && now - _cache.connTime < CACHE_TTL) return _cache.connections;
   try {
     const data = JSON.parse(fs.readFileSync(CONNECTIONS_FILE, 'utf-8'));
-    return {
+    _cache.connections = {
       brave: !!data.brave_search_key,
       github: !!data.github_key,
       google: !!data.google_client_id,
@@ -32,19 +41,35 @@ function getActiveConnections() {
       asana: !!data.asana_token,
       dynamics365: !!data.d365_url && !!data.d365_client_id && !!data.d365_tenant_id && (!!data.d365_client_secret || !!data.d365_refresh_token),
     };
+    _cache.connTime = now;
+    return _cache.connections;
   } catch {
     return { brave: false, github: false, google: false, microsoft: false, wolfram: false, telegram: false, jira: false, confluence: false, smartsheet: false, slack: false, linear: false, zoom: false, figma: false, asana: false, dynamics365: false };
   }
 }
 
 /**
- * Check if ComfyUI is installed
+ * Invalidate connections cache (call after user updates credentials)
+ */
+function invalidateConnectionsCache() {
+  _cache.connections = null;
+  _cache.connTime = 0;
+}
+
+/**
+ * Check if ComfyUI is installed (cached, 30s TTL)
  */
 function isComfyUIInstalled() {
+  const now = Date.now();
+  if (_cache.comfyui !== null && now - _cache.comfyTime < CACHE_TTL) return _cache.comfyui;
   try {
     const data = JSON.parse(fs.readFileSync(COMFYUI_FILE, 'utf-8'));
-    return data.installed === true;
+    _cache.comfyui = data.installed === true;
+    _cache.comfyTime = now;
+    return _cache.comfyui;
   } catch {
+    _cache.comfyui = false;
+    _cache.comfyTime = now;
     return false;
   }
 }
@@ -85,9 +110,11 @@ function buildSystemPrompt(cwd) {
     'July','August','September','October','November','December'];
   const dateStr = `${days[now.getDay()]}, ${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()}`;
 
-  const { IS_WIN, IS_MAC } = require('./platform');
+  const { IS_WIN, IS_MAC, IS_LINUX } = require('./platform');
   const platformDesc = IS_WIN
     ? 'running locally on Windows with GPU acceleration'
+    : IS_LINUX
+    ? 'running locally on Linux with GPU acceleration'
     : 'running on Apple Silicon';
   let prompt = `You are PRE (Personal Reasoning Engine), a fully local agentic assistant ${platformDesc}. `
     + `All data stays on this machine. You have persistent memory across sessions.\n\n`;
@@ -248,6 +275,15 @@ function buildSystemPrompt(cwd) {
       + `- Notes → apple_notes (uses local markdown files in ~/.pre/notes/)\n`
       + `Only use gmail/gdrive/gdocs when the user SPECIFICALLY asks about their Google account, or when Outlook is not available.\n`
       + `The native tools require no API keys and cover ALL the user's configured accounts — not just Google.\n`;
+  } else if (IS_LINUX) {
+    prompt += `\nNATIVE APP PREFERENCE:\n`
+      + `When the user asks about calendar, contacts, reminders, or notes, use the native GNOME/local tools FIRST:\n`
+      + `- Calendar → apple_calendar (uses GNOME Evolution Data Server — accesses all configured calendars)\n`
+      + `- Contacts → apple_contacts (uses GNOME Evolution Data Server — accesses all address books)\n`
+      + `- Reminders → apple_reminders (uses GNOME Evolution Data Server — accesses all task lists)\n`
+      + `- Notes → apple_notes (uses local markdown files in ~/.pre/notes/)\n`
+      + `Email (apple_mail) is not available on Linux. Use gmail or other cloud tools for email.\n`
+      + `The native tools require no API keys and work with locally configured accounts.\n`;
   }
 
   // Connection status
@@ -309,4 +345,4 @@ async function buildSystemPromptAsync(cwd, userQuery) {
   }
 }
 
-module.exports = { buildSystemPrompt, buildSystemPromptAsync, getActiveConnections, isComfyUIInstalled };
+module.exports = { buildSystemPrompt, buildSystemPromptAsync, getActiveConnections, isComfyUIInstalled, invalidateConnectionsCache };

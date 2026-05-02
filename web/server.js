@@ -138,6 +138,18 @@ app.get('/api/sessions', (_req, res) => {
   res.json(listSessions());
 });
 
+// Full-text search across sessions (must be before :id param route)
+app.get('/api/sessions/search', (req, res) => {
+  const fts = require('./src/fts');
+  const query = req.query.q || req.query.query || '';
+  if (!query) return res.status(400).json({ error: 'Query parameter q is required' });
+  const result = fts.searchSessions(query, {
+    maxResults: parseInt(req.query.count) || 20,
+    project: req.query.project || null,
+  });
+  res.json({ results: result });
+});
+
 app.get('/api/sessions/:id', (req, res) => {
   const messages = getSession(decodeURIComponent(req.params.id));
   res.json(messages);
@@ -647,6 +659,31 @@ app.delete('/api/rag/:name', async (req, res) => {
   res.json({ ok: true, message: result });
 });
 
+// ── Skills API ──
+
+app.get('/api/skills/stale', (_req, res) => {
+  const { loadCustomTools } = require('./src/custom-tools');
+  const tools = loadCustomTools();
+  const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
+  const stale = tools.filter(t =>
+    t.source === 'auto' &&
+    (t.usage_count || 0) === 0 &&
+    t.created && new Date(t.created).getTime() < thirtyDaysAgo
+  );
+  res.json(stale.map(t => ({ name: t.name, description: t.description, created: t.created })));
+});
+
+app.delete('/api/skills/:name', (req, res) => {
+  const { loadCustomTools, deleteCustomTool } = require('./src/custom-tools');
+  const name = req.params.name;
+  const tools = loadCustomTools();
+  const tool = tools.find(t => t.name === name);
+  if (!tool) return res.status(404).json({ error: `Skill "${name}" not found` });
+  if (tool.source !== 'auto') return res.status(400).json({ error: 'Only auto-generated skills can be deleted via this endpoint' });
+  deleteCustomTool(name);
+  res.json({ ok: true, message: `Deleted skill "${name}"` });
+});
+
 // ── Workflow API ──
 
 app.get('/api/workflows', (_req, res) => {
@@ -996,7 +1033,7 @@ app.get('/api/status', async (_req, res) => {
 
 // ── Autostart — platform-specific ──
 
-const { IS_WIN, IS_MAC } = require('./src/platform');
+const { IS_WIN, IS_MAC, IS_LINUX } = require('./src/platform');
 
 // macOS: LaunchAgent plist
 const PLIST_LABEL = 'com.pre.server';
@@ -1008,10 +1045,26 @@ const WIN_STARTUP_DIR = IS_WIN ? path.join(os.homedir(), 'AppData', 'Roaming', '
 const WIN_STARTUP_VBS = IS_WIN ? path.join(WIN_STARTUP_DIR, 'PRE-Server.vbs') : '';
 const PRE_SERVER_PS1 = path.join(__dirname, 'pre-server.ps1');
 
+// Linux: systemd user service
+const SYSTEMD_USER_DIR = IS_LINUX ? path.join(os.homedir(), '.config', 'systemd', 'user') : '';
+const SYSTEMD_SERVICE = IS_LINUX ? path.join(SYSTEMD_USER_DIR, 'pre-server.service') : '';
+
 app.get('/api/system/autostart', (_req, res) => {
   if (IS_WIN) {
     const installed = fs.existsSync(WIN_STARTUP_VBS);
     res.json({ installed, running: installed, startupPath: WIN_STARTUP_VBS });
+    return;
+  }
+  if (IS_LINUX) {
+    const installed = fs.existsSync(SYSTEMD_SERVICE);
+    let running = false;
+    if (installed) {
+      try {
+        execSync('systemctl --user is-active pre-server 2>/dev/null', { encoding: 'utf-8' });
+        running = true;
+      } catch { /* not active */ }
+    }
+    res.json({ installed, running, servicePath: SYSTEMD_SERVICE });
     return;
   }
   // macOS
@@ -1028,6 +1081,47 @@ app.get('/api/system/autostart', (_req, res) => {
 
 app.post('/api/system/autostart', (req, res) => {
   const { enabled } = req.body || {};
+
+  if (IS_LINUX) {
+    if (enabled) {
+      const webDir = __dirname;
+      const nodePath = process.execPath;
+      const unit = `[Unit]
+Description=PRE Personal Reasoning Engine — Web GUI
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${webDir}
+ExecStart=${nodePath} ${path.join(webDir, 'server.js')}
+Environment=PRE_WEB_PORT=7749
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`;
+      try {
+        if (!fs.existsSync(SYSTEMD_USER_DIR)) fs.mkdirSync(SYSTEMD_USER_DIR, { recursive: true });
+        fs.writeFileSync(SYSTEMD_SERVICE, unit);
+        execSync('systemctl --user daemon-reload', { timeout: 10000 });
+        execSync('systemctl --user enable pre-server', { timeout: 10000 });
+        execSync('systemctl --user start pre-server', { timeout: 10000 });
+        res.json({ installed: true, running: true });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    } else {
+      try {
+        execSync('systemctl --user stop pre-server 2>/dev/null', { timeout: 10000 });
+        execSync('systemctl --user disable pre-server 2>/dev/null', { timeout: 10000 });
+      } catch { /* not running */ }
+      if (fs.existsSync(SYSTEMD_SERVICE)) fs.unlinkSync(SYSTEMD_SERVICE);
+      try { execSync('systemctl --user daemon-reload', { timeout: 10000 }); } catch { /* ok */ }
+      res.json({ installed: false, running: false });
+    }
+    return;
+  }
 
   if (IS_WIN) {
     if (enabled) {

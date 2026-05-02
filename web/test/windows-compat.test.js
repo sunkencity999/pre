@@ -411,9 +411,14 @@ describe('Windows compatibility — cross-platform patterns', () => {
       // Bare 2>/dev/null inside execSync is not cross-platform. Allowed patterns:
       //   - Platform-branched: process.platform === 'win32' ? '2>NUL' : '2>/dev/null'
       //   - stdio: 'pipe' (captures stderr without redirects)
+      //   - Inside Linux-only functions (linuxSearch, linuxFindFiles, linuxPreview)
+      //     which use Linux-only commands (stat --format, file --brief, locate, find)
       const execCalls = source.match(/execSync\([^)]*2>\/dev\/null[^)]*\)/g) || [];
-      // Filter out platform-branched patterns (those are fine)
-      const bare = execCalls.filter(c => !c.includes('process.platform') && !c.includes('IS_WIN'));
+      // Filter out platform-branched and Linux-only patterns (those are fine)
+      const bare = execCalls.filter(c =>
+        !c.includes('process.platform') && !c.includes('IS_WIN') && !c.includes('IS_LINUX') &&
+        !c.includes('stat --format') && !c.includes('file --brief') &&
+        !c.includes('locate ') && !c.includes('find "'));
       expect(bare).toEqual([]);
     });
 

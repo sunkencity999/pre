@@ -1,12 +1,12 @@
 # PRE — Personal Reasoning Engine
 
-> A local AI operating system for macOS and Windows. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on your hardware. No cloud. No API keys required. No data leaves your machine.
+> A local AI operating system for macOS, Windows, and Linux. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on your hardware. No cloud. No API keys required. No data leaves your machine.
 
 PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your hardware.
 
-PRE has two interfaces: a **CLI** (macOS Apple Silicon only, Objective-C) and a **Web GUI** (Node.js) that runs on **macOS (Apple Silicon + Intel with eGPU) and Windows**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
+PRE has two interfaces: a **CLI** (macOS Apple Silicon only, Objective-C) and a **Web GUI** (Node.js) that runs on **macOS (Apple Silicon + Intel with eGPU), Windows, and Linux**. The Web GUI provides full access to all 70+ tools with platform-native implementations on each OS.
 
-The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows systems require an **NVIDIA GPU**. Intel Macs are supported via **eGPU** (NVIDIA Ampere+ or AMD RDNA3+) using the [TinyGPU driver](https://docs.tinygrad.org/tinygpu/). Both installers auto-detect GPU VRAM and select the optimal quantization (28+ GB VRAM for q8_0, otherwise q4_K_M).
+The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**. Windows and Linux systems require an **NVIDIA GPU** (Linux also supports AMD via ROCm). Intel Macs are supported via **eGPU** (NVIDIA Ampere+ or AMD RDNA3+) using the [TinyGPU driver](https://docs.tinygrad.org/tinygpu/). All three installers auto-detect GPU VRAM and select the optimal quantization (28+ GB VRAM for q8_0, otherwise q4_K_M).
 
 ---
 
@@ -259,6 +259,20 @@ PRE is a local AI operating system with 70+ tools across six capability layers.
 | **Ollama** | [ollama.ai](https://ollama.ai) or installed via `winget` by the installer |
 | **Node.js 18+** | Installed via `winget` by the installer |
 
+### Linux Prerequisites
+
+| Component | Required |
+|-----------|----------|
+| **Distro** | Ubuntu 22.04+, Debian 12+, Fedora 38+ (Arch best-effort) |
+| **GPU** | NVIDIA with CUDA (for Ollama GPU inference); AMD ROCm future |
+| **RAM** | 16 GB minimum, 64+ GB recommended for large context windows |
+| **GPU VRAM** | 16+ GB (q4_K_M); 28+ GB for q8_0 — model must fit in VRAM for full speed |
+| **Disk** | ~15 GB (q4_K_M) or ~28 GB (q8_0) for model |
+| **Ollama** | Installed via official script by the installer |
+| **Node.js 18+** | Via nvm, nodesource, or distro package |
+
+**Optional:** `evolution-data-server` (calendar/contacts/reminders via GNOME EDS), `xdotool` + `scrot` (desktop automation, X11), `espeak-ng` (TTS), `xclip` (clipboard).
+
 ### macOS Install
 
 ```bash
@@ -314,7 +328,19 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Yes   # Non-interactive
 
 The installer checks system requirements, installs Ollama and Node.js via `winget`, pulls the model, creates `~/.pre/` directories, auto-sizes the context window based on RAM, configures Ollama environment variables, and optionally enables auto-start at login.
 
-> **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) is an Objective-C application that requires macOS. The Telegram bot is included in the Web GUI and works on both macOS and Windows.
+> **Note:** The Windows installer sets up the **Web GUI only**. The CLI engine (`pre.m`) is an Objective-C application that requires macOS. The Telegram bot is included in the Web GUI and works on all platforms.
+
+### Linux Install
+
+```bash
+git clone https://github.com/sunkencity999/pre.git
+cd pre
+./install-linux.sh
+```
+
+The installer detects your distro and package manager (apt/dnf/pacman), checks NVIDIA VRAM via `nvidia-smi`, installs Ollama, pulls the model with VRAM-aware quant selection, installs Node.js dependencies, auto-sizes the context window, and optionally installs voice tools, GNOME PIM integration (evolution-data-server), desktop automation tools (xdotool/scrot), and systemd autostart.
+
+> **Note:** Linux runs the **Web GUI only**. The CLI engine requires macOS. Native app integration (calendar, contacts, reminders) requires GNOME with Evolution Data Server.
 
 ### Launch (macOS)
 
@@ -346,6 +372,17 @@ powershell -File web\pre-server.ps1 --stop    # Stop the server
 ```
 
 The Windows launcher starts Ollama if needed, pre-warms the model, and starts the Web GUI on port 7749. Open `http://localhost:7749` in your browser.
+
+### Launch (Linux)
+
+```bash
+cd pre/web
+./pre-server.sh                  # Start server
+./pre-server.sh --status         # Check if running
+./pre-server.sh --stop           # Stop
+```
+
+Or directly: `cd web && node server.js`. If installed with systemd autostart, the server starts at login automatically. Open `http://localhost:7749` in your browser.
 
 ### Updating
 
@@ -1352,7 +1389,7 @@ The bot long-polls the Telegram API (no webhook, no public URL required) and rou
 - Ctrl+V image paste for multimodal queries
 - linenoise-based line editor with tab completion
 
-**Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA (**cross-platform: macOS + Windows**):
+**Web GUI** (`web/`) is a Node.js Express + WebSocket server with vanilla JS SPA (**cross-platform: macOS + Windows + Linux**):
 - NDJSON streaming client for Ollama
 - Server-side tool execution (same tool loop as CLI)
 - Cross-platform abstraction layer (`platform.js`) — all OS-specific operations route through a single module

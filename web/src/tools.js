@@ -15,6 +15,8 @@ const hooks = require('./hooks');
 const experience = require('./experience');
 const chronos = require('./chronos');
 const argus = require('./argus');
+const tiers = require('./tool-tiers');
+const compression = require('./compression');
 
 /**
  * Generate a short session title from the first user message.
@@ -23,7 +25,7 @@ const argus = require('./argus');
 function generateSessionTitle(sessionId, userMessage, send) {
   // Truncate very long messages — we only need enough to understand the topic
   const truncated = userMessage.length > 300 ? userMessage.slice(0, 300) : userMessage;
-  streamChat({
+  return streamChat({
     messages: [
       {
         role: 'system',
@@ -398,6 +400,15 @@ async function executeTool(name, args, cwd, opts) {
     // Custom tools (self-architected)
     case 'custom_tool': return customTools.customTool(args);
 
+    // Progressive disclosure: request_tools is handled in runToolLoop (needs session context)
+    case 'request_tools': return 'Error: request_tools must be handled by the tool loop';
+
+    // Session search (full-text search across past conversations)
+    case 'session_search': {
+      const fts = require('./fts');
+      return fts.searchSessions(args.query, { maxResults: args.count || 20, project: args.project });
+    }
+
     // Chronos
     case 'memory_health': {
       const summary = chronos.maintenanceSummary();
@@ -504,21 +515,37 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   let tokensOut = 0;
   let pendingScreenshots = []; // Screenshots from computer/browser tools, injected transiently
   let usedComputerUse = false; // Track if computer use was invoked for completion notification
+
+  // Progressive tool disclosure: auto-activate domains from user message keywords
+  const activeDomains = tiers.getActiveDomains(sessionId);
+  if (userMessage) {
+    tiers.resolveKeywords(sessionId, userMessage);
+  }
   let pendingClickWarning = null; // Click-loop warning to inject with next screenshot
   let emptyResponseNudged = false; // One-shot: nudge model if thinking consumed entire budget
+
+  // Build system prompt once — it doesn't change between tool-loop turns.
+  // Turn 0 uses async version (relevance-ranked memory/experience), cached for reuse.
+  let cachedSystemPrompt = null;
+  // Tool definitions are rebuilt only when domains change (via request_tools).
+  let cachedTools = null;
+  let toolDefsStale = true; // Start stale so first turn builds
 
   for (let turn = 0; turn < turnLimit; turn++) {
     if (signal?.aborted) break;
 
-    // First turn: use async relevance-ranked memory/experience context
-    // Subsequent turns: use sync version (faster, query hasn't changed)
-    const systemPrompt = (turn === 0 && userMessage)
-      ? await buildSystemPromptAsync(cwd, userMessage)
-      : buildSystemPrompt(cwd);
+    if (!cachedSystemPrompt) {
+      cachedSystemPrompt = userMessage
+        ? await buildSystemPromptAsync(cwd, userMessage)
+        : buildSystemPrompt(cwd);
+    }
+    const systemPrompt = cachedSystemPrompt;
     const history = getSessionMessages(sessionId);
+    // Compress old turns if approaching context limit (runs only when needed)
+    const compressedHistory = await compression.compressIfNeeded(sessionId, history, activeDomains.size);
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...history,
+      ...compressedHistory,
     ];
 
     // Inject pending screenshots as a transient user message (not persisted to session).
@@ -539,7 +566,11 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       pendingScreenshots = [];
     }
 
-    const tools = buildToolDefs();
+    if (toolDefsStale || !cachedTools) {
+      cachedTools = buildToolDefs({ activeDomains });
+      toolDefsStale = false;
+    }
+    const tools = cachedTools;
 
     // Budget must be generous — Gemma 4 extended thinking consumes num_predict
     // before producing visible response tokens. With 128K context and free local
@@ -552,17 +583,21 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       maxTokens,
       signal,
       onToken: (event) => send(event),
+      // Lower temperature for tool-calling turns reduces hallucinated tool names
+      // and inconsistent parameter formatting. Modelfile default is 1.0 (creative),
+      // but agent mode benefits from deterministic tool selection.
+      extraOptions: { temperature: 0.4 },
     });
 
     // Update token counts
     tokensIn += result.stats.prompt_eval_count || 0;
     tokensOut += result.stats.eval_count || 0;
 
-    // Generate session title on the first turn, regardless of tool calls.
-    // Fire-and-forget — doesn't block the response or depend on tool loop completion.
-    if (turn === 0 && needsTitle && userMessage) {
-      generateSessionTitle(sessionId, userMessage, send);
-    }
+    // Calibrate token estimator with actual Ollama counts
+    compression.calibrate(messages, result.stats.prompt_eval_count);
+
+    // Title generation deferred to after tool loop (see background tasks below)
+    // to avoid GPU contention with main inference.
 
     // Fallback: parse <tool_call> tags from text if no native tool calls
     const hasNative = result.toolCalls && result.toolCalls.length > 0;
@@ -648,25 +683,48 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
           computerTool.restoreFocus();
         } catch {}
       }
-      // Auto-extract memories in background (don't block response)
+      // Background intelligence tasks — serialized to avoid GPU contention.
+      // Each calls Ollama; running them concurrently halves throughput on a single GPU.
+      // Chained sequentially: title → memory → experience → skills. Non-blocking.
       const historyForExtract = getSessionMessages(sessionId);
-      autoExtract(historyForExtract).then(saved => {
-        if (saved.length > 0) {
-          console.log(`[memory-extract] Auto-saved ${saved.length} memory(ies)`);
-          send({ type: 'memory_saved', memories: saved.map(m => ({ name: m.name, type: m.type })) });
+      const skills = require('./skills');
+      (async () => {
+        // Session title generation (deferred from turn 0 to avoid GPU contention)
+        if (needsTitle && userMessage) {
+          try {
+            await generateSessionTitle(sessionId, userMessage, send);
+          } catch (err) {
+            console.log(`[title-gen] Deferred error: ${err.message}`);
+          }
         }
-      }).catch(err => {
-        console.log(`[memory-extract] Background error: ${err.message}`);
-      });
-      // Experience ledger: reflect on what worked/failed (don't block response)
-      experience.reflect(historyForExtract, { sessionId, cwd }).then(saved => {
-        if (saved.length > 0) {
-          console.log(`[experience] Saved ${saved.length} lesson(s)`);
-          send({ type: 'experience_saved', lessons: saved.map(l => ({ name: l.name, lesson: l.lesson })) });
+        try {
+          const saved = await autoExtract(historyForExtract);
+          if (saved.length > 0) {
+            console.log(`[memory-extract] Auto-saved ${saved.length} memory(ies)`);
+            send({ type: 'memory_saved', memories: saved.map(m => ({ name: m.name, type: m.type })) });
+          }
+        } catch (err) {
+          console.log(`[memory-extract] Background error: ${err.message}`);
         }
-      }).catch(err => {
-        console.log(`[experience] Background error: ${err.message}`);
-      });
+        try {
+          const saved = await experience.reflect(historyForExtract, { sessionId, cwd });
+          if (saved.length > 0) {
+            console.log(`[experience] Saved ${saved.length} lesson(s)`);
+            send({ type: 'experience_saved', lessons: saved.map(l => ({ name: l.name, lesson: l.lesson })) });
+          }
+        } catch (err) {
+          console.log(`[experience] Background error: ${err.message}`);
+        }
+        try {
+          const created = await skills.analyzeForSkills(historyForExtract, { sessionId, cwd });
+          if (created.length > 0) {
+            console.log(`[skills] Auto-created ${created.length} skill(s)`);
+            send({ type: 'skill_created', skills: created.map(s => ({ name: s.name, description: s.description })) });
+          }
+        } catch (err) {
+          console.log(`[skills] Background error: ${err.message}`);
+        }
+      })();
       argus.setToolLoopActive(false);
       return;
     }
@@ -689,43 +747,34 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       return true;
     });
 
-    const toolResults = [];
-    for (const tc of dedupedCalls) {
-      if (signal?.aborted) break;
+    // Tools that must run sequentially (confirmation, vision loop, state mutation)
+    const SEQUENTIAL_TOOLS = new Set([
+      'request_tools', 'computer', 'browser', 'screenshot',
+      'process_kill', 'memory_delete',
+    ]);
 
-      const toolName = ALIASES[tc.function?.name] || tc.function?.name || 'unknown';
-      const toolArgs = tc.function?.arguments || {};
-      const toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    // Determine if all tools in this batch can run in parallel.
+    // Parallel requires: 2+ tools, none sequential, none needing confirmation.
+    const resolvedCalls = dedupedCalls.map(tc => ({
+      tc,
+      name: ALIASES[tc.function?.name] || tc.function?.name || 'unknown',
+      args: tc.function?.arguments || {},
+    }));
 
-      // Notify client about tool call
-      send({
-        type: 'tool_call',
-        name: toolName,
-        args: toolArgs,
-        id: toolId,
-        status: 'running',
-      });
+    const canParallelize = resolvedCalls.length >= 2 && resolvedCalls.every(({ name, args }) =>
+      !SEQUENTIAL_TOOLS.has(name)
+      && !CONFIRM_TOOLS.has(name)
+      && !(CONFIRM_ACTIONS[name] && CONFIRM_ACTIONS[name].has(args.action))
+    );
 
-      // Check if confirmation is needed (tool-level or action-level)
-      const needsConfirm = CONFIRM_TOOLS.has(toolName)
-        || (CONFIRM_ACTIONS[toolName] && CONFIRM_ACTIONS[toolName].has(toolArgs.action));
-      if (needsConfirm) {
-        if (onConfirmRequest) {
-          const approved = await onConfirmRequest(toolId, toolName, toolArgs);
-          if (!approved) {
-            send({ type: 'tool_result', id: toolId, name: toolName, output: 'Skipped by user', status: 'skipped' });
-            toolResults.push({ name: toolName, output: 'Tool execution skipped by user.' });
-            continue;
-          }
-        }
-      }
-
+    // Execute a single tool call and return its result object.
+    // Shared between parallel and sequential paths.
+    async function executeOne({ name: toolName, args: toolArgs }, toolId) {
       // Run pre_tool hooks (can block)
       const preHook = hooks.runHooks('pre_tool', { tool: toolName, args: toolArgs, sessionId, cwd });
       if (preHook.blocked) {
         send({ type: 'tool_result', id: toolId, name: toolName, output: `Blocked by hook: ${preHook.reason}`, status: 'blocked' });
-        toolResults.push({ name: toolName, output: `Blocked by hook: ${preHook.reason}` });
-        continue;
+        return { name: toolName, output: `Blocked by hook: ${preHook.reason}` };
       }
 
       // Execute the tool (with abort-race so Stop cancels hung tools)
@@ -750,24 +799,23 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       // Run post_tool hooks (non-blocking, for logging/auditing)
       hooks.runHooks('post_tool', { tool: toolName, args: toolArgs, output: output?.slice(0, 4000), sessionId, cwd });
 
-      // Check abort after tool execution
       if (signal?.aborted) {
         send({ type: 'tool_result', id: toolId, name: toolName, output: 'Cancelled by user', status: 'cancelled' });
-        break;
+        return null; // signals abort
       }
 
-      // Notify client about generated images so they can display inline
+      // Post-processing: images, artifacts, PDFs, screenshots
+      let browserScreenshot = null;
+
       if (toolName === 'image_generate' && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/View at: (\/artifacts\/[^\s]+)/);
         if (urlMatch) {
           const event = { type: 'image_generated', prompt: toolArgs.prompt || '', path: urlMatch[1] };
           send(event);
-          // Persist so the image card survives page refresh
           appendMessage(sessionId, { role: 'display', display: 'image', prompt: event.prompt, path: event.path });
         }
       }
 
-      // Notify client about artifacts/documents so they can display download cards
       if ((toolName === 'artifact' || toolName === 'document') && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/\/artifacts\/[^\s]+/);
         if (urlMatch) {
@@ -779,12 +827,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
             artifactType: isDoc ? (toolArgs.format || 'txt') : (toolArgs.type || 'html'),
           };
           send(event);
-          // Persist so artifact/document cards survive page refresh
           appendMessage(sessionId, { role: 'display', display: isDoc ? 'document' : 'artifact', title: event.title, path: event.path, artifactType: event.artifactType });
         }
       }
 
-      // Notify client about PDF exports so they can display download cards
       if (toolName === 'pdf_export' && output && output.includes('/artifacts/')) {
         const urlMatch = output.match(/Download: (\/artifacts\/[^\s]+)/);
         if (urlMatch) {
@@ -799,21 +845,16 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       }
 
-      // Track computer use for completion notification
       if (toolName === 'computer' || toolName === 'screenshot') {
         usedComputerUse = true;
       }
 
-      // Handle browser/computer tool screenshots — extract base64 image for vision
-      let browserScreenshot = null;
       if ((toolName === 'browser' || toolName === 'computer' || toolName === 'screenshot') && output) {
         try {
           const parsed = JSON.parse(output);
           if (parsed.screenshot) {
             browserScreenshot = parsed.screenshot;
-            // Send screenshot to client for display
             send({ type: 'browser_screenshot', id: toolId, screenshot: parsed.screenshot, message: parsed.message });
-            // Strip screenshot from text output (too large for text context)
             delete parsed.screenshot;
             output = JSON.stringify(parsed);
           }
@@ -830,16 +871,85 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         type: 'tool_result',
         id: toolId,
         name: toolName,
-        output: output.slice(0, 2000), // Send abbreviated to client
+        output: output.slice(0, 2000),
         status: 'done',
       });
 
-      toolResults.push({ name: toolName, output, image: browserScreenshot });
+      return { name: toolName, output, image: browserScreenshot };
+    }
 
-      // Vision tools: break out of multi-tool batch so the model sees the screenshot
-      // before executing the next action. Without this, clicks pile up blind.
-      if (browserScreenshot && result.toolCalls.length > 1) {
-        break;
+    const toolResults = [];
+
+    if (canParallelize) {
+      // ── Parallel execution: all tools run concurrently ──
+      console.log(`[tool-loop] Executing ${resolvedCalls.length} tools in parallel`);
+      const ids = resolvedCalls.map((_, i) =>
+        `tc_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`
+      );
+      // Notify client about all calls upfront
+      for (let i = 0; i < resolvedCalls.length; i++) {
+        send({ type: 'tool_call', name: resolvedCalls[i].name, args: resolvedCalls[i].args, id: ids[i], status: 'running' });
+      }
+      const promises = resolvedCalls.map((rc, i) => executeOne(rc, ids[i]));
+      const results = await Promise.all(promises);
+      for (const r of results) {
+        if (r === null) break; // aborted
+        toolResults.push(r);
+      }
+    } else {
+      // ── Sequential execution: handles confirmation, vision, request_tools ──
+      for (const rc of resolvedCalls) {
+        if (signal?.aborted) break;
+
+        const { name: toolName, args: toolArgs } = rc;
+        const toolId = `tc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+        send({ type: 'tool_call', name: toolName, args: toolArgs, id: toolId, status: 'running' });
+
+        // Check if confirmation is needed
+        const needsConfirm = CONFIRM_TOOLS.has(toolName)
+          || (CONFIRM_ACTIONS[toolName] && CONFIRM_ACTIONS[toolName].has(toolArgs.action));
+        if (needsConfirm) {
+          if (onConfirmRequest) {
+            const approved = await onConfirmRequest(toolId, toolName, toolArgs);
+            if (!approved) {
+              send({ type: 'tool_result', id: toolId, name: toolName, output: 'Skipped by user', status: 'skipped' });
+              toolResults.push({ name: toolName, output: 'Tool execution skipped by user.' });
+              continue;
+            }
+          }
+        }
+
+        // Progressive disclosure: handle request_tools inline
+        if (toolName === 'request_tools') {
+          const domain = (toolArgs.domain || '').toLowerCase();
+          const activated = tiers.activateDomain(sessionId, domain);
+          if (!activated) {
+            const available = tiers.listDomains().map(d => d.name).join(', ');
+            const output = `Error: unknown domain "${domain}". Available: ${available}, all`;
+            send({ type: 'tool_result', id: toolId, name: toolName, output, status: 'done' });
+            toolResults.push({ name: toolName, output });
+            continue;
+          }
+          const newTools = [];
+          for (const d of activated) {
+            newTools.push(...tiers.domainToolList(d));
+          }
+          const output = `Activated domain(s): ${activated.join(', ')}\nNewly available tools: ${newTools.join(', ')}\n\nYou can now use these tools in this conversation.`;
+          send({ type: 'tool_result', id: toolId, name: toolName, output, status: 'done' });
+          toolResults.push({ name: toolName, output });
+          toolDefsStale = true; // Rebuild tool defs on next turn to include new domain
+          continue;
+        }
+
+        const r = await executeOne(rc, toolId);
+        if (r === null) break; // aborted
+        toolResults.push(r);
+
+        // Vision tools: break so the model sees the screenshot before next action
+        if (r.image && result.toolCalls.length > 1) {
+          break;
+        }
       }
     }
 
