@@ -10,6 +10,16 @@ The reference system is a **MacBook Pro with an M4 Max (128 GB unified memory)**
 
 ---
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/pre_poster.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/pre_poster.svg">
+    <img alt="PRE Architecture Overview" src="docs/pre_poster_4x.png" width="800">
+  </picture>
+</p>
+
+---
+
 ## Why This Exists
 
 Most local AI tools follow a generic pattern: wrap an OpenAI-compatible API, connect a few tools, hope for the best. The result is sluggish, fragile, and useful mainly as a novelty. PRE takes the opposite approach — it is a **model-specific, platform-specific, vertically integrated agent** — and that specificity is what makes it competitive with cloud-based offerings like ChatGPT Pro, Claude, and Gemini Advanced, while keeping everything private and running on your own hardware.
