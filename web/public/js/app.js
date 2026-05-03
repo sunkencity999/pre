@@ -3028,7 +3028,7 @@
         }
       } else if (conn.type === 'jira') {
         if (conn.active) {
-          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)}</div>`;
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(conn.url)}</div>`;
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupJira()">Edit</button>`;
           html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
         } else {
@@ -3036,7 +3036,7 @@
         }
       } else if (conn.type === 'confluence') {
         if (conn.active) {
-          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)}</div>`;
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(conn.url)}</div>`;
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupConfluence()">Edit</button>`;
           html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;
         } else {
@@ -3059,7 +3059,7 @@
       } else if (conn.type === 'dynamics365') {
         if (conn.active) {
           const mode = conn.authMode === 'delegated' ? 'Delegated (user)' : 'Client credentials (app)';
-          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted)">${escapeHtml(conn.url)} &middot; ${mode}</div>`;
+          html += `<div style="font-size:0.8rem;margin-bottom:6px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(conn.url)} &middot; ${mode}</div>`;
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.reconnectD365()">Reconnect</button>`;
           html += `<button class="btn btn-ghost btn-sm" onclick="Settings.setupD365()">Edit Credentials</button>`;
           html += `<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeConn('${conn.service}')">Remove</button>`;

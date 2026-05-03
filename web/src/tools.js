@@ -226,6 +226,11 @@ const CONFIRM_ACTIONS = {
 // Dispatch a tool call to its handler
 // opts.onStatus — callback for streaming status events (used by sub-agents)
 async function executeTool(name, args, cwd, opts) {
+  // Strip domain prefix (e.g. "media:image_generate" → "image_generate")
+  // Models hallucinate this pattern after seeing request_tools domain activation.
+  if (name.includes(':')) {
+    name = name.split(':').pop();
+  }
   // Resolve aliases
   name = ALIASES[name] || name;
 
@@ -755,9 +760,22 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     // Execute tool calls
     send({ type: 'done_partial', stats: result.stats });
 
+    // Normalize tool names: strip domain prefix, resolve aliases
+    for (const tc of result.toolCalls) {
+      if (tc.function?.name) {
+        let n = tc.function.name;
+        if (n.includes(':')) n = n.split(':').pop(); // strip "media:image_generate" → "image_generate"
+        n = ALIASES[n] || n;
+        tc.function.name = n;
+      }
+    }
+
     // Deduplicate tool calls — model sometimes emits the same call twice in one turn.
     // Compare by name + JSON-serialized args; keep the first occurrence.
+    // Also cap at 2 calls to the same tool per turn to prevent retry-spam loops.
     const seenCalls = new Set();
+    const toolNameCounts = {};
+    const MAX_SAME_TOOL_PER_TURN = 2;
     const dedupedCalls = result.toolCalls.filter(tc => {
       const name = tc.function?.name || '';
       const args = JSON.stringify(tc.function?.arguments || {});
@@ -767,6 +785,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         return false;
       }
       seenCalls.add(key);
+      // Cap same-tool calls per turn (e.g. model retrying image_generate 5x)
+      toolNameCounts[name] = (toolNameCounts[name] || 0) + 1;
+      if (toolNameCounts[name] > MAX_SAME_TOOL_PER_TURN) {
+        console.log(`[tool-loop] Capping ${name} at ${MAX_SAME_TOOL_PER_TURN} calls per turn`);
+        return false;
+      }
       return true;
     });
 
