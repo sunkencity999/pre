@@ -4,13 +4,36 @@
 
 const { execSync } = require('child_process');
 const { createSession, appendMessage, renameSession, ensureProject, moveSessionToProject } = require('./sessions');
-const { runToolLoop } = require('./tools');
+const { runToolLoop, waitForIdle } = require('./tools');
 const { loadJobs, saveJobs, previousMatchTime } = require('./tools/cron');
 const telegramTool = require('./tools/telegram');
 const fs = require('fs');
 const { CONNECTIONS_FILE } = require('./constants');
 
 const PORT = parseInt(process.env.PRE_WEB_PORT || '7749', 10);
+
+// ── Background job queue ─────────────────────────────────────────────────
+// Serializes cron/trigger executions so they don't interrupt active user
+// conversations or compete with each other for the GPU.
+const _jobQueue = [];
+let _queueRunning = false;
+
+async function _drainQueue() {
+  if (_queueRunning) return; // another drain is already in progress
+  _queueRunning = true;
+  while (_jobQueue.length > 0) {
+    const { job, opts, resolve, reject } = _jobQueue.shift();
+    try {
+      // Wait for any active user conversation to finish
+      await waitForIdle();
+      const result = await _executeCronJobInner(job, opts);
+      resolve(result);
+    } catch (err) {
+      reject(err);
+    }
+  }
+  _queueRunning = false;
+}
 
 // Max execution time per cron job (10 minutes — generous for cold model starts)
 const CRON_TIMEOUT_MS = 10 * 60 * 1000;
@@ -24,15 +47,21 @@ function loadConnections() {
 }
 
 /**
+ * Queue a cron/trigger job for execution. Jobs are serialized and wait
+ * for any active user conversation to finish before running.
+ */
+function executeCronJob(job, opts = {}) {
+  return new Promise((resolve, reject) => {
+    _jobQueue.push({ job, opts, resolve, reject });
+    _drainQueue();
+  });
+}
+
+/**
  * Run a cron job headlessly — creates a session, executes the prompt
  * through the full tool loop, collects the response, and sends notifications.
- *
- * @param {Object} job - The cron job object from cron.json
- * @param {Object} opts
- * @param {Function} opts.broadcastWS - Optional: broadcast WS event to connected clients
- * @returns {Promise<{sessionId: string, response: string}>}
  */
-async function executeCronJob(job, { broadcastWS } = {}) {
+async function _executeCronJobInner(job, { broadcastWS } = {}) {
   const ts = Date.now().toString(36);
   const sessionId = createSession('cron', `${job.id}-${ts}`, true);
 

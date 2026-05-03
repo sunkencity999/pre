@@ -6,6 +6,7 @@ jest.mock('../src/tools', () => ({
     send({ type: 'token', content: 'response.' });
     send({ type: 'done' });
   }),
+  waitForIdle: jest.fn().mockResolvedValue(),
 }));
 jest.mock('../src/ollama', () => ({
   streamChat: jest.fn().mockResolvedValue({ response: '[]' }),

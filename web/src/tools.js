@@ -494,7 +494,26 @@ async function executeTool(name, args, cwd, opts) {
  * @param {Function} opts.onConfirmRequest - Ask client to confirm dangerous tool
  * @returns {Promise<void>}
  */
+// Track active user loops so background jobs (cron, triggers) can queue
+let _activeUserLoops = 0;
+const _loopWaiters = []; // Resolve callbacks waiting for loops to drain
+
+function isUserLoopActive() { return _activeUserLoops > 0; }
+
+/**
+ * Returns a promise that resolves when no user loops are active.
+ * Resolves immediately if already idle.
+ */
+function waitForIdle() {
+  if (_activeUserLoops <= 0) return Promise.resolve();
+  return new Promise(resolve => _loopWaiters.push(resolve));
+}
+
 async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, userMessage, needsTitle, maxTurns }) {
+  // Track user-initiated loops (non-cron) for background job queuing
+  const isUserLoop = !sessionId.startsWith('cron:') && !sessionId.startsWith('mcp:');
+  if (isUserLoop) _activeUserLoops++;
+
   // Wrap send to let Argus observe all events (fire-and-forget, never blocks)
   const originalSend = send;
   send = (event) => {
@@ -726,6 +745,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
         }
       })();
       argus.setToolLoopActive(false);
+      if (isUserLoop && --_activeUserLoops <= 0) {
+        _activeUserLoops = 0;
+        while (_loopWaiters.length) _loopWaiters.shift()();
+      }
       return;
     }
 
@@ -986,6 +1009,10 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
 
   // Loop ended without a natural `done` — either max turns or signal abort
   argus.setToolLoopActive(false);
+  if (isUserLoop && --_activeUserLoops <= 0) {
+    _activeUserLoops = 0;
+    while (_loopWaiters.length) _loopWaiters.shift()();
+  }
   if (signal?.aborted) {
     send({ type: 'done', stats: {}, context: { used: tokensIn + tokensOut, max: MODEL_CTX, pct: Math.round((tokensIn + tokensOut) * 100 / MODEL_CTX) }, aborted: true });
   } else {
@@ -993,4 +1020,4 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
   }
 }
 
-module.exports = { executeTool, runToolLoop, ALIASES, CONFIRM_TOOLS };
+module.exports = { executeTool, runToolLoop, isUserLoopActive, waitForIdle, ALIASES, CONFIRM_TOOLS };
