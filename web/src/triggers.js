@@ -63,7 +63,7 @@ function startFileWatcher(trigger) {
 
   const isDir = fs.statSync(watchPath).isDirectory();
   const recursive = isDir && trigger.config.recursive !== false;
-  const debounceMs = trigger.config.debounce || 3000;
+  const debounceMs = trigger.config.debounce || 120000; // 2 min — batches rapid file events
   const globPattern = trigger.config.glob || null;
 
   try {
@@ -450,7 +450,7 @@ function addTrigger(args) {
     if (!fs.existsSync(watchPath)) return `Error: path not found: ${watchPath}`;
     config.path = watchPath;
     config.recursive = args.recursive !== false;
-    config.debounce = args.debounce || 3000;
+    config.debounce = args.debounce || 120000;
     if (args.glob) config.glob = args.glob;
   }
 
