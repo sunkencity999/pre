@@ -738,6 +738,193 @@ function setZoomConfig(accountId, clientId, clientSecret) {
   return true;
 }
 
+// ── Model Provider (Ollama / OpenAI-compatible / Azure) ──────────────────
+
+/**
+ * Get the active model provider config.
+ * Returns { type: 'ollama' } when no remote provider is configured.
+ */
+function getProvider() {
+  const data = loadConnections();
+  const p = data._provider;
+  if (!p || !p.type || p.type === 'ollama') return { type: 'ollama' };
+  const result = {
+    type: p.type,
+    base_url: (p.base_url || '').replace(/\/+$/, ''),
+    api_key: p.api_key || '',
+    model: p.model || '',
+    max_tokens: parseInt(p.max_tokens, 10) || 4096,
+  };
+  // Azure-specific fields
+  if (p.type === 'azure') {
+    result.api_version = p.api_version || '2024-10-21';
+  }
+  // Anthropic-specific fields
+  if (p.type === 'anthropic') {
+    result.api_version = p.api_version || '2023-06-01';
+  }
+  return result;
+}
+
+/**
+ * Save a remote model provider config.
+ * Azure requires base_url (deployment endpoint); model is optional (deployment determines it).
+ * OpenAI requires both base_url and model.
+ */
+function setProvider(config) {
+  if (!config || !config.base_url) {
+    throw new Error('base_url is required');
+  }
+  if (config.type !== 'azure' && config.type !== 'anthropic' && !config.model) {
+    throw new Error('model is required for non-Azure/Anthropic providers');
+  }
+  const data = loadConnections();
+  data._provider = {
+    type: config.type || 'openai',
+    base_url: config.base_url.replace(/\/+$/, ''),
+    api_key: config.api_key || '',
+    model: config.model || '',
+    max_tokens: parseInt(config.max_tokens, 10) || 4096,
+    // Azure-specific
+    ...(config.type === 'azure' ? { api_version: config.api_version || '2024-10-21' } : {}),
+    // Anthropic-specific
+    ...(config.type === 'anthropic' ? { api_version: config.api_version || '2023-06-01' } : {}),
+  };
+  saveConnections(data);
+  return true;
+}
+
+/**
+ * Remove the remote provider, reverting to local Ollama.
+ */
+function removeProvider() {
+  const data = loadConnections();
+  delete data._provider;
+  saveConnections(data);
+  return true;
+}
+
+/**
+ * Test connectivity to an OpenAI-compatible or Azure endpoint.
+ * Sends a minimal non-streaming request and checks for a valid response.
+ * @param {{ type?: string, base_url: string, api_key: string, model?: string, api_version?: string }} config
+ * @returns {Promise<{ success: boolean, model: string, message?: string }>}
+ */
+function testProvider(config) {
+  return new Promise((resolve, reject) => {
+    const baseUrl = (config.base_url || '').replace(/\/+$/, '');
+    if (!baseUrl) return reject(new Error('base_url is required'));
+
+    const isAzure = config.type === 'azure';
+    const isAnthropic = config.type === 'anthropic';
+
+    // Anthropic uses a different request format and auth
+    if (isAnthropic) {
+      const url = new URL(baseUrl);
+      const useHttps = url.protocol === 'https:';
+      const lib = useHttps ? https : http;
+      const modelName = config.model || 'claude-sonnet-4-20250514';
+      const body = JSON.stringify({
+        model: modelName,
+        messages: [{ role: 'user', content: 'Hi' }],
+        max_tokens: 5,
+      });
+      const req = lib.request({
+        hostname: url.hostname,
+        port: url.port || (useHttps ? 443 : 80),
+        path: url.pathname + url.search,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          'x-api-key': config.api_key || '',
+          'anthropic-version': config.api_version || '2023-06-01',
+        },
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => data += chunk);
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.error) {
+              return resolve({ success: false, model: modelName, message: parsed.error.message || parsed.error.type || 'Unknown error' });
+            }
+            if (parsed.content && parsed.content.length > 0) {
+              return resolve({ success: true, model: parsed.model || modelName });
+            }
+            resolve({ success: false, model: modelName, message: 'Unexpected response format' });
+          } catch (err) {
+            resolve({ success: false, model: modelName, message: `Parse error: ${err.message}` });
+          }
+        });
+      });
+      req.on('error', (err) => resolve({ success: false, model: modelName, message: err.message }));
+      req.setTimeout(15000, () => { req.destroy(); resolve({ success: false, model: modelName, message: 'Connection timed out' }); });
+      req.write(body);
+      req.end();
+      return;
+    }
+
+    let endpoint;
+    if (isAzure) {
+      const sep = baseUrl.includes('?') ? '&' : '?';
+      endpoint = baseUrl + sep + 'api-version=' + (config.api_version || '2024-10-21');
+    } else {
+      endpoint = baseUrl + '/chat/completions';
+    }
+    const url = new URL(endpoint);
+    const useHttps = url.protocol === 'https:';
+    const lib = useHttps ? https : http;
+
+    const modelName = config.model || (isAzure ? 'azure-deployment' : 'gpt-4o');
+    const tokenParam = isAzure ? { max_completion_tokens: 5 } : { max_tokens: 5 };
+    const body = JSON.stringify({
+      ...(isAzure ? {} : { model: modelName }),
+      messages: [{ role: 'user', content: 'Hi' }],
+      ...tokenParam,
+      stream: false,
+    });
+
+    const authHeaders = isAzure
+      ? (config.api_key ? { 'api-key': config.api_key } : {})
+      : (config.api_key ? { 'Authorization': `Bearer ${config.api_key}` } : {});
+
+    const req = lib.request({
+      hostname: url.hostname,
+      port: url.port || (useHttps ? 443 : 80),
+      path: url.pathname + url.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...authHeaders,
+      },
+    }, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) {
+            return resolve({ success: false, model: modelName, message: parsed.error.message || parsed.error.type || 'Unknown error' });
+          }
+          if (parsed.choices && parsed.choices.length > 0) {
+            return resolve({ success: true, model: parsed.model || modelName });
+          }
+          resolve({ success: false, model: modelName, message: 'Unexpected response format' });
+        } catch (err) {
+          resolve({ success: false, model: modelName, message: `Parse error: ${err.message}` });
+        }
+      });
+    });
+
+    req.on('error', (err) => resolve({ success: false, model: modelName, message: err.message }));
+    req.setTimeout(15000, () => { req.destroy(); resolve({ success: false, model: modelName, message: 'Connection timed out' }); });
+    req.write(body);
+    req.end();
+  });
+}
+
 module.exports = {
   listConnections,
   setApiKey,
@@ -760,4 +947,8 @@ module.exports = {
   exchangeD365Code,
   refreshD365Token,
   setZoomConfig,
+  getProvider,
+  setProvider,
+  removeProvider,
+  testProvider,
 };

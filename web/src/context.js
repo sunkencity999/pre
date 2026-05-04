@@ -8,6 +8,7 @@ const { PRE_DIR, CONNECTIONS_FILE, COMFYUI_FILE } = require('./constants');
 const { buildMemoryContext: buildMemCtx, buildMemoryContextAsync, buildMemoryInstructions } = require('./memory');
 const { buildExperienceContext, buildExperienceContextAsync } = require('./experience');
 const { buildTemporalContext } = require('./chronos');
+const { getProvider } = require('./connections');
 
 // ── Cached config readers ─────────────────────────────────────────────────────
 // These files rarely change mid-conversation. Cache with 30s TTL to avoid
@@ -295,6 +296,14 @@ function buildSystemPrompt(cwd) {
     if (!connections.github) prompt += `- github available via /connections add github.\n`;
     if (!connections.google) prompt += `- gmail/gdrive/gdocs available via /connections add google.\n`;
     if (!connections.wolfram) prompt += `- wolfram available via /connections add wolfram.\n`;
+  }
+
+  // Remote provider note — helps the model understand its runtime context
+  const provider = getProvider();
+  if (provider.type === 'openai' || provider.type === 'azure' || provider.type === 'anthropic') {
+    const labels = { azure: 'Azure AI Foundry', anthropic: 'Anthropic Messages API', openai: 'OpenAI-compatible API' };
+    const label = labels[provider.type] || 'OpenAI-compatible API';
+    prompt += `\n## Runtime\nYou are running via a remote ${label} (${provider.model || 'deployment'}). Embeddings and RAG operations use the local Ollama instance.\n`;
   }
 
   return prompt;

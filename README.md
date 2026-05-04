@@ -1,6 +1,6 @@
 # PRE — Personal Reasoning Engine
 
-> A local AI operating system for macOS, Windows, and Linux. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on your hardware. No cloud. No API keys required. No data leaves your machine.
+> A local AI operating system for macOS, Windows, and Linux. 70+ tools, desktop automation, document intelligence, voice interface, event-driven triggers, 16 enterprise integrations, persistent memory, self-architecting virtual tools, and a full management GUI — running entirely on your hardware by default. No cloud required. Optionally connect any OpenAI-compatible API for cloud-powered inference while keeping all tools, memory, and data local.
 
 PRE is not a chatbot with tools bolted on. It is a **purpose-built agent** — a single-binary Objective-C application engineered from the ground up around one specific model on one specific platform. Every architectural decision, from socket-level I/O to dynamic memory allocation to prompt compression, exists to make **Google Gemma 4 26B-A4B** run at its absolute ceiling on Apple Silicon. The result is a local agent that doesn't feel local: **~73 tokens/second**, sub-second time to first token, 128K context window, 70+ integrated tools, persistent memory, local RAG, local image generation, autonomous scheduling, event-driven triggers, voice interface, a built-in web GUI, and real agentic workflows — all running on your hardware.
 
@@ -87,6 +87,7 @@ This means PRE can:
 - [Performance & Optimization](#performance--optimization)
 - [Web GUI](#web-gui)
 - [Frontier AI Delegation](#frontier-ai-delegation)
+- [Remote Model Providers](#remote-model-providers)
 - [Experience Ledger](#experience-ledger)
 - [Chronos (Temporal Awareness)](#chronos-temporal-awareness)
 - [MCP Server Support](#mcp-server-support)
@@ -1051,6 +1052,79 @@ The delegates run in non-interactive mode with tool use disabled (`claude --tool
 
 ---
 
+## Remote Model Providers
+
+PRE runs locally by default with Gemma 4 on Ollama, but you can point it at **any OpenAI-compatible API**, **Azure AI Foundry**, or **Anthropic Messages API** endpoint — giving resource-constrained machines access to the full agent harness (70+ tools, memory, experience, scheduling, all of it) powered by cloud models.
+
+### Supported Providers
+
+| Provider | Base URL | Suggested Model |
+|----------|----------|-----------------|
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o` |
+| **Groq** | `https://api.groq.com/openai/v1` | `llama-3.3-70b-versatile` |
+| **Together AI** | `https://api.together.xyz/v1` | `meta-llama/Llama-3.3-70B-Instruct-Turbo` |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4` |
+| **Azure AI Foundry (OpenAI)** | `https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions` | (deployment determines model) |
+| **Azure AI Foundry (Anthropic)** | `https://{resource}.services.ai.azure.com/anthropic/v1/messages` | (deployment name as model) |
+| **Anthropic (direct)** | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-20250514` |
+| **vLLM / LM Studio** | `http://localhost:8000/v1` | (your model) |
+
+Any endpoint that implements the OpenAI `/chat/completions` streaming API works — including self-hosted vLLM, TGI, and Ollama running on a remote machine. Azure and Anthropic use their own authentication and streaming protocols, which PRE handles natively.
+
+### How to Configure
+
+Open the **Settings** panel in the web GUI (gear icon in sidebar). The **Model Provider** section at the top offers four modes:
+
+1. **Local (Ollama)** — the default, uses `pre-gemma4` on your hardware
+2. **Remote (OpenAI)** — select a preset or enter a custom OpenAI-compatible endpoint
+3. **Azure AI Foundry** — connect to an Azure OpenAI deployment
+4. **Anthropic** — connect to Anthropic's Messages API (direct or via Azure)
+
+**For OpenAI-compatible providers**, fill in:
+- **Base URL** — the API endpoint (presets auto-fill this)
+- **API Key** — your provider's API key
+- **Model** — which model to use (presets suggest one)
+- **Max Tokens** — per-response cap to control costs (default: 4096)
+
+**For Azure AI Foundry (OpenAI models)**, fill in:
+- **Deployment Endpoint** — the full Target URI from Azure AI Foundry > Deployments > your model
+- **API Key** — your Azure API key (from the Keys section in your resource)
+- **API Version** — defaults to `2024-10-21` (latest stable)
+- **Model Name** — optional, for display purposes (the deployment determines the actual model)
+- **Max Tokens** — per-response cap to control costs (default: 4096)
+
+**For Anthropic (direct or Azure)**, fill in:
+- **Messages Endpoint** — `https://api.anthropic.com/v1/messages` for direct, or the Azure endpoint URL
+- **API Key** — your Anthropic API key or Azure API key (sent as `x-api-key` header)
+- **API Version** — defaults to `2023-06-01`
+- **Model / Deployment Name** — e.g. `claude-sonnet-4-20250514` or Azure deployment name
+- **Max Tokens** — per-response cap to control costs (default: 4096)
+
+Click **Test Connection** to verify before saving.
+
+### What Stays Local
+
+Even with a remote provider, these always use local Ollama:
+
+| Component | Why |
+|-----------|-----|
+| **Memory embeddings** | `nomic-embed-text` (274 MB) — fast, private, no API cost |
+| **RAG vector search** | Same local embedding model |
+| **Experience ledger search** | Semantic similarity via local embeddings |
+| **Session storage** | All conversations stay in `~/.pre/sessions/` |
+| **Tool execution** | All 70+ tools run locally on your machine |
+
+The remote provider handles only the **inference** (generating responses and deciding which tools to call). Your files, credentials, and data never leave your machine.
+
+### Cost Safety
+
+- **Max Tokens cap** — every request is capped to your configured limit (default 4096 tokens per response)
+- **No auto-retry on rate limits** — errors surface to the user, not retried silently
+- **Thinking disabled** — extended thinking is disabled for remote providers to avoid unnecessary token consumption
+- **Revert anytime** — click "Revert to Local" in Settings to switch back instantly
+
+---
+
 ## Experience Ledger
 
 PRE doesn't just execute tasks — it **learns from them**. After each task completes, a reflection step extracts lessons learned and saves them to a permanent experience ledger at `~/.pre/memory/experience/`.
@@ -1459,7 +1533,7 @@ All PRE data lives in `~/.pre/`:
 ```
 ~/.pre/
 ├── identity.json       # Agent name
-├── connections.json    # API keys, OAuth tokens (chmod 600)
+├── connections.json    # API keys, OAuth tokens, model provider config (chmod 600)
 ├── cron.json           # Scheduled recurring tasks
 ├── hooks.json          # Pre/post tool execution hooks
 ├── mcp.json            # MCP server configuration

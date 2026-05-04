@@ -29,6 +29,7 @@ const {
   getD365AuthUrl,
   exchangeD365Code,
   setZoomConfig,
+  getProvider, setProvider, removeProvider, testProvider,
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
@@ -216,6 +217,37 @@ app.post('/api/sessions/:id/move', (req, res) => {
   const { projectSlug } = req.body || {};
   moveSessionToProject(id, projectSlug || null);
   res.json({ id, projectSlug: projectSlug || null });
+});
+
+// ── Model Provider API ──
+
+app.get('/api/provider', (_req, res) => {
+  const p = getProvider();
+  if (p.api_key) p.api_key = p.api_key.slice(0, 4) + '...' + p.api_key.slice(-4);
+  res.json(p);
+});
+
+app.post('/api/provider', (req, res) => {
+  try {
+    setProvider(req.body);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/provider', (_req, res) => {
+  removeProvider();
+  res.json({ success: true, provider: { type: 'ollama' } });
+});
+
+app.post('/api/provider/test', async (req, res) => {
+  try {
+    const result = await testProvider(req.body);
+    res.json(result);
+  } catch (err) {
+    res.json({ success: false, message: err.message });
+  }
 });
 
 // ── Connections API ──

@@ -2965,21 +2965,23 @@
     content.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
 
     try {
-      const [connRes, mcpRes, sysRes] = await Promise.all([
+      const [connRes, mcpRes, sysRes, provRes] = await Promise.all([
         fetch('/api/connections'),
         fetch('/api/mcp'),
         fetch('/api/system/autostart'),
+        fetch('/api/provider'),
       ]);
       const connections = await connRes.json();
       const mcpStatus = await mcpRes.json();
       const autostart = await sysRes.json();
-      renderConnectionsPanel(content, connections, mcpStatus, autostart);
+      const provider = await provRes.json();
+      renderConnectionsPanel(content, connections, mcpStatus, autostart, provider);
     } catch {
       content.innerHTML = '<p style="color:var(--danger)">Failed to load settings</p>';
     }
   }
 
-  function renderConnectionsPanel(container, connections, mcpStatus, autostart) {
+  function renderConnectionsPanel(container, connections, mcpStatus, autostart, provider) {
     let html = '';
 
     // Tutorial banner at top
@@ -2991,6 +2993,168 @@
     html += '</div>';
     html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>';
     html += '</div>';
+
+    // ── Model Provider section ──
+    const provType = provider ? provider.type : 'ollama';
+    const isRemote = provType === 'openai' || provType === 'azure' || provType === 'anthropic';
+    const isAzure = provType === 'azure';
+    const isAnthropic = provType === 'anthropic';
+    const inputStyle = 'width:100%;padding:8px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);font-size:0.85rem;box-sizing:border-box';
+
+    function radioLabel(value, label, checked) {
+      return `<label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:8px 14px;border-radius:8px;border:1px solid ${checked ? 'var(--accent)' : 'var(--border)'};background:${checked ? 'var(--accent-bg,rgba(37,99,235,0.1))' : 'transparent'}"><input type="radio" name="provider-type" value="${value}" ${checked ? 'checked' : ''} onchange="Settings.toggleProvider(this.value)" style="accent-color:var(--accent)"><span style="font-size:0.85rem">${label}</span></label>`;
+    }
+
+    html += '<div class="settings-section" style="margin-bottom:20px">';
+    html += '<div class="settings-section-title">Model Provider</div>';
+    html += '<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">';
+    html += radioLabel('ollama', 'Local (Ollama)', provType === 'ollama');
+    html += radioLabel('openai', 'Remote (OpenAI)', provType === 'openai');
+    html += radioLabel('azure', 'Azure AI Foundry', provType === 'azure');
+    html += radioLabel('anthropic', 'Anthropic', provType === 'anthropic');
+    html += '</div>';
+
+    // ── OpenAI-compatible config ──
+    html += `<div id="provider-remote-config" style="display:${provType === 'openai' ? 'block' : 'none'}">`;
+
+    // Preset dropdown
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Preset</label>';
+    html += `<select id="provider-preset" onchange="Settings.applyPreset(this.value)" style="${inputStyle}">`;
+    html += '<option value="custom">Custom</option>';
+    html += '<option value="openai">OpenAI</option>';
+    html += '<option value="groq">Groq</option>';
+    html += '<option value="together">Together AI</option>';
+    html += '<option value="openrouter">OpenRouter</option>';
+    html += '<option value="vllm">vLLM / LM Studio</option>';
+    html += '</select></div>';
+
+    // Base URL
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Base URL</label>';
+    html += `<input id="provider-url" type="text" value="${provType === 'openai' ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://api.openai.com/v1" style="${inputStyle}">`;
+    html += '</div>';
+
+    // API Key
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
+    html += `<input id="provider-key" type="password" value="" placeholder="${provType === 'openai' && provider.api_key ? provider.api_key : 'sk-...'}" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Model
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model</label>';
+    html += `<input id="provider-model" type="text" value="${provType === 'openai' ? escapeHtml(provider.model || '') : ''}" placeholder="gpt-4o" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Max Tokens
+    html += '<div style="margin-bottom:14px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
+    html += `<input id="provider-max-tokens" type="number" value="${provType === 'openai' ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Buttons
+    html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
+    html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testProvider()">Test Connection</button>';
+    html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveProvider()">Save</button>';
+    if (provType === 'openai') {
+      html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
+    }
+    html += '</div>';
+    html += '<div id="provider-test-result" style="margin-top:8px;font-size:0.8rem"></div>';
+    html += '</div>'; // end provider-remote-config
+
+    // ── Azure AI Foundry config ──
+    html += `<div id="provider-azure-config" style="display:${isAzure ? 'block' : 'none'}">`;
+
+    // Endpoint URL (full deployment URL)
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Endpoint</label>';
+    html += `<input id="azure-url" type="text" value="${isAzure ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions" style="${inputStyle}">`;
+    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Full URL from Azure AI Foundry &gt; Deployments &gt; your model &gt; Target URI</div>';
+    html += '</div>';
+
+    // API Key
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
+    html += `<input id="azure-key" type="password" value="" placeholder="${isAzure && provider.api_key ? provider.api_key : 'Azure API key...'}" style="${inputStyle}">`;
+    html += '</div>';
+
+    // API Version
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Version</label>';
+    html += `<input id="azure-version" type="text" value="${isAzure ? escapeHtml(provider.api_version || '2024-10-21') : '2024-10-21'}" placeholder="2024-10-21" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Model (display name, optional for Azure)
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model Name (optional, for display)</label>';
+    html += `<input id="azure-model" type="text" value="${isAzure ? escapeHtml(provider.model || '') : ''}" placeholder="gpt-4o" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Max Tokens
+    html += '<div style="margin-bottom:14px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
+    html += `<input id="azure-max-tokens" type="number" value="${isAzure ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Buttons
+    html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
+    html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testAzure()">Test Connection</button>';
+    html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveAzure()">Save</button>';
+    if (isAzure) {
+      html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
+    }
+    html += '</div>';
+    html += '<div id="azure-test-result" style="margin-top:8px;font-size:0.8rem"></div>';
+    html += '</div>'; // end provider-azure-config
+
+    // ── Anthropic config ──
+    html += `<div id="provider-anthropic-config" style="display:${isAnthropic ? 'block' : 'none'}">`;
+
+    // Endpoint URL
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Messages Endpoint</label>';
+    html += `<input id="anthropic-url" type="text" value="${isAnthropic ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://api.anthropic.com/v1/messages" style="${inputStyle}">`;
+    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">For Azure: use the full endpoint URL from Azure AI Foundry</div>';
+    html += '</div>';
+
+    // API Key
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
+    html += `<input id="anthropic-key" type="password" value="" placeholder="${isAnthropic && provider.api_key ? provider.api_key : 'x-api-key...'}" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Anthropic Version
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Version</label>';
+    html += `<input id="anthropic-version" type="text" value="${isAnthropic ? escapeHtml(provider.api_version || '2023-06-01') : '2023-06-01'}" placeholder="2023-06-01" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Model / Deployment Name
+    html += '<div style="margin-bottom:10px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model / Deployment Name</label>';
+    html += `<input id="anthropic-model" type="text" value="${isAnthropic ? escapeHtml(provider.model || '') : ''}" placeholder="claude-sonnet-4-20250514" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Max Tokens
+    html += '<div style="margin-bottom:14px">';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
+    html += `<input id="anthropic-max-tokens" type="number" value="${isAnthropic ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += '</div>';
+
+    // Buttons
+    html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
+    html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testAnthropic()">Test Connection</button>';
+    html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveAnthropic()">Save</button>';
+    if (isAnthropic) {
+      html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
+    }
+    html += '</div>';
+    html += '<div id="anthropic-test-result" style="margin-top:8px;font-size:0.8rem"></div>';
+    html += '</div>'; // end provider-anthropic-config
+
+    html += '</div>'; // end settings-section
 
     html += '<div class="settings-section">';
     html += '<div class="settings-section-title">Connections</div>';
@@ -3835,6 +3999,199 @@
         html += `<button class="btn btn-ghost btn-sm" onclick="Settings.refresh()">Close</button>`;
         actionsEl.innerHTML = html;
       }).catch(() => {});
+    },
+
+    // ── Provider methods ──
+
+    toggleProvider(value) {
+      const openaiEl = document.getElementById('provider-remote-config');
+      const azureEl = document.getElementById('provider-azure-config');
+      const anthropicEl = document.getElementById('provider-anthropic-config');
+      if (openaiEl) openaiEl.style.display = value === 'openai' ? 'block' : 'none';
+      if (azureEl) azureEl.style.display = value === 'azure' ? 'block' : 'none';
+      if (anthropicEl) anthropicEl.style.display = value === 'anthropic' ? 'block' : 'none';
+      if (value === 'ollama') {
+        this.removeProvider();
+      }
+    },
+
+    applyPreset(preset) {
+      const presets = {
+        openai:     { url: 'https://api.openai.com/v1', model: 'gpt-4o', tokens: 4096 },
+        groq:       { url: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', tokens: 8192 },
+        together:   { url: 'https://api.together.xyz/v1', model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo', tokens: 4096 },
+        openrouter: { url: 'https://openrouter.ai/api/v1', model: 'anthropic/claude-sonnet-4', tokens: 8192 },
+        vllm:       { url: 'http://localhost:8000/v1', model: '', tokens: 4096 },
+      };
+      const p = presets[preset];
+      if (!p) return;
+      const urlEl = document.getElementById('provider-url');
+      const modelEl = document.getElementById('provider-model');
+      const tokensEl = document.getElementById('provider-max-tokens');
+      if (urlEl) urlEl.value = p.url;
+      if (modelEl) modelEl.value = p.model;
+      if (tokensEl) tokensEl.value = p.tokens;
+    },
+
+    async testProvider() {
+      const resultEl = document.getElementById('provider-test-result');
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+      try {
+        const config = {
+          base_url: (document.getElementById('provider-url') || {}).value || '',
+          api_key: (document.getElementById('provider-key') || {}).value || '',
+          model: (document.getElementById('provider-model') || {}).value || '',
+        };
+        const res = await fetch('/api/provider/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        const data = await res.json();
+        if (resultEl) {
+          resultEl.innerHTML = data.success
+            ? `<span style="color:var(--success)">Connected to ${escapeHtml(data.model)}</span>`
+            : `<span style="color:var(--danger)">${escapeHtml(data.message || 'Connection failed')}</span>`;
+        }
+      } catch (err) {
+        if (resultEl) resultEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(err.message)}</span>`;
+      }
+    },
+
+    async saveProvider() {
+      const config = {
+        type: 'openai',
+        base_url: (document.getElementById('provider-url') || {}).value || '',
+        api_key: (document.getElementById('provider-key') || {}).value || '',
+        model: (document.getElementById('provider-model') || {}).value || '',
+        max_tokens: parseInt((document.getElementById('provider-max-tokens') || {}).value, 10) || 4096,
+      };
+      if (!config.base_url || !config.model) {
+        const resultEl = document.getElementById('provider-test-result');
+        if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">Base URL and Model are required</span>';
+        return;
+      }
+      try {
+        await fetch('/api/provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    async removeProvider() {
+      try {
+        await fetch('/api/provider', { method: 'DELETE' });
+        this.refresh();
+      } catch {}
+    },
+
+    // ── Azure methods ──
+
+    async testAzure() {
+      const resultEl = document.getElementById('azure-test-result');
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+      try {
+        const config = {
+          type: 'azure',
+          base_url: (document.getElementById('azure-url') || {}).value || '',
+          api_key: (document.getElementById('azure-key') || {}).value || '',
+          model: (document.getElementById('azure-model') || {}).value || '',
+          api_version: (document.getElementById('azure-version') || {}).value || '2024-10-21',
+        };
+        const res = await fetch('/api/provider/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        const data = await res.json();
+        if (resultEl) {
+          resultEl.innerHTML = data.success
+            ? `<span style="color:var(--success)">Connected to ${escapeHtml(data.model || 'Azure deployment')}</span>`
+            : `<span style="color:var(--danger)">${escapeHtml(data.message || 'Connection failed')}</span>`;
+        }
+      } catch (err) {
+        if (resultEl) resultEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(err.message)}</span>`;
+      }
+    },
+
+    async saveAzure() {
+      const config = {
+        type: 'azure',
+        base_url: (document.getElementById('azure-url') || {}).value || '',
+        api_key: (document.getElementById('azure-key') || {}).value || '',
+        model: (document.getElementById('azure-model') || {}).value || '',
+        max_tokens: parseInt((document.getElementById('azure-max-tokens') || {}).value, 10) || 4096,
+        api_version: (document.getElementById('azure-version') || {}).value || '2024-10-21',
+      };
+      if (!config.base_url) {
+        const resultEl = document.getElementById('azure-test-result');
+        if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">Deployment Endpoint is required</span>';
+        return;
+      }
+      try {
+        await fetch('/api/provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        this.refresh();
+      } catch {}
+    },
+
+    // ── Anthropic methods ──
+
+    async testAnthropic() {
+      const resultEl = document.getElementById('anthropic-test-result');
+      if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-muted)">Testing...</span>';
+      try {
+        const config = {
+          type: 'anthropic',
+          base_url: (document.getElementById('anthropic-url') || {}).value || '',
+          api_key: (document.getElementById('anthropic-key') || {}).value || '',
+          model: (document.getElementById('anthropic-model') || {}).value || '',
+          api_version: (document.getElementById('anthropic-version') || {}).value || '2023-06-01',
+        };
+        const res = await fetch('/api/provider/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        const data = await res.json();
+        if (resultEl) {
+          resultEl.innerHTML = data.success
+            ? `<span style="color:var(--success)">Connected to ${escapeHtml(data.model || 'Anthropic deployment')}</span>`
+            : `<span style="color:var(--danger)">${escapeHtml(data.message || 'Connection failed')}</span>`;
+        }
+      } catch (err) {
+        if (resultEl) resultEl.innerHTML = `<span style="color:var(--danger)">${escapeHtml(err.message)}</span>`;
+      }
+    },
+
+    async saveAnthropic() {
+      const config = {
+        type: 'anthropic',
+        base_url: (document.getElementById('anthropic-url') || {}).value || '',
+        api_key: (document.getElementById('anthropic-key') || {}).value || '',
+        model: (document.getElementById('anthropic-model') || {}).value || '',
+        max_tokens: parseInt((document.getElementById('anthropic-max-tokens') || {}).value, 10) || 4096,
+        api_version: (document.getElementById('anthropic-version') || {}).value || '2023-06-01',
+      };
+      if (!config.base_url) {
+        const resultEl = document.getElementById('anthropic-test-result');
+        if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">Messages Endpoint is required</span>';
+        return;
+      }
+      try {
+        await fetch('/api/provider', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config),
+        });
+        this.refresh();
+      } catch {}
     },
 
     async refresh() {

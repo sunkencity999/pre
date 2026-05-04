@@ -17,6 +17,7 @@ const chronos = require('./chronos');
 const argus = require('./argus');
 const tiers = require('./tool-tiers');
 const compression = require('./compression');
+const { getProvider } = require('./connections');
 
 /**
  * Generate a short session title from the first user message.
@@ -599,7 +600,13 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     // Budget must be generous — Gemma 4 extended thinking consumes num_predict
     // before producing visible response tokens. With 128K context and free local
     // inference, we maximize output capacity so reports and research are thorough.
-    const maxTokens = turn === 0 ? 32768 : 49152;
+    // Remote providers get capped to their configured max_tokens to control costs.
+    const provider = getProvider();
+    const baseMax = turn === 0 ? 32768 : 49152;
+    const isRemote = provider.type === 'openai' || provider.type === 'azure' || provider.type === 'anthropic';
+    const maxTokens = isRemote
+      ? Math.min(baseMax, provider.max_tokens || 4096)
+      : baseMax;
 
     const result = await streamChat({
       messages,
@@ -611,6 +618,8 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
       // and inconsistent parameter formatting. Modelfile default is 1.0 (creative),
       // but agent mode benefits from deterministic tool selection.
       extraOptions: { temperature: 0.4 },
+      // Disable thinking for remote providers (most don't support it, wastes tokens)
+      ...(isRemote ? { think: false } : {}),
     });
 
     // Update token counts
