@@ -361,7 +361,7 @@
 <div class="progress-bar-wrap">
   <div class="progress-bar-container">
     <div class="progress-bar-top">
-      <span id="progress-label">0 / 12 modules completed</span>
+      <span id="progress-label">0 / 16 modules completed</span>
       <span class="xp" id="xp-label">0 XP</span>
     </div>
     <div class="progress-track">
@@ -422,14 +422,14 @@ const MODULES = [
   {
     id: 'native-apps',
     title: 'Native Apps',
-    desc: 'Control Mail, Calendar, Contacts, Reminders, Notes, and file search',
+    desc: 'Mail, Calendar, Contacts, Reminders, and Notes — works on macOS, Windows, and Linux',
     xp: 20,
     badge: 'Native Apps',
     lessons: [
       {
         icon: '\u{2709}\u{FE0F}',
         title: 'Email & Calendar',
-        text: 'PRE controls your native apps directly. No API keys, no OAuth — it works with whatever accounts you have configured.',
+        text: 'PRE controls your native apps directly — macOS (Mail/Calendar/Contacts), Windows (Outlook), and Linux (GNOME Evolution Data Server). No API keys, no OAuth — it works with whatever accounts you have configured.',
         prompts: ['What\'s on my calendar today?', 'Check my email for anything important in the last 3 days.']
       },
       {
@@ -523,7 +523,7 @@ const MODULES = [
       {
         icon: '\u{26A1}',
         title: 'File Watchers & Webhooks',
-        text: 'Triggers fire prompts automatically when files change or webhooks arrive. Great for automated workflows.',
+        text: 'Triggers fire prompts automatically when files change or webhooks arrive. File watchers batch rapid changes with a 2-minute debounce to avoid loops. Great for automated workflows.',
         prompts: ['Create a trigger that watches ~/Downloads for new PDFs and summarizes them.', 'List all my active triggers.']
       }
     ],
@@ -642,6 +642,78 @@ const MODULES = [
       }
     ],
     challenge: 'Ask PRE to create something genuinely useful — a report you\'d actually share, a tool you\'d actually use, or a visualization of real data.'
+  },
+  {
+    id: 'image-gen',
+    title: 'Image Generation',
+    desc: 'Generate images locally with ComfyUI — no cloud API needed',
+    xp: 20,
+    badge: 'Visual Creator',
+    lessons: [
+      {
+        icon: '\u{1F3A8}',
+        title: 'Generate an Image',
+        text: 'PRE connects to a local ComfyUI instance to generate images from text prompts. Images are saved to ~/.pre/artifacts/ and displayed inline in the chat.',
+        prompts: ['Generate an image of a mountain landscape at sunset with dramatic clouds.', 'Create a photorealistic image of a cozy reading nook with warm lighting.']
+      },
+      {
+        icon: '\u{2699}\u{FE0F}',
+        title: 'Configure ComfyUI',
+        text: 'Image generation requires ComfyUI running locally. Configure the connection in Settings. PRE auto-detects ComfyUI and adds the image_generate tool when available.',
+        prompts: ['Check if image generation is available on my system.']
+      }
+    ],
+    challenge: 'Generate an image for a real use case — a presentation visual, a creative concept, or a fun illustration. Try iterating on the prompt to refine the result.'
+  },
+  {
+    id: 'cloud',
+    title: 'Cloud Integrations',
+    desc: 'Connect 15+ services — GitHub, Jira, Slack, Gmail, and more',
+    xp: 20,
+    badge: 'Cloud Connected',
+    lessons: [
+      {
+        icon: '\u{2601}\u{FE0F}',
+        title: 'Setup & Connect',
+        text: 'Open Settings (gear icon) to configure integrations. API key services (GitHub, Jira, Slack, etc.) need a token. OAuth services (Google, Microsoft) walk you through authorization. All credentials are stored locally in ~/.pre/connections.json.',
+        prompts: ['What cloud integrations are available?', 'Show me my current connection status for all services.']
+      },
+      {
+        icon: '\u{1F517}',
+        title: 'Use Connected Services',
+        text: 'Once connected, tools appear automatically. PRE loads them on-demand — ask about Jira and the cloud tools activate. 15 services: GitHub, Jira, Confluence, Slack, Gmail, Google Drive, Google Docs, Smartsheet, SharePoint, Linear, Zoom, Figma, Asana, Dynamics 365, Telegram.',
+        prompts: ['Show me my open pull requests on GitHub.', 'Search Slack for messages about the deployment in the last 24 hours.', 'List my Jira tickets that are In Progress.']
+      }
+    ],
+    challenge: 'Connect a service you use daily (GitHub, Jira, or Slack are the easiest to start with), then ask PRE to pull real data from it. Cloud tools combine powerfully with scheduling — try a daily Slack summary cron job!'
+  },
+  {
+    id: 'smart-features',
+    title: 'Smart Features',
+    desc: 'Session search, progressive tools, auto-compression, and self-improving skills',
+    xp: 20,
+    badge: 'Power Brain',
+    lessons: [
+      {
+        icon: '\u{1F50D}',
+        title: 'Session Search',
+        text: 'Search across ALL past conversations for commands, solutions, or topics you discussed before. PRE indexes every session as JSONL and supports regex patterns.',
+        prompts: ['Search my past sessions for anything about database migrations.', 'Find all sessions where I used the GitHub tool.']
+      },
+      {
+        icon: '\u{1F9E9}',
+        title: 'Progressive Tool Disclosure',
+        text: 'PRE loads only ~20 core tools by default, saving context window space. When you mention email, processes, or cloud services, relevant tool domains activate automatically. You can also explicitly request tools with request_tools.',
+        prompts: ['Load the devops tools so I can check my system.', 'What tool domains are available?']
+      },
+      {
+        icon: '\u{1F4A1}',
+        title: 'Self-Improving Skills',
+        text: 'After successful multi-tool workflows, PRE analyzes the pattern and may create a reusable custom tool automatically. These appear alongside built-in tools in future sessions. Browse them in the Custom Tools section.',
+        prompts: ['List my custom tools.', 'Create a custom tool called "morning-check" that checks calendar, email, and system health.']
+      }
+    ],
+    challenge: 'Search your past sessions for a problem you solved before. Then do a multi-step task and check if PRE auto-creates a skill from it. These features make PRE smarter the more you use it!'
   },
   {
     id: 'power-workflows',

@@ -2751,12 +2751,30 @@
         ]
       },
       {
+        icon: '🧩', title: 'Smart Features', category: 'smart',
+        tip: 'Session search, progressive tool loading, and auto-created custom tools.',
+        prompts: [
+          "Search my past sessions for anything about database migrations.",
+          "What tool domains are available? Load the devops tools.",
+          "List my custom tools and any auto-created skills.",
+        ]
+      },
+      {
         icon: '🎨', title: 'Artifacts & Exports', category: 'artifacts',
         tip: 'PRE creates interactive HTML documents, reports, and visualizations.',
         prompts: [
           "Create an interactive HTML dashboard showing a sample project timeline with milestones and progress bars.",
           "Build a Pomodoro timer as an HTML artifact with start/pause/reset buttons.",
           "Create a Word document summarizing today's meeting notes with action items.",
+        ]
+      },
+      {
+        icon: '🖼️', title: 'Image Generation', category: 'image',
+        tip: 'Requires ComfyUI running locally. Configure in Settings.',
+        prompts: [
+          "Generate an image of a mountain landscape at sunset with dramatic clouds.",
+          "Create a photorealistic image of a cozy reading nook with warm lighting.",
+          "Check if image generation is available on my system.",
         ]
       },
       {
