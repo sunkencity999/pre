@@ -3010,8 +3010,8 @@
     html += '<div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">';
     html += radioLabel('ollama', 'Local (Ollama)', provType === 'ollama');
     html += radioLabel('openai', 'Remote (OpenAI)', provType === 'openai');
-    html += radioLabel('azure', 'Azure AI Foundry', provType === 'azure');
-    html += radioLabel('anthropic', 'Anthropic', provType === 'anthropic');
+    html += radioLabel('azure', 'Azure (OpenAI)', provType === 'azure');
+    html += radioLabel('anthropic', 'Anthropic / Azure (Claude)', provType === 'anthropic');
     html += '</div>';
 
     // ── OpenAI-compatible config ──
@@ -3071,7 +3071,7 @@
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Endpoint</label>';
     html += `<input id="azure-url" type="text" value="${isAzure ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions" style="${inputStyle}">`;
-    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Paste the Target URI from Azure AI Foundry &gt; Deployments &gt; your model. Auto-converts to chat/completions format when Model Name is set.</div>';
+    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">For OpenAI models on Azure (GPT-4o, GPT-5.5, o-series). Paste the Target URI — auto-converts to chat/completions. For Claude on Azure, use the Anthropic tab instead.</div>';
     html += '</div>';
 
     // API Key
@@ -3116,7 +3116,7 @@
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Messages Endpoint</label>';
     html += `<input id="anthropic-url" type="text" value="${isAnthropic ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://api.anthropic.com/v1/messages" style="${inputStyle}">`;
-    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">For Azure: use the full endpoint URL from Azure AI Foundry</div>';
+    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Direct: api.anthropic.com/v1/messages. Azure Claude: use the full endpoint from Azure AI Foundry.</div>';
     html += '</div>';
 
     // API Key
