@@ -244,13 +244,68 @@ function _streamChatOpenAI({ messages, tools, maxTokens = 8192, onToken, signal,
     const tokenParam = isAzure
       ? { max_completion_tokens: effectiveMax }
       : { max_tokens: effectiveMax };
+
+    // Normalize messages for OpenAI/Azure compliance:
+    // - Assistant messages with tool_calls need type:"function" and id on each call
+    // - Tool result messages need tool_call_id matching the call they respond to
+    // - PRE stores combined tool results as a single role:"tool" message; split them
+    const normalizedMessages = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role === 'assistant' && msg.tool_calls) {
+        // Ensure each tool_call has type and id
+        const fixedCalls = msg.tool_calls.map((tc, idx) => ({
+          id: tc.id || `call_${i}_${idx}`,
+          type: tc.type || 'function',
+          function: {
+            name: tc.function?.name || '',
+            arguments: typeof tc.function?.arguments === 'string'
+              ? tc.function.arguments
+              : JSON.stringify(tc.function?.arguments || {}),
+          },
+        }));
+        normalizedMessages.push({ ...msg, tool_calls: fixedCalls });
+      } else if (msg.role === 'tool') {
+        // Find the preceding assistant message's tool_calls to match IDs
+        let prevAssistant = null;
+        for (let j = i - 1; j >= 0; j--) {
+          if (messages[j].role === 'assistant' && messages[j].tool_calls) {
+            prevAssistant = normalizedMessages.find(
+              (m, mi) => mi >= j && m.role === 'assistant' && m.tool_calls
+            ) || messages[j];
+            break;
+          }
+        }
+        if (prevAssistant && prevAssistant.tool_calls) {
+          // Split combined tool results into individual messages, one per tool_call
+          for (const tc of prevAssistant.tool_calls) {
+            const callId = tc.id || `call_${i}_0`;
+            const toolName = tc.function?.name || '';
+            // Extract the matching <tool_response> block if available
+            const tagRegex = new RegExp(`<tool_response name="${toolName}">\\n?([\\s\\S]*?)</tool_response>`);
+            const match = (msg.content || '').match(tagRegex);
+            normalizedMessages.push({
+              role: 'tool',
+              tool_call_id: callId,
+              content: match ? match[1] : (msg.content || ''),
+            });
+          }
+        } else {
+          // Fallback: pass through with a synthetic ID
+          normalizedMessages.push({ ...msg, tool_call_id: msg.tool_call_id || `call_${i}_0` });
+        }
+      } else {
+        normalizedMessages.push(msg);
+      }
+    }
+
     const bodyObj = {
       // Azure uses the deployment name in the URL, not a model field
       ...(isAzure ? {} : { model: provider.model }),
       stream: true,
       stream_options: { include_usage: true },
       ...tokenParam,
-      messages,
+      messages: normalizedMessages,
       ...(tools && tools.length > 0 ? { tools } : {}),
     };
     const body = JSON.stringify(bodyObj);
@@ -407,9 +462,10 @@ function _streamChatOpenAI({ messages, tools, maxTokens = 8192, onToken, signal,
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0;
               if (!toolCallAccum.has(idx)) {
-                toolCallAccum.set(idx, { name: '', arguments: '' });
+                toolCallAccum.set(idx, { id: '', name: '', arguments: '' });
               }
               const acc = toolCallAccum.get(idx);
+              if (tc.id) acc.id = tc.id;
               if (tc.function?.name) acc.name = tc.function.name;
               if (tc.function?.arguments) acc.arguments += tc.function.arguments;
             }
@@ -435,6 +491,8 @@ function _streamChatOpenAI({ messages, tools, maxTokens = 8192, onToken, signal,
           toolCalls = [...toolCallAccum.entries()]
             .sort(([a], [b]) => a - b)
             .map(([, tc]) => ({
+              id: tc.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              type: 'function',
               function: {
                 name: tc.name,
                 arguments: safeParseJSON(tc.arguments) || {},
