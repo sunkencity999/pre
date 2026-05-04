@@ -1018,7 +1018,26 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
     const combinedResult = toolResults
       .map(r => `<tool_response name="${r.name}">\n${r.output}</tool_response>`)
       .join('\n');
-    const toolMsg = { role: 'tool', content: combinedResult };
+    // Build a mapping from tool name to call ID for remote providers that need it
+    // (Anthropic requires tool_result.tool_use_id to match tool_use.id exactly)
+    const callIdMap = {};
+    for (const tc of dedupedCalls) {
+      const name = tc.tc?.function?.name || tc.name;
+      const id = tc.tc?.id;
+      if (name && id) callIdMap[name] = id;
+    }
+    const toolMsg = {
+      role: 'tool',
+      content: combinedResult,
+      // Store individual results with IDs for Anthropic message conversion
+      ...(Object.keys(callIdMap).length > 0 ? {
+        _tool_results: toolResults.map(r => ({
+          name: r.name,
+          output: r.output,
+          tool_call_id: callIdMap[r.name] || null,
+        })),
+      } : {}),
+    };
     appendMessage(sessionId, toolMsg);
 
     // Collect screenshots for transient injection on the next loop iteration.

@@ -573,12 +573,52 @@ function _streamChatAnthropic({ messages, tools, maxTokens = 8192, onToken, sign
           anthropicMessages.push({ role: msg.role, content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '') });
         }
       } else if (msg.role === 'tool') {
-        // Tool results — Anthropic expects these as user messages with tool_result content blocks
+        // Tool results — Anthropic expects these as user messages with tool_result content blocks.
+        // Each tool_result needs a tool_use_id matching a tool_use block in the previous assistant message.
+        const toolResultBlocks = [];
+
+        if (msg._tool_results && Array.isArray(msg._tool_results)) {
+          // Preferred: use structured per-tool results with preserved IDs
+          for (const tr of msg._tool_results) {
+            if (tr.tool_call_id) {
+              toolResultBlocks.push({ type: 'tool_result', tool_use_id: tr.tool_call_id, content: tr.output || '' });
+            }
+          }
+        }
+
+        // Fallback: match tool results to preceding assistant tool_use blocks by name
+        if (toolResultBlocks.length === 0) {
+          let prevAssistant = null;
+          for (let j = anthropicMessages.length - 1; j >= 0; j--) {
+            if (anthropicMessages[j].role === 'assistant' && Array.isArray(anthropicMessages[j].content)) {
+              prevAssistant = anthropicMessages[j];
+              break;
+            }
+          }
+          if (prevAssistant) {
+            const toolUseBlocks = prevAssistant.content.filter(b => b.type === 'tool_use');
+            for (const tu of toolUseBlocks) {
+              // Try to extract matching output from combined content
+              const tagRegex = new RegExp(`<tool_response name="${tu.name}">\\n?([\\s\\S]*?)</tool_response>`);
+              const match = (msg.content || '').match(tagRegex);
+              toolResultBlocks.push({
+                type: 'tool_result',
+                tool_use_id: tu.id,
+                content: match ? match[1] : (msg.content || ''),
+              });
+            }
+          }
+          // Last resort: use whatever ID we have
+          if (toolResultBlocks.length === 0) {
+            toolResultBlocks.push({ type: 'tool_result', tool_use_id: msg.tool_call_id || 'unknown', content: msg.content || '' });
+          }
+        }
+
         const lastMsg = anthropicMessages[anthropicMessages.length - 1];
         if (lastMsg && lastMsg.role === 'user' && Array.isArray(lastMsg.content)) {
-          lastMsg.content.push({ type: 'tool_result', tool_use_id: msg.tool_call_id || 'unknown', content: msg.content || '' });
+          lastMsg.content.push(...toolResultBlocks);
         } else {
-          anthropicMessages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: msg.tool_call_id || 'unknown', content: msg.content || '' }] });
+          anthropicMessages.push({ role: 'user', content: toolResultBlocks });
         }
       }
     }
@@ -734,6 +774,7 @@ function _streamChatAnthropic({ messages, tools, maxTokens = 8192, onToken, sign
         if (toolUseBlocks.length > 0) {
           toolCalls = toolUseBlocks.map(tb => ({
             id: tb.id,
+            type: 'function',
             function: {
               name: tb.name,
               arguments: safeParseJSON(tb.input_json) || {},
