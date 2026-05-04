@@ -229,7 +229,13 @@ app.get('/api/provider', (_req, res) => {
 
 app.post('/api/provider', (req, res) => {
   try {
-    setProvider(req.body);
+    const config = { ...req.body };
+    // Keep existing key if user didn't re-enter it
+    if (!config.api_key) {
+      const saved = getProvider();
+      if (saved.api_key) config.api_key = saved.api_key;
+    }
+    setProvider(config);
     res.json({ success: true });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -243,7 +249,13 @@ app.delete('/api/provider', (_req, res) => {
 
 app.post('/api/provider/test', async (req, res) => {
   try {
-    const result = await testProvider(req.body);
+    const config = { ...req.body };
+    // If no key provided, fall back to the saved provider's key
+    if (!config.api_key) {
+      const saved = getProvider();
+      if (saved.api_key) config.api_key = saved.api_key;
+    }
+    const result = await testProvider(config);
     res.json(result);
   } catch (err) {
     res.json({ success: false, message: err.message });
