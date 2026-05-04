@@ -3071,7 +3071,7 @@
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Endpoint</label>';
     html += `<input id="azure-url" type="text" value="${isAzure ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions" style="${inputStyle}">`;
-    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Full URL from Azure AI Foundry &gt; Deployments &gt; your model &gt; Target URI</div>';
+    html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Paste the Target URI from Azure AI Foundry &gt; Deployments &gt; your model. Auto-converts to chat/completions format when Model Name is set.</div>';
     html += '</div>';
 
     // API Key
@@ -3088,7 +3088,7 @@
 
     // Model (display name, optional for Azure)
     html += '<div style="margin-bottom:10px">';
-    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model Name (optional, for display)</label>';
+    html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Name</label>';
     html += `<input id="azure-model" type="text" value="${isAzure ? escapeHtml(provider.model || '') : ''}" placeholder="gpt-4o" style="${inputStyle}">`;
     html += '</div>';
 
@@ -4126,9 +4126,9 @@
         max_tokens: parseInt((document.getElementById('azure-max-tokens') || {}).value, 10) || 4096,
         api_version: (document.getElementById('azure-version') || {}).value || '2024-10-21',
       };
-      if (!config.base_url) {
+      if (!config.base_url || !config.model) {
         const resultEl = document.getElementById('azure-test-result');
-        if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">Deployment Endpoint is required</span>';
+        if (resultEl) resultEl.innerHTML = '<span style="color:var(--danger)">Deployment Endpoint and Deployment Name are required</span>';
         return;
       }
       try {

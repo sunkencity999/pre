@@ -741,6 +741,26 @@ function setZoomConfig(accountId, clientId, clientSecret) {
 // ── Model Provider (Ollama / OpenAI-compatible / Azure) ──────────────────
 
 /**
+ * Normalize an Azure URL to the chat/completions endpoint.
+ * Azure AI Foundry shows users a "Target URI" like:
+ *   https://{resource}.cognitiveservices.azure.com/openai/responses?api-version=...
+ * But the Chat Completions API needs:
+ *   https://{resource}.cognitiveservices.azure.com/openai/deployments/{model}/chat/completions
+ * If the URL contains /openai/responses and a model/deployment name is available,
+ * auto-convert it. Also strips any existing ?api-version= query params (we add our own).
+ */
+function normalizeAzureUrl(baseUrl, model) {
+  if (!baseUrl) return baseUrl;
+  // Strip trailing slashes and query params
+  let url = baseUrl.replace(/\/+$/, '').replace(/\?.*$/, '');
+  // If URL ends with /openai/responses or /openai, rebuild with deployment path
+  if (model && /\/openai(\/responses)?$/.test(url)) {
+    url = url.replace(/\/openai(\/responses)?$/, `/openai/deployments/${model}/chat/completions`);
+  }
+  return url;
+}
+
+/**
  * Get the active model provider config.
  * Returns { type: 'ollama' } when no remote provider is configured.
  */
@@ -748,11 +768,17 @@ function getProvider() {
   const data = loadConnections();
   const p = data._provider;
   if (!p || !p.type || p.type === 'ollama') return { type: 'ollama' };
+  let baseUrl = (p.base_url || '').replace(/\/+$/, '');
+  const model = p.model || '';
+  // Azure: normalize Foundry-provided URLs to chat/completions format
+  if (p.type === 'azure') {
+    baseUrl = normalizeAzureUrl(baseUrl, model);
+  }
   const result = {
     type: p.type,
-    base_url: (p.base_url || '').replace(/\/+$/, ''),
+    base_url: baseUrl,
     api_key: p.api_key || '',
-    model: p.model || '',
+    model,
     max_tokens: parseInt(p.max_tokens, 10) || 4096,
   };
   // Azure-specific fields
@@ -812,11 +838,14 @@ function removeProvider() {
  */
 function testProvider(config) {
   return new Promise((resolve, reject) => {
-    const baseUrl = (config.base_url || '').replace(/\/+$/, '');
+    let baseUrl = (config.base_url || '').replace(/\/+$/, '');
     if (!baseUrl) return reject(new Error('base_url is required'));
 
     const isAzure = config.type === 'azure';
     const isAnthropic = config.type === 'anthropic';
+
+    // Azure: normalize Foundry-provided URLs
+    if (isAzure) baseUrl = normalizeAzureUrl(baseUrl, config.model);
 
     // Anthropic uses a different request format and auth
     if (isAnthropic) {
