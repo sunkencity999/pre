@@ -690,7 +690,12 @@ async function runToolLoop({ sessionId, cwd, send, signal, onConfirmRequest, use
 
       send({
         type: 'done',
-        stats: { ...result.stats },
+        stats: {
+          ...result.stats,
+          // Override with accumulated totals across all tool loop turns
+          eval_count: tokensOut,
+          prompt_eval_count: tokensIn,
+        },
         context: {
           used: tokensIn + tokensOut,
           max: MODEL_CTX,
