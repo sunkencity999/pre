@@ -29,7 +29,7 @@ const {
   getD365AuthUrl,
   exchangeD365Code,
   setZoomConfig,
-  getProvider, setProvider, removeProvider, testProvider,
+  getProvider, getAllProviders, setProvider, removeProvider, testProvider,
 } = require('./src/connections');
 const { MODEL_CTX, ARTIFACTS_DIR } = require('./src/constants');
 const cronSystem = require('./src/tools/cron');
@@ -222,9 +222,20 @@ app.post('/api/sessions/:id/move', (req, res) => {
 // ── Model Provider API ──
 
 app.get('/api/provider', (_req, res) => {
-  const p = getProvider();
-  if (p.api_key) p.api_key = p.api_key.slice(0, 4) + '...' + p.api_key.slice(-4);
-  res.json(p);
+  const store = getAllProviders();
+  // Mask API keys in all configs
+  const masked = { active: store.active || 'ollama' };
+  for (const type of ['openai', 'azure', 'anthropic']) {
+    if (store[type]) {
+      masked[type] = { ...store[type] };
+      if (masked[type].api_key) {
+        masked[type].api_key = masked[type].api_key.slice(0, 4) + '...' + masked[type].api_key.slice(-4);
+      }
+    }
+  }
+  // Also return legacy 'type' field for backwards compat
+  masked.type = masked.active;
+  res.json(masked);
 });
 
 app.post('/api/provider', (req, res) => {

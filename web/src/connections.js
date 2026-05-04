@@ -761,71 +761,94 @@ function normalizeAzureUrl(baseUrl, model) {
 }
 
 /**
+ * Read raw provider storage. Handles migration from old single-config format
+ * to new multi-config format: { active: 'azure', openai: {...}, azure: {...}, anthropic: {...} }
+ */
+function _readProviderStore() {
+  const data = loadConnections();
+  const p = data._provider;
+  if (!p) return { active: 'ollama' };
+  // Migrate old format: { type: 'azure', base_url: '...' } → new multi-config
+  if (p.type && !p.active) {
+    const type = p.type;
+    const cfg = { ...p };
+    delete cfg.type;
+    return { active: type, [type]: cfg };
+  }
+  return p;
+}
+
+/**
  * Get the active model provider config.
  * Returns { type: 'ollama' } when no remote provider is configured.
  */
 function getProvider() {
-  const data = loadConnections();
-  const p = data._provider;
-  if (!p || !p.type || p.type === 'ollama') return { type: 'ollama' };
+  const store = _readProviderStore();
+  const active = store.active || 'ollama';
+  if (active === 'ollama') return { type: 'ollama' };
+  const p = store[active];
+  if (!p) return { type: 'ollama' };
   let baseUrl = (p.base_url || '').replace(/\/+$/, '');
   const model = p.model || '';
-  // Azure: normalize Foundry-provided URLs to chat/completions format
-  if (p.type === 'azure') {
-    baseUrl = normalizeAzureUrl(baseUrl, model);
-  }
+  if (active === 'azure') baseUrl = normalizeAzureUrl(baseUrl, model);
   const result = {
-    type: p.type,
+    type: active,
     base_url: baseUrl,
     api_key: p.api_key || '',
     model,
     max_tokens: parseInt(p.max_tokens, 10) || 4096,
   };
-  // Azure-specific fields
-  if (p.type === 'azure') {
-    result.api_version = p.api_version || '2024-10-21';
-  }
-  // Anthropic-specific fields
-  if (p.type === 'anthropic') {
-    result.api_version = p.api_version || '2023-06-01';
-  }
+  if (active === 'azure') result.api_version = p.api_version || '2024-10-21';
+  if (active === 'anthropic') result.api_version = p.api_version || '2023-06-01';
   return result;
 }
 
 /**
+ * Get all saved provider configs (for the settings panel).
+ * Returns { active, openai: {...}, azure: {...}, anthropic: {...} }
+ * API keys are NOT masked here — callers must mask before sending to the client.
+ */
+function getAllProviders() {
+  return _readProviderStore();
+}
+
+/**
  * Save a remote model provider config.
- * Azure requires base_url (deployment endpoint); model is optional (deployment determines it).
- * OpenAI requires both base_url and model.
+ * Stores the config under its type key and sets it as active.
  */
 function setProvider(config) {
   if (!config || !config.base_url) {
     throw new Error('base_url is required');
   }
-  if (config.type !== 'azure' && config.type !== 'anthropic' && !config.model) {
+  const type = config.type || 'openai';
+  if (type !== 'azure' && type !== 'anthropic' && !config.model) {
     throw new Error('model is required for non-Azure/Anthropic providers');
   }
   const data = loadConnections();
-  data._provider = {
-    type: config.type || 'openai',
+  const store = data._provider && data._provider.active ? { ...data._provider } : _readProviderStore();
+  store.active = type;
+  store[type] = {
     base_url: config.base_url.replace(/\/+$/, ''),
     api_key: config.api_key || '',
     model: config.model || '',
     max_tokens: parseInt(config.max_tokens, 10) || 4096,
-    // Azure-specific
-    ...(config.type === 'azure' ? { api_version: config.api_version || '2024-10-21' } : {}),
-    // Anthropic-specific
-    ...(config.type === 'anthropic' ? { api_version: config.api_version || '2023-06-01' } : {}),
+    ...(type === 'azure' ? { api_version: config.api_version || '2024-10-21' } : {}),
+    ...(type === 'anthropic' ? { api_version: config.api_version || '2023-06-01' } : {}),
   };
+  data._provider = store;
   saveConnections(data);
   return true;
 }
 
 /**
- * Remove the remote provider, reverting to local Ollama.
+ * Remove the active provider, reverting to local Ollama.
+ * Saved configs for each type are preserved.
  */
 function removeProvider() {
   const data = loadConnections();
-  delete data._provider;
+  const store = data._provider && data._provider.active ? { ...data._provider } : _readProviderStore();
+  store.active = 'ollama';
+  data._provider = store;
   saveConnections(data);
   return true;
 }
@@ -977,6 +1000,7 @@ module.exports = {
   refreshD365Token,
   setZoomConfig,
   getProvider,
+  getAllProviders,
   setProvider,
   removeProvider,
   testProvider,

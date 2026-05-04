@@ -2995,7 +2995,10 @@
     html += '</div>';
 
     // ── Model Provider section ──
-    const provType = provider ? provider.type : 'ollama';
+    const provType = provider ? (provider.active || provider.type || 'ollama') : 'ollama';
+    const provOpenai = (provider && provider.openai) || {};
+    const provAzure = (provider && provider.azure) || {};
+    const provAnthropic = (provider && provider.anthropic) || {};
     const isRemote = provType === 'openai' || provType === 'azure' || provType === 'anthropic';
     const isAzure = provType === 'azure';
     const isAnthropic = provType === 'anthropic';
@@ -3032,32 +3035,32 @@
     // Base URL
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Base URL</label>';
-    html += `<input id="provider-url" type="text" value="${provType === 'openai' ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://api.openai.com/v1" style="${inputStyle}">`;
+    html += `<input id="provider-url" type="text" value="${escapeHtml(provOpenai.base_url || '')}" placeholder="https://api.openai.com/v1" style="${inputStyle}">`;
     html += '</div>';
 
     // API Key
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
-    html += `<input id="provider-key" type="password" value="" placeholder="${provType === 'openai' && provider.api_key ? provider.api_key : 'sk-...'}" style="${inputStyle}">`;
+    html += `<input id="provider-key" type="password" value="" placeholder="${provOpenai.api_key ? provOpenai.api_key : 'sk-...'}" style="${inputStyle}">`;
     html += '</div>';
 
     // Model
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model</label>';
-    html += `<input id="provider-model" type="text" value="${provType === 'openai' ? escapeHtml(provider.model || '') : ''}" placeholder="gpt-4o" style="${inputStyle}">`;
+    html += `<input id="provider-model" type="text" value="${escapeHtml(provOpenai.model || '')}" placeholder="gpt-4o" style="${inputStyle}">`;
     html += '</div>';
 
     // Max Tokens
     html += '<div style="margin-bottom:14px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
-    html += `<input id="provider-max-tokens" type="number" value="${provType === 'openai' ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += `<input id="provider-max-tokens" type="number" value="${provOpenai.max_tokens || 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
     html += '</div>';
 
     // Buttons
     html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
     html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testProvider()">Test Connection</button>';
     html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveProvider()">Save</button>';
-    if (provType === 'openai') {
+    if (provOpenai.base_url) {
       html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
     }
     html += '</div>';
@@ -3070,39 +3073,39 @@
     // Endpoint URL (full deployment URL)
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Endpoint</label>';
-    html += `<input id="azure-url" type="text" value="${isAzure ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions" style="${inputStyle}">`;
+    html += `<input id="azure-url" type="text" value="${escapeHtml(provAzure.base_url || '')}" placeholder="https://myresource.openai.azure.com/openai/deployments/gpt-4o/chat/completions" style="${inputStyle}">`;
     html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">For OpenAI models on Azure (GPT-4o, GPT-5.5, o-series). Paste the Target URI — auto-converts to chat/completions. For Claude on Azure, use the Anthropic tab instead.</div>';
     html += '</div>';
 
     // API Key
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
-    html += `<input id="azure-key" type="password" value="" placeholder="${isAzure && provider.api_key ? provider.api_key : 'Azure API key...'}" style="${inputStyle}">`;
+    html += `<input id="azure-key" type="password" value="" placeholder="${provAzure.api_key ? provAzure.api_key : 'Azure API key...'}" style="${inputStyle}">`;
     html += '</div>';
 
     // API Version
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Version</label>';
-    html += `<input id="azure-version" type="text" value="${isAzure ? escapeHtml(provider.api_version || '2024-10-21') : '2024-10-21'}" placeholder="2024-10-21" style="${inputStyle}">`;
+    html += `<input id="azure-version" type="text" value="${escapeHtml(provAzure.api_version || '2024-10-21')}" placeholder="2024-10-21" style="${inputStyle}">`;
     html += '</div>';
 
     // Model (display name, optional for Azure)
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Deployment Name</label>';
-    html += `<input id="azure-model" type="text" value="${isAzure ? escapeHtml(provider.model || '') : ''}" placeholder="gpt-4o" style="${inputStyle}">`;
+    html += `<input id="azure-model" type="text" value="${escapeHtml(provAzure.model || '')}" placeholder="gpt-4o" style="${inputStyle}">`;
     html += '</div>';
 
     // Max Tokens
     html += '<div style="margin-bottom:14px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
-    html += `<input id="azure-max-tokens" type="number" value="${isAzure ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += `<input id="azure-max-tokens" type="number" value="${provAzure.max_tokens || 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
     html += '</div>';
 
     // Buttons
     html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
     html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testAzure()">Test Connection</button>';
     html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveAzure()">Save</button>';
-    if (isAzure) {
+    if (provAzure.base_url) {
       html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
     }
     html += '</div>';
@@ -3115,39 +3118,39 @@
     // Endpoint URL
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Messages Endpoint</label>';
-    html += `<input id="anthropic-url" type="text" value="${isAnthropic ? escapeHtml(provider.base_url || '') : ''}" placeholder="https://api.anthropic.com/v1/messages" style="${inputStyle}">`;
+    html += `<input id="anthropic-url" type="text" value="${escapeHtml(provAnthropic.base_url || '')}" placeholder="https://api.anthropic.com/v1/messages" style="${inputStyle}">`;
     html += '<div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px">Direct: api.anthropic.com/v1/messages. Azure Claude: use the full endpoint from Azure AI Foundry.</div>';
     html += '</div>';
 
     // API Key
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Key</label>';
-    html += `<input id="anthropic-key" type="password" value="" placeholder="${isAnthropic && provider.api_key ? provider.api_key : 'x-api-key...'}" style="${inputStyle}">`;
+    html += `<input id="anthropic-key" type="password" value="" placeholder="${provAnthropic.api_key ? provAnthropic.api_key : 'x-api-key...'}" style="${inputStyle}">`;
     html += '</div>';
 
     // Anthropic Version
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">API Version</label>';
-    html += `<input id="anthropic-version" type="text" value="${isAnthropic ? escapeHtml(provider.api_version || '2023-06-01') : '2023-06-01'}" placeholder="2023-06-01" style="${inputStyle}">`;
+    html += `<input id="anthropic-version" type="text" value="${escapeHtml(provAnthropic.api_version || '2023-06-01')}" placeholder="2023-06-01" style="${inputStyle}">`;
     html += '</div>';
 
     // Model / Deployment Name
     html += '<div style="margin-bottom:10px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Model / Deployment Name</label>';
-    html += `<input id="anthropic-model" type="text" value="${isAnthropic ? escapeHtml(provider.model || '') : ''}" placeholder="claude-sonnet-4-20250514" style="${inputStyle}">`;
+    html += `<input id="anthropic-model" type="text" value="${escapeHtml(provAnthropic.model || '')}" placeholder="claude-sonnet-4-20250514" style="${inputStyle}">`;
     html += '</div>';
 
     // Max Tokens
     html += '<div style="margin-bottom:14px">';
     html += '<label style="font-size:0.8rem;color:var(--text-muted);display:block;margin-bottom:4px">Max Tokens per Response</label>';
-    html += `<input id="anthropic-max-tokens" type="number" value="${isAnthropic ? (provider.max_tokens || 4096) : 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
+    html += `<input id="anthropic-max-tokens" type="number" value="${provAnthropic.max_tokens || 4096}" min="256" max="128000" step="256" style="${inputStyle}">`;
     html += '</div>';
 
     // Buttons
     html += '<div class="connection-card-actions" style="flex-wrap:wrap">';
     html += '<button class="btn btn-ghost btn-sm" onclick="Settings.testAnthropic()">Test Connection</button>';
     html += '<button class="btn btn-primary btn-sm" onclick="Settings.saveAnthropic()">Save</button>';
-    if (isAnthropic) {
+    if (provAnthropic.base_url) {
       html += '<button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="Settings.removeProvider()">Revert to Local</button>';
     }
     html += '</div>';
@@ -4010,8 +4013,11 @@
       if (openaiEl) openaiEl.style.display = value === 'openai' ? 'block' : 'none';
       if (azureEl) azureEl.style.display = value === 'azure' ? 'block' : 'none';
       if (anthropicEl) anthropicEl.style.display = value === 'anthropic' ? 'block' : 'none';
+      // Switching to Ollama reverts to local without deleting saved configs
       if (value === 'ollama') {
-        this.removeProvider();
+        (async () => {
+          await fetch('/api/provider', { method: 'DELETE' });
+        })();
       }
     },
 
