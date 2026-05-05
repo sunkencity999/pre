@@ -20,7 +20,7 @@
     "pdfkit": "^0.18.0",
     "puppeteer-core": "^24.42.0",
     "ws": "^8.18.0",
-    "zod": "^4.4.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "jest": "^30.3.0"
